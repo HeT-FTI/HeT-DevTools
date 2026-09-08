@@ -3,7 +3,7 @@
   "displayName": "%displayName%",
   "description": "%description%",
   "version": "0.4.0",
-  "publisher": "het-test-publisher",
+  "publisher": "het-fti",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
