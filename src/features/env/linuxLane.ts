@@ -199,6 +199,13 @@ export async function ensureLinuxLane(opts: { mirror?: LaneMirror } = {}): Promi
     await rootAptLinux('lcov');
     r = await runEnsure();
   }
+  // 构建链自愈：同 WSL 车道 —— CMake 默认生成器是 "Unix Makefiles"，
+  // 缺 make 时源码编译的依赖会以 `CMAKE_MAKE_PROGRAM is not set` 失败
+  // （宿主是瘦容器／精简发行版时会遇到；GitHub runner 自带 make，掩盖了这一点）。
+  if (r.code === 0 && /lane_make:-\s*$/m.test(`${r.stdout}\n`) && root) {
+    await rootAptLinux('make');
+    r = await runEnsure();
+  }
   if (r.code !== 0) {
     const tail = `${r.stdout}\n${r.stderr}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
     throw new Error(`Linux 托管工具链准备失败（exit=${r.code}）：\n${tail}`);

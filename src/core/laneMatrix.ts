@@ -168,10 +168,12 @@ function posixLaneHeal(
     make: {
       kind: 'auto',
       evidence: [
+        { artifact: 'ensure', marker: 'echo lane_make:' },
+        { artifact: exec, marker: apt('make') },
         { artifact: 'docs-ensure', marker: 'echo docs_make:' },
         { artifact: exec, marker: docsInstall },
       ],
-      note: '系统 make（文档链依赖）。',
+      note: '系统 make：**构建链与文档链都要** —— Conan/CMake 的默认生成器是 "Unix Makefiles"（模板的 cmake_layout + CMakeToolchain 都没指定 Ninja），所以工程自身与源码编译的依赖都依赖它；缺则 root 自愈。',
     },
   };
 }

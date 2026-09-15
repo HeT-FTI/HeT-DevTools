@@ -231,7 +231,7 @@ export function resolveProviderDecision(caps: HostCapabilities, _prefs?: Provisi
     if (caps.wslAvailable && caps.wslDefaultReady) {
       return {
         provider: 'win-wsl2',
-        reason: 'Windows：经 WSL2 托管 distro（het-fcpp）执行，与 Linux 构造性同语义',
+        reason: 'Windows：经 WSL2 托管 distro 执行（发行版内的隔离车道），与 Linux 构造性同语义',
         coverage: 'full',
         manifest: MAN,
         note: caps.virtualizationEnabled

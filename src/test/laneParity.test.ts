@@ -217,6 +217,15 @@ describe('T21 lane × requirement parity (heal rules · script probes · ladder 
         // E5: the gcov shim must be a lane-local file, never a system write.
         assert.ok(ensure.includes(`cat > "${HOME}/.het-fti/managed-env/venv/bin/gcov"`), `${id}: gcov shim 必须是车道私有文件`);
         assert.ok(ensure.includes('echo lane_lcov:'), `${id}: 必须报告 lcov 事实`);
+        // 2026-09-15：make 是**构建链**需求（CMake 默认生成器 = Unix Makefiles），
+        // 不是"只有文档才要"。缺了它源码编译的依赖会以
+        // `CMAKE_MAKE_PROGRAM is not set` 失败 —— 必须像 lcov 一样被报告 + 自愈。
+        assert.ok(ensure.includes('echo lane_make:'), `${id}: 必须报告 make 事实（构建链要用）`);
+        assert.match(
+          resolveArtifact(id, id === 'linux-managed' ? 'exec-linux' : 'exec-wsl'),
+          /lane_make:-[\s\S]*rootApt(Linux)?\(('make'|distro, 'make')\)/u,
+          `${id}: 报告 make 缺失后必须真的 apt 补上`,
+        );
       }
     }
   });

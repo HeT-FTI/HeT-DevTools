@@ -233,6 +233,16 @@ export async function ensureWslLane(distro: string, opts: { mirror?: LaneMirror 
     await rootApt(distro, 'lcov');
     r = await runEnsure();
   }
+  // 构建链自愈（2026-09-15 CI 实测）：Ubuntu 官方 WSL rootfs 不带 `make`，而
+  // Conan/CMake 的**默认生成器**是 "Unix Makefiles"（模板的 cmake_layout +
+  // CMakeToolchain 都没指定 Ninja）→ 源码编译的依赖与工程自身的构建都要它。
+  // 症状极具误导性：bzip2 从源码构建时报 `CMAKE_MAKE_PROGRAM is not set`，
+  // 看起来像"CMake 找不到构建程序"，其实是车道少一个 apt 包。
+  // （GitHub 的 ubuntu runner 自带 make，所以 Linux 车道一直没暴露这个洞。）
+  if (r.code === 0 && /lane_make:-\s*$/m.test(`${r.stdout}\n`)) {
+    await rootApt(distro, 'make');
+    r = await runEnsure();
+  }
   if (r.code !== 0) {
     const tail = `${r.stdout}\n${r.stderr}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
     throw new Error(`WSL 托管工具链准备失败（exit=${r.code}）：\n${tail}`);

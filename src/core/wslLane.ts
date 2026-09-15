@@ -119,6 +119,11 @@ export function wslLaneEnsureCommand(home: string, profileText: string, opts: La
     `echo lane_cc_version:${opts.compiler?.version ?? '-'}`,
     `echo lane_cc_baseline:${opts.compiler?.baseline ?? '-'}`,
     'echo lane_lcov:$([ -x /usr/bin/lcov ] && lcov --version | head -1 || echo -)',
+    // 2026-09-15 CI 实测：Ubuntu 官方 WSL rootfs **不带 make**，而 Conan/CMake 的默认
+    // 生成器是 "Unix Makefiles"（模板 cmake_layout + CMakeToolchain 都没指定 Ninja）
+    // → 源码编译的依赖（bzip2/pcre2/zlib…）与工程自身的构建都要它。
+    // 报告成事实 → 执行层按同一条自愈路径 apt 补上（与 lcov 完全同构）。
+    'echo lane_make:$(command -v make >/dev/null 2>&1 && make --version 2>/dev/null | head -1 || echo -)',
   ];
   return steps.join('\n');
 }
