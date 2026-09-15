@@ -242,6 +242,15 @@ export const LANE_ROUTES = {
   c: '路线 C：改用本机工具链（`toolchain: system`，MSVC，**无覆盖率**）',
 } as const;
 
+/**
+ * 自建/自举失败时的统一尾巴（import 失败 → bootstrap 失败 → 发行版起不来）。
+ * 这三种失败对用户是同一个处境（车道用不了），就不应该各说一套话 —— 路由文案只从
+ * `LANE_ROUTES` 来。
+ */
+export function laneFailureHint(): string {
+  return `可改走：${LANE_ROUTES.a}；或 ${LANE_ROUTES.c}。扩展不会自动改用 MSVC。`;
+}
+
 /** 人类可读的代价（needsConsent 文案用）：约 340MB 下载 + 1.5–2.5GB 磁盘。 */
 export function laneImportCostText(bytes: number = LANE_ROOTFS.bytes): string {
   const mb = Math.round(bytes / (1024 * 1024));

@@ -14,12 +14,20 @@ name: env-fresh · windows
 #   Windows 的**托管车道 = WSL2**。GitHub 托管 runner 没有嵌套虚拟化，`wsl --install` 起不来，
 #   所以「车道真的能自举」这一段无法在托管 runner 上验证 → 由本地 DoD 脚本
 #   `scripts/run-lane-dod.mjs`（真机，需本地 Windows）覆盖。
-#   因此本 workflow 覆盖的是：① system（MSVC 兼容模式）能构建；② 无车道时 managed 必须
-#   「拒绝 + 给可执行指引」，且一键切换 system 后能构建成功。
+#   因此本 workflow 覆盖的是：① system（MSVC 兼容模式）能构建；② 自建私有发行版的
+#   **计划/代价 → 真实 import 尝试 → 0 侵入 → 撤销**（`windows-wsl-import`）；③ 无车道时
+#   managed 必须「拒绝 + 给可执行指引」，且一键切换 system 后能构建成功。
 #
+# 承诺下限（T27）—— 只在这里维护：engines.vscode = @types/vscode = 这里的钉住版。
+# 金丝雀作业在 env-fresh · linux 里，它显式把这两个值清空（它要跑最新版）。
+env:
+  VSCODE_VERSION: "1.134.0"
+  HET_REAL_EXPECT_VSCODE: "1.134.0"
+
 # 手动触发：
 #   gh workflow run env-fresh-windows --ref main
 #   gh workflow run env-fresh-windows --ref main -f scenario=blocked
+#   gh workflow run env-fresh-windows --ref main -f scenario=wsl-import
 #   gh run watch $(gh run list --workflow=env-fresh-windows -L1 --json databaseId -q '.[0].databaseId')
 
 on:
@@ -32,6 +40,7 @@ on:
         options:
           - all
           - system
+          - wsl-import
           - blocked
 
 jobs:
@@ -119,8 +128,7 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— MSVC + 宿主 conan 构建"
         env:
-          VSCODE_VERSION: "1.134.0"
-          HET_REAL_EXPECT_VSCODE: "1.134.0"
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
           HET_REAL_TOOLCHAIN: system
           HET_REAL_FRESH: "1"
         run: |
@@ -151,6 +159,192 @@ jobs:
         with:
           name: evidence-windows-system
           path: out/real-evidence.txt
+          if-no-files-found: ignore
+
+  windows-wsl-import:
+    name: windows · 自建私有发行版（计划/代价 → 真实 import → 0 侵入 → 撤销）
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'wsl-import' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        shell: pwsh
+        run: |
+          Write-Host "::group::SCENARIO — fresh windows · self-provisioned distro (wsl-import)"
+          @'
+          模拟场景：全新 Windows 机器 —— WSL2 功能在，但**一个发行版都没有**，用户点「一键准备环境」。
+
+          本作业要证明（每条都要有机器证据）：
+            1) 计划层必须提议「自建私有发行版」，并把代价（下载体积/磁盘）与「不会改动你已有的
+               发行版」说清；
+            2) **0 侵入**：跑前/跑后的 `wsl -l -q` 对比 —— 已有发行版一个都不能消失，
+               新增的只能是我们自己命名的；
+            3) 真实执行会走到 `wsl --import`（rootfs 用极小样本 + 工作区覆盖，走的是同一条
+               「sha256 校验 → 缓存」路径；CI 不下载 340MB，官方镜像的钉死 sha 由单测 + 机器 DoD 覆盖）；
+            4) 失败必须给 A（`wsl --install -d Ubuntu-24.04`）/ C（`toolchain: system`）两条路，
+               且**绝不**把工程偷偷切成 system；
+            5) `het.envRemove` 之后发行版集合回到跑前。
+
+          诚实边界：导入后的发行版**能不能启动**验不了（托管 runner 无嵌套虚拟化）→ 那一段归机器
+          DoD（`scripts/run-lane-dod.mjs`）。若本 runner 恰好能 import，SETUP 会注册一个**同名但非
+          我们的**诱饵发行版，本作业即自动升级为「必须换名 -2，绝不接管」的完整断言。
+          '@ | Write-Host
+          Write-Host "::endgroup::"
+
+      - name: "GATE: 裸机 + 跑前发行版快照"
+        shell: pwsh
+        env:
+          # wsl.exe 默认 UTF-16LE 输出 → 日志里出现 NUL；WSL_UTF8=1 让它吐 UTF-8。
+          WSL_UTF8: "1"
+        run: |
+          # 诊断/快照步骤一律不让作业失败：`wsl -l -q` 在"无发行版"时会向 stderr 输出并返回非 0。
+          $ErrorActionPreference = 'Continue'
+          Write-Host "检查项：宿主必须是裸机（没有我们留下的车道目录）。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::error::unexpected lane at ~/.het-fti"; exit 1 }
+          if (Test-Path "$env:LOCALAPPDATA\het-fti") { Write-Host "::error::unexpected lane at %LOCALAPPDATA%\het-fti"; exit 1 }
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $list = @()
+          try {
+            $list = @(& wsl -l -q 2>$null | ForEach-Object { $_.Trim() -replace '\(default\)\s*$','' } | Where-Object { $_ })
+          } catch { $list = @() }
+          $list | Set-Content -Path out/wsl-before.txt -Encoding utf8
+          Write-Host "✔ 跑前发行版：$(if ($list.Count) { $list -join ', ' } else { '(无)' })"
+          if ($list.Count -gt 0) { Write-Host "::warning::runner 上已有发行版：本作业的 0 侵入断言会一并覆盖它们" }
+
+      - name: "PREFLIGHT: runner 的 WSL 能力（诊断用，永不让作业失败）"
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "::group::PREFLIGHT (diagnostics)"
+          Write-Host "wsl.exe: $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'present' } else { 'absent' })"
+          Write-Host "wsl --status:"
+          & wsl --status 2>&1 | Out-String | Write-Host
+          Write-Host "wsl -l -v:"
+          & wsl -l -v 2>&1 | Out-String | Write-Host
+          Write-Host "虚拟化（VirtualizationFirmwareEnabled）：$((Get-CimInstance Win32_Processor | Select-Object -First 1).VirtualizationFirmwareEnabled)"
+          Write-Host '（`wsl -l -v` / `--status` 在无发行版时向 stderr 输出并返回非 0 —— 那是预期，不是故障）'
+          Write-Host "::endgroup::"
+          exit 0
+
+      - name: "SETUP: 同名诱饵 —— 若 runner 能 import，就试出「必须换名」"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dir = Join-Path $env:RUNNER_TEMP 'decoy-src'
+          $tar = Join-Path $env:RUNNER_TEMP 'decoy-rootfs.tar.gz'
+          $install = Join-Path $env:RUNNER_TEMP 'decoy-install'
+          New-Item -ItemType Directory -Force -Path $dir, $install | Out-Null
+          Set-Content -Path (Join-Path $dir 'decoy.txt') -Value 'not our lane' -Encoding utf8
+          tar -czf $tar -C $dir .
+          # 名字与计划的默认名一致 → 同名冲突必须走"换名"，绝不接管（I1）。
+          $name = 'het-lane-2404'
+          & wsl --import $name $install $tar --version 2 2>&1 | Out-String | Write-Host
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "✔ 诱饵已注册（$name，没有我们的双标记）：本次自建必须换名，绝不接管"
+            "decoy=1" | Set-Content out/wsl-decoy.txt -Encoding utf8
+          } else {
+            Write-Host "· 本 runner 无法 import（无嵌套虚拟化）→ 换名判据由 wslDistro / wslImportStub 单测（跨平台）与机器 DoD 覆盖"
+            "decoy=0" | Set-Content out/wsl-decoy.txt -Encoding utf8
+          }
+          exit 0
+
+      - name: "MAIN: 真实扩展宿主 —— 计划/代价 → 真实执行 → 0 侵入"
+        env:
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
+          HET_REAL_WSL_IMPORT: "1"
+          HET_REAL_FRESH: "1"
+        run: |
+          Write-Host "::group::MAIN — npm run test:real (self-provisioned distro)"
+          Write-Host "断言链：计划提议 + 代价 → rootfs 校验/缓存 → wsl --import → 0 侵入快照 → 失败给 A/C → 撤销回到跑前"
+          npm run test:real
+          Write-Host "::endgroup::"
+
+      - name: "ASSERT: 0 侵入 + 绝不静默降级 + 证据"
+        if: always()
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function Get-Distros {
+            try { return @(& wsl -l -q 2>$null | ForEach-Object { $_.Trim() -replace '\(default\)\s*$','' } | Where-Object { $_ }) } catch { return @() }
+          }
+          $before = @()
+          if (Test-Path out/wsl-before.txt) { $before = @(Get-Content out/wsl-before.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+          $now = Get-Distros
+          Write-Host "跑前：$(if ($before.Count) { $before -join ', ' } else { '(无)' })"
+          Write-Host "跑后：$(if ($now.Count) { $now -join ', ' } else { '(无)' })"
+          $lost = @($before | Where-Object { $now -notcontains $_ })
+          if ($lost.Count -gt 0) { Write-Host "::error::I2 被破坏：跑前就存在的发行版消失了：$($lost -join ', ')"; exit 1 }
+          $added = @($now | Where-Object { $before -notcontains $_ })
+          $foreign = @($added | Where-Object { $_ -notmatch '^het-lane-\d{4}(-\d+)?$' })
+          if ($foreign.Count -gt 0) { Write-Host "::error::出现了不属于我们的发行版：$($foreign -join ', ')"; exit 1 }
+          Write-Host "✔ 0 侵入：跑前 $($before.Count) 个都还在；新增 $($added.Count) 个全部是我们命名的$(if ($added.Count) { "（$($added -join ', ')）" })"
+          $metaPath = 'out/real-proj/metadata.json'
+          if (Test-Path $metaPath) {
+            $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
+            if ($meta.toolchain -ne 'managed') { Write-Host "::error::失败路径不得改 toolchain（实际 $($meta.toolchain)）—— 绝不静默降级"; exit 1 }
+            Write-Host "✔ 自建没成时，工程仍然是 managed（没有偷偷切成 system）"
+          } else {
+            Write-Host "::warning::找不到 $metaPath（MAIN 可能在准备夹具前就失败了）"
+          }
+          if (-not (Test-Path out/real-evidence.txt)) { Write-Host "::error::缺少证据文件 out/real-evidence.txt"; exit 1 }
+          $ev = Get-Content out/real-evidence.txt -Raw
+          if ($ev -notmatch 'intrude=none') { Write-Host "::error::证据必须写明 intrude=none（0 侵入）"; exit 1 }
+          if ($ev -notmatch 'planCost=ok') { Write-Host "::error::证据必须写明 planCost=ok（计划与代价已验）"; exit 1 }
+          Write-Host "✔ 证据：$($ev.Trim())"
+
+      - name: "CLEANUP: 只删除本次新建、且由我们命名的发行版"
+        if: always()
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          # 安全判据：只删"跑前快照里没有的" + "匹配我们命名模式"的 —— 用户的发行版永远不在集合里。
+          $ErrorActionPreference = 'Continue'
+          function Get-Distros {
+            try { return @(& wsl -l -q 2>$null | ForEach-Object { $_.Trim() -replace '\(default\)\s*$','' } | Where-Object { $_ }) } catch { return @() }
+          }
+          $before = @()
+          if (Test-Path out/wsl-before.txt) { $before = @(Get-Content out/wsl-before.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+          $created = @((Get-Distros) | Where-Object { $before -notcontains $_ })
+          $ours = @($created | Where-Object { $_ -match '^het-lane-\d{4}(-\d+)?$' })
+          Write-Host "本次新建：$(if ($created.Count) { $created -join ', ' } else { '(无)' }) ｜ 其中我们命名的：$(if ($ours.Count) { $ours -join ', ' } else { '(无)' })"
+          foreach ($name in $ours) {
+            & wsl --terminate $name 2>$null | Out-Null
+            & wsl --unregister $name 2>$null | Out-Null
+            Write-Host "removed: $name"
+          }
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\het-fti" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:USERPROFILE\.het-fti" -ErrorAction SilentlyContinue
+          Write-Host "✔ 清理完成（未触碰跑前存在的任何发行版）"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
+          if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
+          if (Test-Path out/wsl-decoy.txt) { Write-Host "诱饵（同名非我们的发行版）是否成立：$(Get-Content out/wsl-decoy.txt -Raw)" }
+          Write-Host "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-windows-wsl-import
+          path: |
+            out/real-evidence.txt
+            out/wsl-decoy.txt
           if-no-files-found: ignore
 
   windows-blocked:
@@ -224,8 +418,7 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— 被拒绝 → 一键切换 → 重构建"
         env:
-          VSCODE_VERSION: "1.134.0"
-          HET_REAL_EXPECT_VSCODE: "1.134.0"
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT: blocked
           HET_REAL_EXPECT_AFTER_SWITCH: ok

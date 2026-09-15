@@ -60,6 +60,7 @@ import { currentManagedStatus, managedGc, managedRemove } from './features/env/m
 import { getWslLaneStatus } from './features/env/wslProbe';
 import { runWslConanCreate, runWslDocs, probeLaneDocsTools, LaneDocsTools, ensureWslLane } from './features/env/wslLane';
 import { importLaneDistro, teardownLaneDistro } from './features/env/wslImport';
+import { laneFailureHint } from './core/wslDistro';
 import { collectEnvSample, envConanFact } from './features/env/envSample';
 import { buildEnvDump, dumpFileName, redactRoots } from './core/envDump';
 import { findCoverageReport, readCoveragePct } from './features/coverage/report';
@@ -4065,7 +4066,18 @@ async function provisionLane(plan: ProviderDecision | null, ctx: vscode.Extensio
         });
         if (imp.ok && imp.distro) {
           await vscode.commands.executeCommand('het.refresh');
-          const lane = await ensureWslLane(imp.distro, { mirror: laneMirrorConfig() });
+          // 发行版自建成功 ≠ 车道能用：它还要能启动（虚拟化/内核/镜像内容都可能让它起不来）。
+          // 这条失败路径与 import 失败对用户是同一个处境，所以给同一组 A/C 出路，
+          // 而不是只丢一句 exit 码 —— 也绝不在这种情况下偷偷改用 MSVC。
+          let lane;
+          try {
+            lane = await ensureWslLane(imp.distro, { mirror: laneMirrorConfig() });
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            const message = `已自建发行版 ${imp.distro}，但车道无法启动：\n${detail}\n${laneFailureHint()}`;
+            maybeToast('error', message);
+            return { ok: false, state: 'error', message };
+          }
           const message =
             `已自建私有发行版并准备车道（${imp.distro}）${imp.cachePath ? ' · 复用已校验的 rootfs 缓存' : ''}` +
             `${lane.note ? ` · ${lane.note}` : ''}`;

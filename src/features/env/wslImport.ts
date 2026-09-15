@@ -20,6 +20,7 @@ import {
   adoptionVerdict,
   isOurDistroName,
   laneBootstrapScript,
+  laneFailureHint,
   laneOwnerMarkerPath,
   laneWslInstallDir,
   mergeWslConf,
@@ -132,6 +133,13 @@ function tailOf(text: string, lines = 12): string {
 }
 
 /**
+ * 失败时的统一尾巴（见 `core/wslDistro › laneFailureHint`）—— 本模块头部的契约是
+ * “失败一律保留现场 + 给 A/C 两条路，绝不静默转 MSVC”，而它此前只在 `wsl --import`
+ * 失败时给出；bootstrap 失败对用户是同一个处境（车道用不了），所以共用一段文案。
+ */
+const LANE_ROUTE_HINT = laneFailureHint();
+
+/**
  * 完整流程：决定 → 确保 rootfs（下载+校验+缓存）→ `wsl --import` → bootstrap → 双标记 → 回读确认。
  */
 export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutcome> {
@@ -175,7 +183,7 @@ export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutco
       cachePath: rootfs.path,
       reason:
         `wsl --import 失败（exit=${imp.code}）：\n${tailOf(`${imp.stdout}\n${imp.stderr}`)}\n` +
-        '常见原因：虚拟化/虚拟机平台未开启、磁盘空间不足、同名发行版被占用。可改走路线 A（官方发行版）或 C（本机工具链）。',
+        `常见原因：虚拟化/虚拟机平台未开启、磁盘空间不足、同名发行版被占用。${LANE_ROUTE_HINT}`,
     };
   }
 
@@ -193,7 +201,7 @@ export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutco
       ok: false,
       plan,
       cachePath: rootfs.path,
-      reason: `发行版 bootstrap 失败（exit=${boot.code}）：\n${tailOf(`${boot.stdout}\n${boot.stderr}`)}`,
+      reason: `发行版 bootstrap 失败（exit=${boot.code}）：\n${tailOf(`${boot.stdout}\n${boot.stderr}`)}\n${LANE_ROUTE_HINT}`,
     };
   }
 
@@ -229,7 +237,7 @@ export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutco
     cachePath: rootfs.path,
     ownerVerified: verify.adopt,
     evidence,
-    reason: verify.adopt ? undefined : `自建完成但双标记校验未通过：${verify.reason}`,
+    reason: verify.adopt ? undefined : `自建完成但双标记校验未通过：${verify.reason}\n${LANE_ROUTE_HINT}`,
   };
 }
 

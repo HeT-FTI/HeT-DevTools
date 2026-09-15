@@ -21,6 +21,12 @@ name: env-fresh · linux
 # 承诺，硬断言 `HET_REAL_EXPECT_VSCODE`）；**最新版**只由 canary 作业负责，它的作用不是
 # 回归而是**信号**：新版宿主/UI/API 变了在这里先发现，而不是在用户机器上。
 #
+# 承诺下限只在这里维护一次（workflow 级 env）—— 三个 env-fresh workflow + ci.yml 都读它，
+# canary 作业显式清空。
+env:
+  VSCODE_VERSION: "1.134.0"
+  HET_REAL_EXPECT_VSCODE: "1.134.0"
+
 # 手动触发：
 #   gh workflow run env-fresh-linux --ref main
 #   gh workflow run env-fresh-linux --ref main -f scenario=managed
@@ -100,10 +106,7 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— 从零自举托管车道并构建"
         env:
-          VSCODE_VERSION: "1.134.0"
-          # T28：1.134.0 是 engines.vscode 下限 = 对用户的承诺 → 必须是真的在跑它。
-          # （下限已从 1.95.0 抬到 1.134.0：见 env-onboarding-plan T29；改签后必须重跑核实。）
-          HET_REAL_EXPECT_VSCODE: "1.134.0"
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: linux-managed
         run: |
@@ -220,8 +223,7 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— system 工具链构建"
         env:
-          VSCODE_VERSION: "1.134.0"
-          HET_REAL_EXPECT_VSCODE: "1.134.0"
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
           HET_REAL_TOOLCHAIN: system
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: linux-managed
@@ -309,7 +311,9 @@ jobs:
           # 允许“没有钉住版本”这条路：没有本地 VS Code 且 VSCODE_VERSION 为空时，
           # harness 默认会拒绝运行（“钉住优先”），这里显式声明“本作业就是要跑最新版”。
           HET_VSCODE_ALLOW_LATEST: "1"
-          # 注意：**故意不设** VSCODE_VERSION / HET_REAL_EXPECT_VSCODE。
+          # 显式清空 workflow 级的钉住值：本作业**就是要跑最新版**（否则会继承 1.134.0）。
+          VSCODE_VERSION: ""
+          HET_REAL_EXPECT_VSCODE: ""
         run: |
           echo "::group::MAIN — npm run test:real (latest VS Code, canary)"
           cat <<'EOF'
@@ -317,6 +321,25 @@ jobs:
           另外会打印 [real] host VS Code: <版本> (source: latest(auto)) 并写进证据。
           EOF
           xvfb-run -a npm run test:real
+          echo "::endgroup::"
+
+      - name: "ASSERT: 本作业确实跑的是最新版（而不是悄悄继承了钉住版）"
+        if: always()
+        run: |
+          # T27：金丝雀的**唯一**价值就是"跑最新版"；一旦它继承了 workflow 级的钉住值，
+          # 它就退化成了第二个回归作业，信号也就没了 —— 这条断言让这件事不可能静默发生。
+          echo "::group::ASSERT (canary really ran the latest build)"
+          if [ ! -f out/real-evidence.txt ]; then echo "::error::缺少证据文件 out/real-evidence.txt"; exit 1; fi
+          ev="$(cat out/real-evidence.txt)"
+          echo "$ev"
+          src="$(echo "$ev" | grep -o 'vscodeSource=[^ ]*' | head -1)"
+          echo "vscodeSource: ${src:-（缺失）}"
+          if ! echo "$ev" | grep -q 'vscodeSource=latest(auto)'; then
+            echo "::error::金丝雀必须跑最新版（证据应为 vscodeSource=latest(auto)），实际 ${src:-无}"
+            echo "排查：① VSCODE_VERSION 是否被显式清空（workflow 级 env 会继承）② runner 是否恰好装了本地 VS Code（那样 source 会是 local:…，本断言会要求换一种'最新版'取法）"
+            exit 1
+          fi
+          echo "✔ 金丝雀确实跑的是最新版（没有继承承诺下限）"
           echo "::endgroup::"
 
       - name: "EVIDENCE: 本次观察到什么"

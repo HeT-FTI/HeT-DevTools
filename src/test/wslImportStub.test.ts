@@ -175,6 +175,9 @@ describe('T17b wslImport（桩 wsl.exe：决定链 + import + bootstrap + 0 侵�
       assert.strictEqual(out.ok, false);
       assert.match(out.reason ?? '', /bootstrap 失败（exit=1）/u);
       assert.match(out.reason ?? '', /bootstrap boom/u);
+      // 用户处境与 import 失败相同（车道用不了）→ 同样必须给 A/C，而不是只丢一段尾部输出。
+      assert.match(out.reason ?? '', /wsl --install -d Ubuntu-24\.04/u, '路线 A');
+      assert.match(out.reason ?? '', /toolchain: system/u, '路线 C');
     } finally {
       rmSync(env.root, { recursive: true, force: true });
     }

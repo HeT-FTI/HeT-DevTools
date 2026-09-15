@@ -21,6 +21,11 @@ name: env-fresh · macos
 #   gh workflow run env-fresh-macos --ref main
 #   gh run watch $(gh run list --workflow=env-fresh-macos -L1 --json databaseId -q '.[0].databaseId')
 
+env:
+  # 承诺下限（T27）：engines.vscode = @types/vscode = 这里的钉住版，单点维护。
+  VSCODE_VERSION: "1.134.0"
+  HET_REAL_EXPECT_VSCODE: "1.134.0"
+
 on:
   workflow_dispatch:
 
@@ -126,12 +131,13 @@ jobs:
       #  旧布局才叫 Electron，已不在支持范围。详见 env-onboarding-plan T29。）
       - name: "MAIN: 真实扩展宿主 —— macOS 车道构建 + 测试 + 文档"
         env:
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
           # T28：macOS 与 Linux/Windows 一样跑**钉住版**并硬断言（曾以 1.95.0 核实：
           # vscode=1.95.0 / vscodeSource=download@1.95.0，run 34930943299）；T29 抬到
           # 1.134.0 后需重跑核实一次。宿主版本漂了就红，而不是继续绿着说假话。
-          VSCODE_VERSION: "1.134.0"
+          # HET_VSCODE_HONOR_PIN：macOS 上"本机已装的 VS Code"会抢在下载之前生效，
+          # 打开它就直接跑本机版（实测 1.136.1）→ 必须显式要求下载钉住版。
           HET_VSCODE_HONOR_PIN: "1"
-          HET_REAL_EXPECT_VSCODE: "1.134.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: macos-native
         run: |
