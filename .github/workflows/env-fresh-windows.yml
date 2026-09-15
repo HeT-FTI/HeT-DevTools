@@ -63,10 +63,12 @@ jobs:
             3) system 语义不依赖车道可用性（Provider 决策在 Windows 上仍是能力优先的
                win-wsl2 / win-wsl2-pending / win-wsl-required 之一，但构建走原生分支）；
             4) 构建后 $env:USERPROFILE\.het-fti 仍然不存在（system 不建车道）；
-            5) 文档**不在本作业承诺范围内**（平台矩阵：Windows 原生 MSVC 的文档 = ⛔）。
-               本作业只断言"要么真做出来（宿主已备 doxygen/graphviz/sphinx），
-               要么给出**可执行指引**（pip/apt/brew 命令或改回 managed）"，
-               而不是拿一个产品从未承诺的能力当红灯。
+            5) 宿主**已备齐**文档前置（doxygen/graphviz + sphinx/numpy）时，文档也能跑通
+               —— 即 system 模式是"完整可用"的，前提是宿主像一台正常的开发机。
+
+          未备齐时的正确行为是"符合常规认知的可执行提示"（winget/choco/pip 命令 + 改回
+          managed）—— 该契约由 src/test/docsHints.test.ts 单测锁定；本作业的 SETUP
+          会先把宿主备齐（与 linux-system 对称）。
 
           第一次跑约 15–25 分钟（@vscode/test-electron 要下 VS Code）。
           '@ | Write-Host
@@ -91,16 +93,29 @@ jobs:
           Write-Host "wsl:     $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'wsl.exe present' } else { 'absent' })"
           Write-Host "::endgroup::"
 
-      - name: "SETUP: 宿主 conan（pip venv）+ MSVC 默认 profile"
+      - name: "SETUP: 宿主工具链（pip conan + 文档前置）"
         shell: pwsh
         run: |
-          Write-Host "安装宿主 conan 并 conan profile detect（MSVC）。"
+          Write-Host "system 模式 = 用宿主自己的工具，扩展**不会**替你安装（设计契约）。"
+          Write-Host "本作业模拟「Windows 原生开发环境齐备」的机器：conan + MSVC + CMake + doxygen/graphviz + sphinx/numpy。"
+          Write-Host "· 宿主 conan（pip venv）"
           python -m venv "$env:RUNNER_TEMP\het-conan"
           & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet "conan>=2,<3"
           & "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile detect --force
           Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\het-conan\Scripts"
+          Write-Host "· 文档前置（python 侧）：sphinx/numpy 装进同一个 venv（原生 docs 用它挑 python）"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet 'sphinx>=8,<9' sphinx-intl 'sphinx-rtd-theme>=2,<4' 'numpy>=1.26'
+          Write-Host "· 文档前置（系统工具）：choco doxygen + graphviz（这两者不在 windows runner 默认镜像里）"
+          if (-not (Get-Command doxygen -ErrorAction SilentlyContinue)) {
+            choco install -y doxygen.install --no-progress
+          }
+          if (-not (Get-Command dot -ErrorAction SilentlyContinue)) {
+            choco install -y graphviz --no-progress
+          }
           Write-Host "✔ host conan: $(& "$env:RUNNER_TEMP\het-conan\Scripts\conan" --version)"
-          Write-Host "✔ profile: $(& "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile path default)"
+          Write-Host "✔ doxygen: $(doxygen --version 2>&1) | dot: $((dot -V 2>&1))"
+          Write-Host "✔ venv numpy/sphinx: $(& "$env:RUNNER_TEMP\het-conan\Scripts\python" -c 'import numpy, sphinx; print(numpy.__version__)')"
+          Write-Host "（宿主未备齐时应当是「符合常规认知的可执行提示」：winget/choco 命令 —— 由 src/test/docsHints.test.ts 单测锁定）"
 
       - name: "MAIN: 真实扩展宿主 —— MSVC + 宿主 conan 构建"
         env:
@@ -110,7 +125,7 @@ jobs:
         run: |
           Write-Host "::group::MAIN — npm run test:real (system/MSVC)"
           Write-Host "断言链：provider ∈ win-* → 构建走 system 分支 → conan create(MSVC) → GTest 全绿"
-          Write-Host "        → 文档：Windows/MSVC 不受承诺 ⇒ 断言『成功 或 给出可执行指引』（见 docsHints）"
+          Write-Host "        → 文档：宿主已备齐 ⇒ 必须成功并留下 doxygen+sphinx 产物"
           npm run test:real
           Write-Host "::endgroup::"
 

@@ -36,7 +36,6 @@ export interface DocsHintInput {
 export function docsFailureHint(input: DocsHintInput): string | undefined {
   const tail = input.tail ?? '';
   const py = input.python && input.python.trim().length > 0 ? input.python : 'python3';
-  const mac = input.platform === 'darwin';
 
   const missing = [...new Set(PY_MODULES.filter(([re]) => re.test(tail)).map(([, name]) => name))];
   const needsDoxygen = /doxygen/iu.test(tail);
@@ -54,12 +53,26 @@ export function docsFailureHint(input: DocsHintInput): string | undefined {
   if (needsDoxygen || needsGraphviz || needsMake) {
     const tools = [needsDoxygen && 'doxygen', needsGraphviz && 'graphviz', needsMake && 'make'].filter(Boolean) as string[];
     lines.push(`  · 缺系统工具：${tools.join(' / ')}`);
-    lines.push(
-      mac
-        ? `  · 补齐：brew install ${tools.map((t) => (t === 'graphviz' ? 'graphviz' : t)).join(' ')}`
-        : `  · 补齐：sudo apt-get install -y ${tools.map((t) => (t === 'graphviz' ? 'graphviz' : t)).join(' ')}`,
-    );
+    // Platform-aware, "what a Windows/macOS user would actually type":
+    // suggesting `sudo apt-get` on Windows is not a recognisable instruction.
+    lines.push(`  · 补齐：${installHint(tools, input.platform)}`);
   }
   lines.push('  · 或把工程的 metadata.json 改回 "toolchain": "managed" —— 托管车道会自动准备上面这些。');
   return lines.join('\n');
+}
+
+/** The command a user of THIS platform would recognise (winget/choco · brew · apt). */
+export function installHint(tools: readonly string[], platform?: NodeJS.Platform | string): string {
+  const wants = (t: string): boolean => tools.includes(t);
+  if (platform === 'win32') {
+    const winget = [wants('doxygen') && 'winget install Doxygen.Doxygen', wants('graphviz') && 'winget install Graphviz.Graphviz']
+      .filter(Boolean)
+      .join(' && ');
+    const choco = `choco install -y ${[wants('doxygen') && 'doxygen.install', wants('graphviz') && 'graphviz', wants('make') && 'make'].filter(Boolean).join(' ')}`;
+    return `${winget || choco}（没装 winget 就用：${choco}）`;
+  }
+  if (platform === 'darwin') {
+    return `brew install ${tools.map((t) => (t === 'graphviz' ? 'graphviz' : t)).join(' ')}`;
+  }
+  return `sudo apt-get install -y ${tools.map((t) => (t === 'graphviz' ? 'graphviz' : t)).join(' ')}`;
 }
