@@ -70,6 +70,7 @@ import { ContractFacts, EnvContract, buildEnvContract } from './core/envContract
 import { docsFailureHint } from './core/docsHints';
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
 import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArchMessage } from './core/laneProfile';
+import { prependPath } from './core/envPath';
 import { openHudPanel } from './features/hud/panel';
 import { HudEnvRow, HudModel, defaultHudActions, hudEnabled } from './features/hud/hudModel';
 import { TEMPLATE_REPO } from './core/templateDefaults';
@@ -1581,7 +1582,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     //   FileNotFoundError: [Errno 2] No such file or directory: 'sphinx-intl'
     // Prepend the interpreter's own directory so its venv tools always resolve.
     const pyDir = dirname(python);
-    const docsEnv = { ...process.env, PATH: `${pyDir}${delimiter}${process.env.PATH ?? ''}` };
+    const docsEnv = prependPath({ ...process.env }, pyDir, delimiter);
     channel?.appendLine(`[docs] PATH += ${pyDir}`);
     emitCockpitEvent({ type: 'log:start', title: `docs/build.py（本机）` });
     const result = await run(python, ['docs/build.py'], {
@@ -4102,7 +4103,6 @@ function winLaneBlockedMessage(provider: string, distro?: string): string {
   ].join('\n');
 }
 
-/** Run `conan create` in the project and stream everything to the output channel. */
 /** Memoized host `cmake --version` line (contract row + native cmake decision). */
 let hostCmakeCache: { at: number; version?: string } | null = null;
 async function hostCmakeVersion(): Promise<string | undefined> {
@@ -4140,17 +4140,12 @@ async function planNativeCmake(pinnedCmake?: string, conanExe?: string): Promise
   // `subprocess.run(["conan","list", …])`) and to other tools next to it. Conan
   // may have been found by sniffing (conda envs) rather than on PATH, which made
   // the native build die with `FileNotFoundError: 'conan'`. Guarantee that its
-  // own directory is on PATH for the child process.
-  if (conanExe) {
-    const dir = dirname(conanExe);
-    const path = env.PATH ?? '';
-    if (dir && !path.split(delimiter).includes(dir)) {
-      env.PATH = `${dir}${delimiter}${path}`;
-    }
-  }
-  return { reason: plan.reason, guide: plan.guide, env };
+  // own directory is on PATH for the child process — via the Windows-safe helper
+  // (writing `PATH` on Windows alongside the existing `Path` drops System32).
+  return { reason: plan.reason, guide: plan.guide, env: prependPath(env, conanExe ? dirname(conanExe) : '', delimiter) };
 }
 
+/** Run `conan create` in the project and stream everything to the output channel. */
 async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout: string; stderr: string }> {  // V5-1: managed semantics on a WSL2-ready Windows host → build INSIDE the
   // WSL2 managed lane (Linux-identical gcc/gcov semantics, isolated from the
   // distro's conda base / FEniCS envs via its own venv + CONAN_HOME + profile).
