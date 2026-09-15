@@ -68,6 +68,21 @@
           },
           "default": {},
           "description": "Manual toolchain overrides: het.tools.<name> = absolute executable path (e.g. conan, cmake, doxygen, graphviz/dot, clang-format). Set from the dashboard '环境与工具链' block."
+        },
+        "het.env.pipIndexUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envPipIndexUrl%"
+        },
+        "het.env.conanRemote": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envConanRemote%"
+        },
+        "het.env.httpProxy": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envHttpProxy%"
         }
       }
     },
@@ -195,6 +210,46 @@
       {
         "command": "het.envCheck",
         "title": "%cmd.envCheck%"
+      },
+      {
+        "command": "het.envDump",
+        "title": "%cmd.envDump%"
+      },
+      {
+        "command": "het.envStatus",
+        "title": "%cmd.envStatus%"
+      },
+      {
+        "command": "het.envPrepare",
+        "title": "%cmd.envPrepare%"
+      },
+      {
+        "command": "het.envRemove",
+        "title": "%cmd.envRemove%"
+      },
+      {
+        "command": "het.useSystemToolchain",
+        "title": "%cmd.useSystemToolchain%"
+      },
+      {
+        "command": "het.getHostCapabilities",
+        "title": "%cmd.getHostCapabilities%"
+      },
+      {
+        "command": "het.getProvisionPlan",
+        "title": "%cmd.getProvisionPlan%"
+      },
+      {
+        "command": "het.getWslLane",
+        "title": "%cmd.getWslLane%"
+      },
+      {
+        "command": "het.getLinuxLane",
+        "title": "%cmd.getLinuxLane%"
+      },
+      {
+        "command": "het.getMacosLane",
+        "title": "%cmd.getMacosLane%"
       },
       {
         "command": "het.openDocsArtifact",

@@ -11,6 +11,7 @@ import { currentManagedStatus } from './managedProvisioner';
 import { getWslLaneStatus } from './wslProbe';
 import { getMacosLaneStatus } from './macosProbe';
 import { getLinuxLaneStatus, linuxLaneConanPresent } from './linuxLane';
+import { getMacLaneStatus, macLaneConanPresent } from './macLane';
 import { laneConanPresent } from './wslLane';
 import { providerLabel } from '../../core/provisionPlan';
 import type { ManagedState } from '../../core/managedEnv';
@@ -21,10 +22,10 @@ export interface EnvSample {
   coverage: 'full' | 'partial' | 'none' | '';
   reason?: string;
   managed: { state: ManagedState; tools: Record<string, string>; note?: string } | null;
-  wsl: { distro?: string; ready: boolean; tools: Record<string, string>; note?: string } | null;
+  wsl: { distro?: string; ready: boolean; tools: Record<string, string>; note?: string; arch?: string; baseline?: 'ci' | 'compatible' | 'native' } | null;
   osx: { clt: boolean; clangVersion?: string; python?: string; note?: string } | null;
   /** A3: native-Linux managed lane (linux + linux-managed provider). */
-  linux: { home: string; ready: boolean; tools: Record<string, string>; note?: string } | null;
+  linux: { home: string; ready: boolean; tools: Record<string, string>; note?: string; arch?: string; baseline?: 'ci' | 'compatible' | 'native' } | null;
   /** conan readiness: true/false under managed semantics; null = system sniff. */
   conan: boolean | null;
   /** One short line for the hover "开发环境" row (no long runtime details). */
@@ -133,6 +134,14 @@ export async function envConanFact(): Promise<{ conan?: boolean } | undefined> {
     }
     return undefined;
   }
+  if (process.platform === 'darwin') {
+    // T07: the macOS lane facts decide conan readiness (venv conan present).
+    const mac = await getMacLaneStatus(false).catch(() => null);
+    if (mac) {
+      return { conan: await macLaneConanPresent().catch(() => false) };
+    }
+    return undefined;
+  }
   return undefined;
 }
 
@@ -155,9 +164,9 @@ export async function collectEnvSample(storageRoot: string): Promise<EnvSample> 
       managed && managed.state !== 'absent'
         ? { state: managed.state, tools: managed.tools ?? {}, note: managed.note }
         : null,
-    wsl: wsl && wsl.available ? { distro: wsl.distro, ready: wsl.ready, tools: (wsl.tools ?? {}) as Record<string, string>, note: wsl.note } : null,
+    wsl: wsl && wsl.available ? { distro: wsl.distro, ready: wsl.ready, tools: (wsl.tools ?? {}) as Record<string, string>, note: wsl.note, arch: wsl.arch, baseline: wsl.baseline } : null,
     osx: osx ? { clt: osx.clt, clangVersion: osx.clangVersion, python: osx.python, note: osx.note } : null,
-    linux: linux ? { home: linux.home, ready: linux.ready, tools: (linux.tools ?? {}) as Record<string, string>, note: linux.note } : null,
+    linux: linux ? { home: linux.home, ready: linux.ready, tools: (linux.tools ?? {}) as Record<string, string>, note: linux.note, arch: linux.arch, baseline: linux.baseline } : null,
     conan: null,
     summary: '',
   };

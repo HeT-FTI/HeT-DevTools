@@ -32,6 +32,17 @@ import {
   managedLaneLayout,
   managedLaneProfile,
 } from '../../core/wslLane';
+import {
+  GCC_APT_ATTEMPTS,
+  LaneCompiler,
+  LaneFacts,
+  baselineNote,
+  laneCompilerGuide,
+  laneFactsScript,
+  parseLaneFacts,
+  unsupportedArchMessage,
+} from '../../core/laneProfile';
+import { LaneMirror, mirrorCacheKey } from '../../core/laneMirror';
 
 const uidRoot = (() => {
   try {
@@ -101,35 +112,73 @@ async function rootAptLinux(...pkgs: string[]): Promise<void> {
   }
 }
 
-/** Root-level gcov symlink so the coverage step resolves `gcov` to gcc-13's. */
-async function linkGcov13(): Promise<void> {
-  const env = { ...process.env, DEBIAN_FRONTEND: 'noninteractive' };
-  const script = 'if [ -x /usr/bin/gcov-13 ] && [ ! -x /usr/bin/gcov ]; then ln -sf /usr/bin/gcov-13 /usr/bin/gcov; fi';
-  await (uidRoot
-    ? run('bash', ['-c', script], { timeoutMs: 30_000, env })
-    : run('sudo', ['-n', 'bash', '-c', script], { timeoutMs: 30_000, env })
-  ).catch(() => {
-    /* non-fatal */
-  });
+/** Root-level gcov alignment is handled by the venv-local shim written by the
+ *  lane ensure command (E5) — no system files are touched anymore. */
+
+let cache: { at: number; home: string; note?: string; mirrorKey?: string } | null = null;
+
+/** T02: read the lane facts (arch + compiler ladder + gcov/lcov) on the native host. */
+export async function probeLinuxLaneFacts(): Promise<LaneFacts> {
+  try {
+    const r = await runLinuxScript(laneFactsScript(), 15_000);
+    return r.code === 0 ? parseLaneFacts(r.stdout) : { archRaw: '', arch: '' };
+  } catch {
+    return { archRaw: '', arch: '' };
+  }
 }
 
-let cache: { at: number; home: string; note?: string } | null = null;
+/**
+ * T01: resolve a usable compiler via the LADDER — probe → (nothing usable &&
+ * passwordless root) apt attempts → re-probe → honest guidance. The previous
+ * hard-coded `/usr/bin/gcc-13` (E1) became an unreadable CMake failure on any
+ * host without that exact package (e.g. Ubuntu 22.04: jammy has no gcc-13).
+ */
+async function resolveLinuxLaneFacts(root: boolean): Promise<LaneFacts & { compiler: LaneCompiler }> {
+  let facts = await probeLinuxLaneFacts();
+  if (!facts.compiler && root) {
+    for (const pkgs of GCC_APT_ATTEMPTS) {
+      await rootAptLinux(...pkgs).catch(() => {
+        /* best effort: continue down the ladder */
+      });
+      facts = await probeLinuxLaneFacts();
+      if (facts.compiler) {
+        break;
+      }
+    }
+  }
+  if (!facts.compiler) {
+    const sudoHint = root ? '' : '\n当前无免密 root，无法自动安装：请手动执行上面的 ① 或 ②。';
+    throw new Error(laneCompilerGuide() + sudoHint);
+  }
+  if (!facts.arch) {
+    throw new Error(unsupportedArchMessage(facts.archRaw));
+  }
+  return facts as LaneFacts & { compiler: LaneCompiler };
+}
 
 /**
  * Idempotent bootstrap of the isolated lane (cached 60 s). Mirrors
- * `ensureWslLane`: creates the private venv + generated profile + CONAN_HOME,
- * then SELF-HEALS the root-level system packages when passwordless root is
- * available (python3-venv / gcc-13 / lcov + gcov symlink). Throws with the
- * output tail — and actionable guidance — when provisioning is impossible.
+ * `ensureWslLane`: creates the private venv + generated profile + CONAN_HOME
+ * from the FACTS LADDER (compiler + arch), then SELF-HEALS the root-level
+ * system packages when passwordless root is available (python3-venv / the
+ * compiler ladder / lcov). Throws with the output tail — and actionable
+ * guidance — when provisioning is impossible.
  */
-export async function ensureLinuxLane(): Promise<{ home: string; note?: string }> {
-  if (cache && Date.now() - cache.at < 60_000) {
+export async function ensureLinuxLane(opts: { mirror?: LaneMirror } = {}): Promise<{ home: string; note?: string; facts?: LaneFacts }> {
+  const mirrorKey = mirrorCacheKey(opts.mirror);
+  if (cache && Date.now() - cache.at < 60_000 && cache.mirrorKey === mirrorKey) {
     return { home: cache.home, note: cache.note };
   }
   const home = linuxLaneHome();
-  const cmd = managedLaneEnsureCommand(home, managedLaneProfile('Release'));
-  const runEnsure = (): Promise<{ code: number; stdout: string; stderr: string }> => runLinuxScript(cmd, 15 * 60_000);
   const root = await linuxRootAvailable();
+  const facts = await resolveLinuxLaneFacts(root);
+  const cmd = managedLaneEnsureCommand(home, managedLaneProfile(facts.compiler, facts.arch, 'Release'), {
+    compiler: facts.compiler,
+    arch: facts.arch,
+    gcov: facts.gcov,
+    mirror: opts.mirror,
+  });
+  const runEnsure = (): Promise<{ code: number; stdout: string; stderr: string }> => runLinuxScript(cmd, 15 * 60_000);
   let r = await runEnsure();
   // exit 3 = no python3 that can create venvs (Ubuntu ships the module but
   // not ensurepip) → one-time root apt of python3-venv, then retry.
@@ -140,26 +189,18 @@ export async function ensureLinuxLane(): Promise<{ home: string; note?: string }
   if (r.code === 3 && !root) {
     throw new Error('托管 lane 需要 python3-venv（Ubuntu 默认缺 ensurepip）。请以 root 执行一次：sudo apt-get install -y python3-venv；或提供免密 sudo 后重试。');
   }
-  // gcc-13 missing → root self-heal (never silently build with another gcc).
-  if (r.code === 0 && /lane_gcc:-\s*$/m.test(`${r.stdout}\n`) && root) {
-    await rootAptLinux('gcc-13');
-    r = await runEnsure();
-  }
-  if (r.code === 0 && /lane_gcc:-\s*$/m.test(`${r.stdout}\n`) && !root) {
-    throw new Error('托管 lane 需要 /usr/bin/gcc-13。请以 root 执行一次：sudo apt-get install -y gcc-13 g++-13；或提供免密 sudo 后重试。');
-  }
-  // lcov missing → root self-heal + gcov symlink (mirror of the GitHub Action).
+  // lcov missing → root self-heal (mirror of the GitHub Action). gcov stays
+  // aligned through the venv-local shim handed to the ensure command (E5).
   if (r.code === 0 && /lane_lcov:-\s*$/m.test(`${r.stdout}\n`) && root) {
     await rootAptLinux('lcov');
-    await linkGcov13();
     r = await runEnsure();
   }
   if (r.code !== 0) {
     const tail = `${r.stdout}\n${r.stderr}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
     throw new Error(`Linux 托管工具链准备失败（exit=${r.code}）：\n${tail}`);
   }
-  cache = { at: Date.now(), home };
-  return { home };
+  cache = { at: Date.now(), home, note: baselineNote(facts.compiler), mirrorKey };
+  return { home, note: cache.note, facts };
 }
 
 /**
@@ -172,13 +213,17 @@ export async function runLinuxConanCreate(
     buildType?: 'Debug' | 'Release';
     /** V5-6: force-rebuild the project's own recipe (coverage-enabled runs). */
     forceSelf?: string;
+    /** T11: user `-pr` profiles (het.conan.profiles / HET_CONAN_PROFILES). */
+    profiles?: string[];
+    /** T18: corporate mirror/proxy for the lane's own provisioning. */
+    mirror?: LaneMirror;
     onStdout?: (chunk: string) => void;
     onStderr?: (chunk: string) => void;
     timeoutMs?: number;
   } = {},
 ): Promise<BuildSummary> {
-  const { home } = await ensureLinuxLane();
-  const cmd = managedLaneBuildCommand(cwd, home, opts.buildType ?? 'Debug', opts.forceSelf);
+  const { home } = await ensureLinuxLane({ mirror: opts.mirror });
+  const cmd = managedLaneBuildCommand(cwd, home, opts.buildType ?? 'Debug', opts.forceSelf, opts.profiles ?? []);
   const f = writeLinuxScript(cmd);
   let stdout = '';
   let stderr = '';
@@ -264,13 +309,13 @@ async function ensureLinuxDocsSystem(): Promise<void> {
 }
 
 /** Ensure the lane DOCS stack (venv sphinx via pip + system doxygen/dot/make). */
-export async function ensureLinuxDocs(): Promise<void> {
+export async function ensureLinuxDocs(opts: { mirror?: LaneMirror } = {}): Promise<void> {
   if (docsCache && Date.now() - docsCache.at < 60_000) {
     return;
   }
   const home = linuxLaneHome();
   await ensureLinuxDocsSystem();
-  const cmd = managedLaneDocsEnsureCommand(home);
+  const cmd = managedLaneDocsEnsureCommand(home, { mirror: opts.mirror });
   const r = await runLinuxScript(cmd, 20 * 60_000).catch(() => null);
   if (!r || r.code !== 0) {
     const tail = `${r?.stdout ?? ''}\n${r?.stderr ?? ''}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
@@ -285,10 +330,10 @@ export async function ensureLinuxDocs(): Promise<void> {
 /** Run `python docs/build.py` inside the native Linux managed lane. */
 export async function runLinuxDocs(
   cwd: string,
-  opts: { onStdout?: (c: string) => void; onStderr?: (c: string) => void; timeoutMs?: number } = {},
+  opts: { mirror?: LaneMirror; onStdout?: (c: string) => void; onStderr?: (c: string) => void; timeoutMs?: number } = {},
 ): Promise<BuildSummary> {
-  const { home } = await ensureLinuxLane();
-  await ensureLinuxDocs();
+  const { home } = await ensureLinuxLane({ mirror: opts.mirror });
+  await ensureLinuxDocs({ mirror: opts.mirror });
   const cmd = managedLaneDocsRunCommand(cwd, home);
   const f = writeLinuxScript(cmd);
   let stdout = '';
@@ -317,8 +362,12 @@ export interface LinuxLaneStatus {
   available: boolean;
   home: string;
   ready: boolean;
-  tools: { gcc?: string; lcov?: string; conan?: string; cmake?: string };
+  tools: { gcc?: string; lcov?: string; conan?: string; cmake?: string; ninja?: string };
   note?: string;
+  /** T06/T02: the conan arch setting derived from the host facts. */
+  arch?: string;
+  /** T06: whether the chosen compiler is the CI baseline or a compatible fallback. */
+  baseline?: 'ci' | 'compatible' | 'native';
 }
 
 let statusCache: { at: number; status: LinuxLaneStatus } | null = null;
@@ -341,14 +390,13 @@ export async function getLinuxLaneStatus(force = false): Promise<LinuxLaneStatus
     `P="${join(managedLaneLayout(home).venv, 'bin')}"`,
     'printf "conan:"; [ -x "$P/conan" ] && "$P/conan" --version 2>/dev/null | head -1 || echo -; echo',
     'printf "cmake:"; [ -x "$P/cmake" ] && "$P/cmake" --version 2>/dev/null | head -1 || echo -; echo',
-    'printf "gcc:"; gcc --version 2>/dev/null | head -1 || echo -; echo',
-    'printf "lcov:"; lcov --version 2>/dev/null | head -1 || echo -; echo',
+    'printf "ninja:"; [ -x "$P/ninja" ] && "$P/ninja" --version 2>/dev/null | head -1 || echo -; echo',
   ].join('\n');
   const tools: LinuxLaneStatus['tools'] = {};
   const r = await runLinuxScript(script, 15_000).catch(() => null);
   if (r) {
     for (const raw of r.stdout.split(/\r?\n/u)) {
-      const m = /^(conan|cmake|gcc|lcov):(.*)$/u.exec(raw.trim());
+      const m = /^(conan|cmake|ninja):(.*)$/u.exec(raw.trim());
       if (!m) {
         continue;
       }
@@ -358,16 +406,26 @@ export async function getLinuxLaneStatus(force = false): Promise<LinuxLaneStatus
       }
     }
   }
-  const ready = !!tools.gcc && !!tools.conan;
+  // T02: compiler/arch/lcov come from the SAME facts ladder the build uses.
+  const facts = await probeLinuxLaneFacts();
+  if (facts.compiler) {
+    tools.gcc = `${facts.compiler.name} (${facts.compiler.version})`;
+  }
+  if (facts.lcov) {
+    tools.lcov = facts.lcov;
+  }
+  const ready = !!facts.compiler && !!tools.conan;
   let note: string | undefined;
-  if (!tools.gcc) {
-    note = '/usr/bin/gcc 未就绪（首次托管构建将尝试 root 自愈 gcc-13）。';
+  if (!facts.compiler) {
+    note = '编译器未就绪（首次托管构建将按阶梯尝试 apt 自愈 gcc-13 → 兼容版本）。';
+  } else if (!facts.arch) {
+    note = unsupportedArchMessage(facts.archRaw);
   } else if (!tools.conan || !tools.cmake) {
     note = '托管车道 conan/cmake 未就绪（首次「构建并测试」将自动准备）。';
   } else {
-    note = `托管 lane · ${home}/.het-fti/managed-env（隔离 venv + CONAN_HOME）`;
+    note = `托管 lane · ${home}/.het-fti/managed-env（隔离 venv + CONAN_HOME）· ${baselineNote(facts.compiler)}`;
   }
-  const status: LinuxLaneStatus = { available: true, home, ready, tools, note };
+  const status: LinuxLaneStatus = { available: true, home, ready, tools, note, arch: facts.arch || undefined, baseline: facts.compiler?.baseline };
   statusCache = { at: Date.now(), status };
   return status;
 }

@@ -1,9 +1,5 @@
 import * as assert from 'node:assert';
 import {
-  LANE_CC,
-  LANE_CXX,
-  WSL_CC,
-  WSL_CXX,
   managedLaneBuildCommand,
   managedLaneDocsEnsureCommand,
   managedLaneDocsRunCommand,
@@ -15,20 +11,29 @@ import {
   wslLaneDocsRunCommand,
   wslLaneEnsureCommand,
   wslLaneLayout,
-  wslLaneProfile,
   wslOutToWin,
 } from '../core/wslLane';
+import { LaneCompiler, laneProfileFor } from '../core/laneProfile';
+
+const BASELINE: LaneCompiler = {
+  name: 'gcc-13',
+  cc: '/usr/bin/gcc-13',
+  cxx: '/usr/bin/g++-13',
+  version: '13',
+  libcxx: 'libstdc++11',
+  baseline: 'ci',
+};
+
+const COMPAT: LaneCompiler = { ...BASELINE, name: 'gcc-14', cc: '/usr/bin/gcc-14', cxx: '/usr/bin/g++-14', version: '14', baseline: 'compatible' };
 
 describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
   it('A3: platform-neutral aliases are the very same pure builders (Linux lane reuse)', () => {
     assert.strictEqual(managedLaneLayout, wslLaneLayout);
-    assert.strictEqual(managedLaneProfile, wslLaneProfile);
+    assert.strictEqual(managedLaneProfile, laneProfileFor);
     assert.strictEqual(managedLaneEnsureCommand, wslLaneEnsureCommand);
     assert.strictEqual(managedLaneBuildCommand, wslLaneBuildCommand);
     assert.strictEqual(managedLaneDocsEnsureCommand, wslLaneDocsEnsureCommand);
     assert.strictEqual(managedLaneDocsRunCommand, wslLaneDocsRunCommand);
-    assert.strictEqual(LANE_CC, WSL_CC);
-    assert.strictEqual(LANE_CXX, WSL_CXX);
   });
 
   it('keeps everything under ~/.het-fti/managed-env; conan home is .conan2 (CI parity)', () => {
@@ -42,8 +47,8 @@ describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
     assert.strictEqual(l.profile, '/home/chen/.het-fti/managed-env/.conan2/profiles/default');
   });
 
-  it('generates a pinned gcc 13 profile (never detected)', () => {
-    const p = wslLaneProfile('Release');
+  it('T01: profile is generated from the CHOSEN compiler + host arch (never pinned)', () => {
+    const p = laneProfileFor(BASELINE, 'x86_64', 'Release');
     assert.ok(p.includes('[settings]'));
     assert.ok(p.includes('os=Linux'));
     assert.ok(p.includes('arch=x86_64'));
@@ -51,12 +56,23 @@ describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
     assert.ok(p.includes('compiler.version=13'));
     assert.ok(p.includes('compiler.libcxx=libstdc++11'));
     assert.ok(p.includes('tools.build:compiler_executables'));
-    assert.ok(p.includes(`"c": "${WSL_CC}"`));
-    assert.ok(p.includes(`"cpp": "${WSL_CXX}"`));
+    assert.ok(p.includes(`"c": "${BASELINE.cc}"`));
+    assert.ok(p.includes(`"cpp": "${BASELINE.cxx}"`));
+  });
+
+  it('T01/T08: a compatible compiler/arch writes ITS OWN version and arch (no CI lie)', () => {
+    const p = laneProfileFor(COMPAT, 'armv8', 'Release');
+    assert.ok(p.includes('compiler.version=14'), 'profile must not claim gcc 13');
+    assert.ok(p.includes('arch=armv8'), 'profile must not claim x86_64');
+    assert.ok(p.includes(`"c": "${COMPAT.cc}"`));
   });
 
   it('ensure command is idempotent: venv + pip pin + profile heredoc + CONAN_HOME marker', () => {
-    const c = wslLaneEnsureCommand('/home/chen', wslLaneProfile('Release'));
+    const c = wslLaneEnsureCommand('/home/chen', laneProfileFor(BASELINE, 'x86_64', 'Release'), {
+      compiler: BASELINE,
+      arch: 'x86_64',
+      gcov: '/usr/bin/gcov-13',
+    });
     assert.ok(c.includes('/home/chen/.het-fti/managed-env/.conan2/profiles'));
     // V5-6: one-time migration of the pre-.conan2 cache layout (keeps it warm)
     assert.ok(c.includes('mv '), 'migrates an existing legacy conan2 cache');
@@ -66,13 +82,34 @@ describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
     assert.ok(c.includes('"ninja>=1.11"'));
     assert.ok(c.includes('HET_WSL_PROFILE'));
     assert.ok(c.includes('.conan_home_marker'));
-    assert.ok(c.includes('lane_gcc'));
+    // T01: the lane report names the SELECTED compiler + arch + baseline …
+    assert.ok(c.includes('lane_cc_selected:/usr/bin/gcc-13'));
+    assert.ok(c.includes('lane_cc_baseline:ci'));
+    assert.ok(c.includes('lane_arch:x86_64'));
+    assert.ok(!c.includes('lane_gcc:'), 'the hard-coded gcc-13 probe line is gone');
+    // … and E5: a venv-local gcov shim keeps coverage on the chosen compiler.
+    assert.ok(c.includes('HET_GCOV_SHIM'));
+    assert.ok(c.includes('exec "/usr/bin/gcov-13" "$@"'));
     assert.ok(c.includes('CONDA_PY'), 'conda python is a fallback candidate');
     // venv bootstrap only runs when conan is missing
     assert.ok(c.includes('[ ! -x '));
     // never touches the user's conda envs
     assert.ok(!c.includes('conda activate'));
     assert.ok(!c.includes('pip install --user'));
+  });
+
+  it('T18: mirror/proxy settings are exported and the lane conan remote is pinned', () => {
+    const c = wslLaneEnsureCommand('/home/chen', laneProfileFor(BASELINE, 'x86_64'), {
+      compiler: BASELINE,
+      arch: 'x86_64',
+      mirror: { pipIndexUrl: 'http://intra/simple', conanRemote: 'https://mirror/conan', httpProxy: 'http://proxy:8080' },
+    });
+    assert.ok(c.includes('export PIP_INDEX_URL="http://intra/simple"'));
+    assert.ok(c.includes('export https_proxy="http://proxy:8080"'));
+    assert.ok(c.includes('remote update conancenter --url "https://mirror/conan" --force'));
+    const plain = wslLaneEnsureCommand('/home/chen', laneProfileFor(BASELINE, 'x86_64'));
+    assert.ok(!plain.includes('PIP_INDEX_URL'), 'no mirror → no exports (defaults untouched)');
+    assert.ok(!plain.includes('remote update'), 'no mirror → the conancenter remote stays intact');
   });
 
   it('build command isolates PATH + CONAN_HOME and runs the canonical conan create', () => {
@@ -92,6 +129,14 @@ describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
     assert.ok(forced.includes('conan remove "verify1/*" --confirm || true'), 'coverage run removes its own package first');
     assert.ok(forced.indexOf('conan remove') < forced.indexOf('conan create .'), 'remove runs before create');
     assert.ok(forced.includes('conan create . -s build_type=Debug --build=missing'));
+  });
+
+  it('T11: user profiles are appended inside the lane (and empty entries ignored)', () => {
+    const none = wslLaneBuildCommand('/mnt/c/proj', '/home/chen', 'Release');
+    assert.ok(!none.includes('-pr '), 'no profile flags by default');
+    const withProfiles = wslLaneBuildCommand('/mnt/c/proj', '/home/chen', 'Release', undefined, ['/mnt/d/ci', '  ']);
+    assert.ok(withProfiles.includes('-s build_type=Release --build=missing -pr "/mnt/d/ci"'), withProfiles);
+    assert.ok(!withProfiles.includes('-pr "  "'), 'blank entries are dropped');
   });
 
   it('wslOutToWin maps /mnt/<drive>/ back to Windows drive paths and leaves others', () => {

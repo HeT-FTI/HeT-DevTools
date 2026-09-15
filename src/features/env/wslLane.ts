@@ -20,16 +20,29 @@ import {
   wslLaneDocsRunCommand,
   wslLaneEnsureCommand,
   wslLaneLayout,
-  wslLaneProfile,
   wslOutToWin,
 } from '../../core/wslLane';
+import {
+  GCC_APT_ATTEMPTS,
+  LaneCompiler,
+  LaneFacts,
+  baselineNote,
+  laneCompilerGuide,
+  laneFactsScript,
+  laneProfileFor,
+  parseLaneFacts,
+  unsupportedArchMessage,
+} from '../../core/laneProfile';
+import { LaneMirror, mirrorCacheKey } from '../../core/laneMirror';
 
 export interface WslLaneEnsureResult {
   home: string;
   note?: string;
+  /** T01/T02: the facts the lane actually built with (compiler/arch/baseline). */
+  facts?: LaneFacts;
 }
 
-let cache: { at: number; home: string; note?: string } | null = null;
+let cache: { at: number; home: string; note?: string; mirrorKey?: string } | null = null;
 
 // IMPORTANT: wsl.exe round-trips `bash -c/-lc <argv script>` through the
 // Windows command line, which mangles multi-line/meta-char scripts (command
@@ -134,16 +147,60 @@ async function rootApt(distro: string, ...pkgs: string[]): Promise<void> {
   ], { timeoutMs: 15 * 60_000 });
 }
 
+/** T02: read the lane facts (arch + compiler ladder + gcov/lcov) — file transport. */
+export async function probeLaneFacts(distro: string): Promise<LaneFacts> {
+  try {
+    const r = await runWslScript(distro, laneFactsScript(), 15_000);
+    return r.code === 0 ? parseLaneFacts(r.stdout) : { archRaw: '', arch: '' };
+  } catch {
+    return { archRaw: '', arch: '' };
+  }
+}
+
+/**
+ * T01: resolve a usable compiler via the LADDER — probe → (nothing usable)
+ * root apt attempts → re-probe → honest guidance. Never returns a hard-coded
+ * gcc-13 path and never blocks silently: a missing compiler surfaces as an
+ * actionable lane error instead of a deep CMake one (E1).
+ */
+async function resolveLaneFacts(distro: string): Promise<LaneFacts & { compiler: LaneCompiler }> {
+  let facts = await probeLaneFacts(distro);
+  if (!facts.compiler) {
+    for (const pkgs of GCC_APT_ATTEMPTS) {
+      await rootApt(distro, ...pkgs);
+      facts = await probeLaneFacts(distro);
+      if (facts.compiler) {
+        break;
+      }
+    }
+  }
+  if (!facts.compiler) {
+    throw new Error(laneCompilerGuide());
+  }
+  if (!facts.arch) {
+    throw new Error(unsupportedArchMessage(facts.archRaw));
+  }
+  return facts as LaneFacts & { compiler: LaneCompiler };
+}
+
 /**
  * Idempotent bootstrap of the isolated lane. Cached 60 s (provisioning is
  * slow only the first time; afterwards it is a few `test -x`/`cat` calls).
  */
-export async function ensureWslLane(distro: string): Promise<WslLaneEnsureResult> {
-  if (cache && Date.now() - cache.at < 60_000) {
+export async function ensureWslLane(distro: string, opts: { mirror?: LaneMirror } = {}): Promise<WslLaneEnsureResult> {
+  const mirrorKey = mirrorCacheKey(opts.mirror);
+  if (cache && Date.now() - cache.at < 60_000 && cache.mirrorKey === mirrorKey) {
     return { home: cache.home, note: cache.note };
   }
   const home = await distroHome(distro);
-  const cmd = wslLaneEnsureCommand(home, wslLaneProfile('Release'));
+  // T01/T02: compiler + arch from the facts ladder (never pinned here).
+  const facts = await resolveLaneFacts(distro);
+  const cmd = wslLaneEnsureCommand(home, laneProfileFor(facts.compiler, facts.arch, 'Release'), {
+    compiler: facts.compiler,
+    arch: facts.arch,
+    gcov: facts.gcov,
+    mirror: opts.mirror,
+  });
   const runEnsure = async (): Promise<Awaited<ReturnType<typeof run>>> => {
     const tmp = writeWslTempScript(cmd);
     try {
@@ -166,20 +223,18 @@ export async function ensureWslLane(distro: string): Promise<WslLaneEnsureResult
   // V5-6 coverage self-heal: `conan create` with activate_code_coverage=true
   // runs lcov+genhtml inside the test package (mirror of the GitHub Action's
   // `sudo apt install lcov`). When the lane report shows lcov missing, install
-  // it (root, quiet) and make `gcov` resolve to gcc-13's tool, then re-report.
+  // it (root, quiet) and re-report. gcov alignment is handled by the venv-local
+  // shim written by the ensure command (E5) — no system files are touched.
   if (r.code === 0 && /lane_lcov:-\s*$/m.test(`${r.stdout}\n`)) {
     await rootApt(distro, 'lcov');
-    await run('wsl.exe', ['-d', distro, '-u', 'root', '--', 'bash', '-lc',
-      'if [ -x /usr/bin/gcov-13 ] && [ ! -x /usr/bin/gcov ]; then ln -sf /usr/bin/gcov-13 /usr/bin/gcov; fi',
-    ], { timeoutMs: 30_000 });
     r = await runEnsure();
   }
   if (r.code !== 0) {
     const tail = `${r.stdout}\n${r.stderr}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
     throw new Error(`WSL 托管工具链准备失败（exit=${r.code}）：\n${tail}`);
   }
-  cache = { at: Date.now(), home };
-  return { home };
+  cache = { at: Date.now(), home, note: baselineNote(facts.compiler), mirrorKey };
+  return { home, note: cache.note, facts };
 }
 
 /**
@@ -193,14 +248,20 @@ export async function runWslConanCreate(
     buildType?: 'Debug' | 'Release';
     /** V5-6: force-rebuild the project's own recipe (coverage-enabled runs). */
     forceSelf?: string;
+    /** T11: user `-pr` profiles (het.conan.profiles / HET_CONAN_PROFILES). */
+    profiles?: string[];
+    /** T18: corporate mirror/proxy for the lane's own provisioning. */
+    mirror?: LaneMirror;
     onStdout?: (chunk: string) => void;
     onStderr?: (chunk: string) => void;
     timeoutMs?: number;
   } = {},
 ): Promise<BuildSummary> {
-  const { home } = await ensureWslLane(distro);
+  const { home } = await ensureWslLane(distro, { mirror: opts.mirror });
   const cwdWsl = toWslPath(cwdWin);
-  const cmd = wslLaneBuildCommand(cwdWsl, home, opts.buildType ?? 'Debug', opts.forceSelf);
+  // Windows-style profile paths must become /mnt/<drive>/… inside the distro.
+  const profiles = (opts.profiles ?? []).map((p) => (/^[a-zA-Z]:[\\/]/u.test(p.trim()) ? toWslPath(p) : p));
+  const cmd = wslLaneBuildCommand(cwdWsl, home, opts.buildType ?? 'Debug', opts.forceSelf, profiles);
   const tmp = writeWslTempScript(cmd);
   let stdout = '';
   let stderr = '';
@@ -238,7 +299,7 @@ function aptDocsInstallArgs(distro: string): string[] {
  * system doxygen/graphviz/make (passwordless-root apt self-heal). Never
  * touches the distro's conda envs. Cached 60 s; throws with the output tail.
  */
-export async function ensureWslDocs(distro: string): Promise<void> {
+export async function ensureWslDocs(distro: string, opts: { mirror?: LaneMirror } = {}): Promise<void> {
   if (docsCache && Date.now() - docsCache.at < 60_000) {
     return;
   }
@@ -246,7 +307,7 @@ export async function ensureWslDocs(distro: string): Promise<void> {
   // System tools first (root self-heal when any is missing).
   await run('wsl.exe', aptDocsInstallArgs(distro), { timeoutMs: 15 * 60_000 });
   // Then the venv docs packages + report (user level).
-  const cmd = wslLaneDocsEnsureCommand(home);
+  const cmd = wslLaneDocsEnsureCommand(home, { mirror: opts.mirror });
   const tmp = writeWslTempScript(cmd);
   try {
     const r = await run('wsl.exe', wslRunArgs(distro, 'bash', [tmp.wsl]), { timeoutMs: 20 * 60_000 });
@@ -267,10 +328,10 @@ export async function ensureWslDocs(distro: string): Promise<void> {
 export async function runWslDocs(
   distro: string,
   cwdWin: string,
-  opts: { onStdout?: (c: string) => void; onStderr?: (c: string) => void; timeoutMs?: number } = {},
+  opts: { mirror?: LaneMirror; onStdout?: (c: string) => void; onStderr?: (c: string) => void; timeoutMs?: number } = {},
 ): Promise<BuildSummary> {
-  const { home } = await ensureWslLane(distro);
-  await ensureWslDocs(distro);
+  const { home } = await ensureWslLane(distro, { mirror: opts.mirror });
+  await ensureWslDocs(distro, { mirror: opts.mirror });
   const cwdWsl = toWslPath(cwdWin);
   const cmd = wslLaneDocsRunCommand(cwdWsl, home);
   const tmp = writeWslTempScript(cmd);

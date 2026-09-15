@@ -9,6 +9,7 @@ import { esc } from '../../ui';
 import { PAGES, CockpitPage } from '../layout';
 import { CockpitState, CockpitWizard } from '../state';
 import type { ToolRow } from '../../../core/toolchainDiscovery';
+import type { Disposition, EnvContract } from '../../../core/envContract';
 
 export interface CockpitAssets {
   codiconCss: string;
@@ -59,6 +60,8 @@ export interface OverviewPayload {
   osx?: OsxView | null;
   /** A3 native-Linux managed lane status (linux + linux-managed plan). */
   linux?: LinuxView | null;
+  /** T06: the unified environment contract (rows/ready/next) — preferred view. */
+  contract?: EnvContract | null;
 }
 
 export interface BuildTestPayload {
@@ -188,6 +191,55 @@ const MANAGED_STATE_ZH: Record<ManagedView['state'], string> = {
   error: '异常（可重试，或移除后重新准备）',
 };
 
+/**
+ * T06: THE environment card — one renderer for all three platforms.
+ * Rows come from the EnvContract (disposition + baseline + fix), so the card
+ * can never drift from what the lane actually verified (the old four blocks
+ * each re-derived their own wording and could disagree with the build path).
+ */
+export function envCardHtml(contract?: EnvContract | null): string {
+  if (!contract || contract.rows.length === 0) {
+    return '';
+  }
+  const MARKS: Record<Disposition, string> = { present: '✓', healable: '⟳', guide: '⚠', unsupported: '—' };
+  const head =
+    `<div class="drow"><span class="dk">${contract.ready ? '✓' : '!'} 构建环境 · ${esc(contract.lane)}</span>` +
+    `<span class="dv dim">${esc(contract.platform)}${contract.arch ? ` · ${esc(contract.arch)}` : ''} · 覆盖率 ${esc(contract.coverage)}</span></div>`;
+  const rows = contract.rows
+    .map((r) => {
+      const baseline = r.baseline === 'ci' ? ' [CI 同基线]' : r.baseline === 'compatible' ? ' [兼容模式]' : '';
+      const value = r.found
+        ? `${esc(r.found.version)}${baseline ? `<span class="dim">${baseline}</span>` : ''}`
+        : esc(r.note ?? (r.disposition === 'healable' ? '可自动修复' : r.disposition === 'guide' ? '需你操作' : ''));
+      const fix =
+        r.fix && r.fix.action && r.disposition !== 'present'
+          ? `<button class="textbtn" data-page-action="${esc(r.fix.action)}">${esc(r.fix.text)}</button>`
+          : '';
+      // Explicit escape hatch (lane blocked) — the user must confirm; we never
+      // silently switch a project to the native toolchain.
+      const alt =
+        r.altFix && r.altFix.action && r.disposition !== 'present'
+          ? `<button class="textbtn" data-page-action="${esc(r.altFix.action)}">${esc(r.altFix.text)}</button>`
+          : '';
+      const required = r.required ? '' : '<span class="dim">（可选）</span>';
+      return `<div class="drow"><span class="dk">${MARKS[r.disposition]} ${esc(r.label)}${required}</span><span class="dv">${value}</span><span class="dv">${fix}${alt}</span></div>`;
+    })
+    .join('');
+  const guides = contract.rows.filter((r) => r.fix?.copy);
+  const guideHtml = guides.length
+    ? `<details class="mini"><summary class="mini-head">前置指引（可复制）</summary>${guides
+        .map(
+          (r) =>
+            `<div class="drow"><span class="dk">${esc(r.label)}</span><span class="dv dim">${esc(r.fix?.copy ?? '').replace(/\n/gu, '<br>')}</span></div>`,
+        )
+        .join('')}</details>`
+    : '';
+  const action = contract.next
+    ? `<div class="actions"><button class="primary" data-page-action="${esc(contract.next.action)}">${esc(contract.next.label)}</button></div>`
+    : '';
+  return `<div class="env">${head}${rows}${guideHtml}${action}</div>`;
+}
+
 /** V4-5: provider decision + managed env block (buttons post env:prepare/remove). */
 export function envTopHtml(plan?: PlanView | null, managed?: ManagedView | null): string {
   const parts: string[] = [];
@@ -292,10 +344,10 @@ function overviewContent(p: OverviewPayload): string {
       <div class="card"><div class="ct">最近构建</div><div class="cv">${statusMark(p.lastBuildOk)} ${p.lastBuildOk === null ? '未运行' : p.lastBuildOk ? '成功' : '失败'}</div></div>
       <div class="card"><div class="ct">最近测试</div><div class="cv">${p.lastTest ? `${statusMark((p.lastTest.failed ?? 0) === 0)} ${p.lastTest.passed ?? 0}/${(p.lastTest.failed ?? 0) + (p.lastTest.passed ?? 0)}` : '未运行'}</div></div>
     </div>
-    ${envTopHtml(p.plan ?? null, p.managed ?? null)}
+    ${p.contract ? envCardHtml(p.contract) : `${envTopHtml(p.plan ?? null, p.managed ?? null)}
     ${envWslHtml(p.wsl ?? null)}
     ${envOsxHtml(p.osx ?? null)}
-    ${envLinuxHtml(p.linux ?? null)}
+    ${envLinuxHtml(p.linux ?? null)}`}
     ${envBlockHtml(p.envRows ?? [])}
     <div class="actions">
       <button class="primary" data-cmd="het.test"><i class="codicon codicon-play"></i>构建并测试</button>

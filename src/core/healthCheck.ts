@@ -38,6 +38,11 @@ export interface HealthInput {
     /** true = lane conan ready · false = lane missing conan · absent = system sniff. */
     conan?: boolean;
   };
+  /** T19: capability flags so unsupported features never count as failures. */
+  capabilities?: {
+    /** false on macOS (no GNU gcov) → the coverage row reports 平台不支持 at full grade. */
+    coverage?: boolean;
+  };
 }
 
 export interface HealthReport {
@@ -214,6 +219,12 @@ export async function runHealthCheck(input: HealthInput): Promise<HealthReport> 
       title: '覆盖率实测',
       weight: 5,
       run: async () => {
+        // T19: a platform without the capability (macOS: Apple clang has no GNU
+        // gcov data) is NOT a failure — report unsupported at full grade so the
+        // score never punishes the user for the platform's limits.
+        if (input.capabilities?.coverage === false) {
+          return { ok: true, grade: 1, detail: '平台不支持覆盖率（macOS 有限支持：Apple clang 无 GNU gcov）' };
+        }
         // V5-6 graded (user-specified 5分制): 开启无报告=0.4 · ≥60%=0.6 ·
         // ≥80%=0.8 · ≥90%=1.0；未开启=0（并非“开了就满分”）。
         const cov = input.coverage;

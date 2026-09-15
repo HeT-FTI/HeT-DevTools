@@ -8,6 +8,7 @@
  */
 import { run } from '../../utils/exec';
 import { MANAGED_DISTRO, WslToolSnapshot, decodeWslOutput, parseWslList, parseWslToolReport } from '../../core/wslHost';
+import { LaneFacts, baselineNote, laneFactsScript, parseLaneFacts, unsupportedArchMessage } from '../../core/laneProfile';
 import { runWslScript } from './wslLane';
 
 export interface WslLaneStatus {
@@ -16,24 +17,18 @@ export interface WslLaneStatus {
   ready: boolean;
   tools: WslToolSnapshot;
   note?: string;
+  /** T02: facts the status derives from (compiler baseline / conan arch). */
+  baseline?: 'ci' | 'compatible' | 'native';
+  arch?: string;
 }
 
 let cache: { at: number; status: WslLaneStatus } | null = null;
 
-// NOTE: no `$(...)` here — wsl.exe round-trips a `bash -c/-lc` argv string and
-// command substitutions get mangled (observed: syntax error at the `$(` line).
-// Line-oriented `printf` + piping survives the round trip.
-// System-level probe (gcc/lcov come from the distro itself).
-const PROBE = [
-  "printf 'gcc:'; gcc --version 2>/dev/null | head -1; echo",
-  "printf 'lcov:'; lcov --version 2>/dev/null | head -1; echo",
-].join(';');
-
-// V5-6 (issue-1/3): conan/cmake are reported from the MANAGED LANE venv (the
-// toolchain the extension actually uses for builds/docs), NOT from the
-// distro base. The probe MUST go through the file transport — the previous
-// inline `bash -lc '…"$lane/…"…'` was mangled by wsl.exe and returned "-" for
-// both tools even when present (issue-3: HUD CMake ✗, conan fact false).
+// T02 (E1): the status probe and the BUILD must ask the same question. The old
+// inline probe asked for an unversioned `gcc` while the lane required
+// `/usr/bin/gcc-13`, so the dashboard could show "就绪" for a lane that would
+// fail in CMake. Both now read the shared facts ladder (compiler ladder + arch
+// + gcov/lcov) through the file transport (the only reliable wsl path).
 
 async function listDistros(): Promise<string[]> {
   try {
@@ -47,26 +42,37 @@ async function listDistros(): Promise<string[]> {
   }
 }
 
-/** Probe one distro's system tools (gcc/lcov only). */
-export async function probeDistroTools(distro: string): Promise<WslToolSnapshot> {
+/** Raw facts (arch + compiler ladder + gcov/lcov) inside one distro. */
+export async function probeDistroFacts(distro: string): Promise<LaneFacts> {
   try {
-    const r = await run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', PROBE], { timeoutMs: 15000 });
-    if (r.code !== 0) {
-      return {};
-    }
-    return parseWslToolReport(decodeWslOutput(r.stdout));
+    const r = await runWslScript(distro, laneFactsScript(), 15_000);
+    return r.code === 0 ? parseLaneFacts(r.stdout) : { archRaw: '', arch: '' };
   } catch {
-    return {};
+    return { archRaw: '', arch: '' };
   }
 }
 
+/** Probe one distro's system tools (compiler + lcov), facts-based. */
+export async function probeDistroTools(distro: string): Promise<WslToolSnapshot> {
+  const facts = await probeDistroFacts(distro);
+  const snap: WslToolSnapshot = {};
+  if (facts.compiler) {
+    snap.gcc = `${facts.compiler.name} (${facts.compiler.version})`;
+  }
+  if (facts.lcov) {
+    snap.lcov = facts.lcov;
+  }
+  return snap;
+}
+
 /** Probe the managed lane venv conan/cmake (no provisioning — read only). */
-export async function probeLaneTools(distro: string): Promise<{ conan?: string; cmake?: string }> {
+export async function probeLaneTools(distro: string): Promise<{ conan?: string; cmake?: string; ninja?: string }> {
   try {
     const script = [
       'P="$HOME/.het-fti/managed-env/venv/bin"',
       "printf 'conan:'; [ -x \"$P/conan\" ] && \"$P/conan\" --version 2>/dev/null | head -1 || echo -; echo",
       "printf 'cmake:'; [ -x \"$P/cmake\" ] && \"$P/cmake\" --version 2>/dev/null | head -1 || echo -; echo",
+      "printf 'ninja:'; [ -x \"$P/ninja\" ] && \"$P/ninja\" --version 2>/dev/null | head -1 || echo -; echo",
     ].join('\n');
     const r = await runWslScript(distro, script, 15_000);
     if (r.code !== 0) {
@@ -97,8 +103,16 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
   }
   const chosen = distros.includes(MANAGED_DISTRO) ? MANAGED_DISTRO : distros[0];
   status.distro = chosen;
-  const sys = await probeDistroTools(chosen);
-  status.tools = { gcc: sys.gcc, lcov: sys.lcov };
+  // T02: compiler/arch/lcov from the SAME ladder the build uses.
+  const facts = await probeDistroFacts(chosen);
+  if (facts.compiler) {
+    status.tools.gcc = `${facts.compiler.name} (${facts.compiler.version})`;
+    status.baseline = facts.compiler.baseline;
+  }
+  if (facts.lcov) {
+    status.tools.lcov = facts.lcov;
+  }
+  status.arch = facts.arch || undefined;
   const lane = await probeLaneTools(chosen);
   if (lane.conan) {
     status.tools.conan = lane.conan;
@@ -106,8 +120,18 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
   if (lane.cmake) {
     status.tools.cmake = lane.cmake;
   }
-  status.ready = !!sys.gcc;
+  if (lane.ninja) {
+    status.tools.ninja = lane.ninja;
+  }
+  status.ready = !!facts.compiler && !!facts.arch;
   status.note = chosen === MANAGED_DISTRO ? '托管 distro（het-fcpp）' : `复用现有发行版 ${chosen}（gcc 系统级）`;
+  if (!facts.compiler) {
+    status.note += ' · 编译器未就绪（首次「构建并测试」将按阶梯自动准备）';
+  } else if (!facts.arch) {
+    status.note += ` · ${unsupportedArchMessage(facts.archRaw).replace(/\n+/gu, ' ')}`;
+  } else {
+    status.note += ` · ${baselineNote(facts.compiler)}`;
+  }
   if (!status.tools.conan || !status.tools.cmake) {
     status.note += ' · 托管车道 conan/cmake 未就绪（首次「构建并测试」将自动准备）';
   }

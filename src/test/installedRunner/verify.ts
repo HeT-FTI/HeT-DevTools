@@ -83,9 +83,14 @@ export async function run(): Promise<void> {
     await hold();
     const meta = JSON.parse(readFileSync(join(PROJ, 'metadata.json'), 'utf8')) as Record<string, unknown>;
     assert.strictEqual(meta.name, 'verify_proj', 'folder basename should become the project name');
-    if (process.platform === 'win32') {
-      assert.strictEqual(meta.activate_code_coverage, false, 'coverage must default off on Windows/MSVC');
-    }
+    // T13 (E8): the coverage default follows the PROVIDER capability, not the OS
+    // name — Windows+WSL2 (coverage=full) keeps it on; MSVC / macOS default off.
+    const plan = (await vscode.commands.executeCommand('het.getProvisionPlan')) as { provider?: string; coverage?: string } | null;
+    assert.strictEqual(
+      meta.activate_code_coverage === true,
+      plan?.coverage === 'full',
+      `coverage default must follow the provider (provider=${plan?.provider ?? '?'} coverage=${plan?.coverage ?? '?'})`,
+    );
     assert.ok(existsSync(join(PROJ, '.het', 'template-ref.json')), 'marker written');
     assert.ok(existsSync(join(PROJ, 'include', 'cpptest.hpp')), 'template tree copied');
     log('[verify-installed] empty-phase OK — Explorer zero-op init on disk (no auto-open in host)');

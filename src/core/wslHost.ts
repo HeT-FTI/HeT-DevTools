@@ -85,6 +85,7 @@ export interface WslToolSnapshot {
   gcc?: string;
   cmake?: string;
   conan?: string;
+  ninja?: string;
   lcov?: string;
 }
 
@@ -105,7 +106,7 @@ export function parseWslToolReport(output: string): WslToolSnapshot {
       continue;
     }
     const key = m[1] as keyof WslToolSnapshot;
-    if (key === 'gcc' || key === 'cmake' || key === 'conan' || key === 'lcov') {
+    if (key === 'gcc' || key === 'cmake' || key === 'conan' || key === 'ninja' || key === 'lcov') {
       out[key] = value;
     }
   }
