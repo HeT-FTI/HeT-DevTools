@@ -182,20 +182,34 @@ jobs:
             4) 切换后重新构建必须成功（宿主 conan + MSVC）。
 
           已知边界：若本 runner 恰好有可用的 WSL2 发行版，第 1) 步会“合法地”失败
-          （说明 managed 真的跑起来了）→ 此时应按 provider 分支：有车道走 managed 断言，无车道走 blocked 断言。
+          （说明 managed 真的跑起来了）→ 此时 harness 会直接报 `PREMISE CHANGED`
+          并指明要改成“lane available”场景，而不是给一句含糊的断言失败。
+          （当前托管 runner 实测：`wsl.exe` 存在但**零发行版** —— 见 PREFLIGHT。）
           '@ | Write-Host
           Write-Host "::endgroup::"
 
-      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用，永不让作业失败）"
         shell: pwsh
+        env:
+          # wsl.exe 默认 UTF-16LE 输出 → 日志里出现 NUL，连 grep 都当二进制文件。
+          WSL_UTF8: "1"
         run: |
+          # 纯诊断：任何一项失败都不得让作业失败。两个已踩过的坑：
+          #  ① `wsl -l -v` 在"无发行版"时向 stderr 输出并返回非 0，而 runner 的
+          #     $ErrorActionPreference='Stop'（PS7.4 起 native stderr ⇒ 终止性错误）
+          #     会让整步失败 —— run 34924749669 就是这么死的；
+          #  ② 末尾 `exit 0` 保证不残留 `$LASTEXITCODE`（GH 的 pwsh wrapper 会用它当退出码）。
+          $ErrorActionPreference = 'Continue'
           Write-Host "::group::PREFLIGHT (diagnostics)"
           Write-Host "wsl.exe: $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'present' } else { 'absent' })"
           if (Get-Command wsl -ErrorAction SilentlyContinue) {
-            Write-Host "wsl -l -v:"; (wsl -l -v 2>&1 | Out-String) | Write-Host
+            $distros = (& wsl -l -v 2>&1 | Out-String)
+            Write-Host "wsl -l -v (exit=$LASTEXITCODE):"
+            Write-Host ($distros -replace "`0", "").Trim()
           }
           Write-Host "conan:   $(if (Get-Command conan -ErrorAction SilentlyContinue) { conan --version } else { 'none (本作业随后安装)' })"
           Write-Host "::endgroup::"
+          exit 0
 
       - name: "SETUP: 宿主 conan（pip venv）—— 供“切换后重构建”使用"
         shell: pwsh

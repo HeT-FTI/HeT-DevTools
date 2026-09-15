@@ -168,6 +168,17 @@ export async function run(): Promise<void> {
   // the actionable contract instead of falling back to a native conan sniff.
   if (EXPECT_BLOCKED) {
     console.log('[real][B1/4] managed lane must REFUSE (no usable WSL2 lane) — asserting the guidance text');
+    // PREMISE: this scenario only makes sense on a Windows host WITHOUT a usable
+    // distro (GitHub's hosted runners today: wsl.exe present, zero distros).
+    // If a distro ever appears, the lane legitimately runs — say so explicitly
+    // instead of leaving a cryptic "build must not succeed" failure.
+    if (plan?.provider === 'win-wsl2') {
+      throw new Error(
+        `[real] PREMISE CHANGED: provider=${plan.provider} (the runner now HAS a usable WSL2 distro). ` +
+          'This job asserts the "lane blocked → explicit switch" contract; on a distro-bearing runner ' +
+          'it must be replaced by a "lane available" scenario (see .github/workflows/env-fresh-windows.yml).',
+      );
+    }
     assert.notStrictEqual(buildOk, true, 'managed build must NOT succeed without a WSL2 lane');
     assert.ok(/WSL2/.test(lastError), 'blocked build must explain the WSL2 requirement');
     assert.ok(/toolchain/.test(lastError), 'blocked build must offer the toolchain=system path');
