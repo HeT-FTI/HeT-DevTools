@@ -187,7 +187,15 @@ class PackageTestConan(ConanFile):
         _pkg_uid = _tmp_ref[[i for i, _ in enumerate(_tmp_ref) if _ == 'packages'][0] + 1]
         _tmp = subprocess.run(["conan", "cache", "path", f"{_name}/{_ver}:{_pkg_uid}"],
                               capture_output=True, text=True)
-        _main_pkg_build_fd = sep.join(_tmp.stdout.split(sep)[:-1] + ['b', 'build'])
+        # `conan cache path <ref>` prints the PACKAGE folder of the cache entry:
+        #   <CONAN_HOME>/p/b/<pkgname-prefix><hash>/p
+        # Its parent is the entry root that holds THIS package's b/ (build +
+        # copied sources) and p/ trees — the only reliable scope for our code.
+        _pkg_folder = _tmp.stdout.strip()
+        _pkg_root = sep.join(_pkg_folder.split(sep)[:-1])
+        if not _pkg_root:
+            raise RuntimeError(f'conan cache path {_name}/{_ver}:{_pkg_uid} returned "{_pkg_folder}"')
+        _main_pkg_build_fd = _pkg_root + sep + 'b' + sep + 'build'
 
         # collect code coverage files to export/coverage/
         _gcda = [str(_) for _ in Path(_main_pkg_build_fd).rglob('*.gcda')]
@@ -210,16 +218,17 @@ class PackageTestConan(ConanFile):
         cmd1 = ['lcov', '--directory', coverage_folder, '--capture', '--output-file',
                 os.path.join(coverage_folder, 'coverage_test.info'), '--rc', 'geninfo_auto_base=1']
         subprocess.run(cmd1, check=True)
-        # T10/E4: derive the extraction pattern from the REAL package cache path
-        # (_pkg_uid comes from `conan cache path` above) instead of hard-coding
-        # `*/.conan2/p/b/…` — the managed lane may name CONAN_HOME anything
-        # (e.g. ~/.het-fti/managed-env/<name>), which used to make the filter
-        # match nothing → empty local coverage while CI passed. Kept a leading
-        # `*` so symlinked/macOS-private cache roots still match.
+        # T10/E4: scope the report to OUR package by the DERIVED cache entry root.
+        # The cache folder is named `<pkgname-prefix><hash>` (e.g. fcpp2501d113050e3),
+        # so neither the old literal `*/.conan2/p/b/<name[:3]>*` (breaks as soon as
+        # CONAN_HOME is renamed) nor a package-id based pattern (matches nothing at
+        # all) is the folder name. A non-matching filter makes lcov 2.x abort with
+        # `ERROR: no valid records found in tracefile …` → the whole `conan create`
+        # fails and no coverage report is produced.
         cmd2 = ['lcov', '--extract', os.path.join(coverage_folder, 'coverage_test.info'),
-                f'*/p/b/{_pkg_uid}*', '--output-file',
+                _pkg_root.replace(sep, '/') + '/*', '--output-file',
                 os.path.join(coverage_folder, 'coverage_test.filtered.info')]
-        subprocess.run(cmd2, check=True) # hard-coding: your package name len >= 3
+        subprocess.run(cmd2, check=True)
         cmd3 = ['genhtml', os.path.join(coverage_folder, 'coverage_test.filtered.info'),
                 '--output-directory', os.path.join(coverage_folder, 'coverage_report')]
         subprocess.run(cmd3, check=True)
