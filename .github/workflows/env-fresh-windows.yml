@@ -193,10 +193,11 @@ jobs:
                / C（`toolchain: system`）两条路，且**绝不**把工程偷偷切成 system；
             5) `het.envRemove` 只撤销我们自己的那个，诱饵原样保留。
 
-          首次运行（run 34940348222）的教训，已写进场景：托管 runner 的 WSL **能注册发行版**
-          （`wsl --import` 真的跑并做了镜像校验），但**没有硬件虚拟化**
-          （VirtualizationFirmwareEnabled=False）→ 发行版能建不能启动。因此预期结果是
-          `branch=imported-no-lane`（而不是“完全跑不起来”）。发行版“能不能启动”归机器 DoD。
+          实测（run 34941657212 · job 104291505313）：发行版能导入**且能启动** —— 车道在 runner 上
+          真的自举完成（`branch=imported`，车道内 gcc-13“与 CI 同基线”），`het.envRemove` 又能干净撤销。
+          所以本作业现在覆盖的是「计划/代价 → 官方 rootfs 真下载真校验 → 导入 → 启动 → 车道自举 →
+          幂等复用 → 撤销」这条链；只剩「同名冲突必须换名」需要夹具的同名诱饵先成立才验得到
+          （诱饵注册不上时，日志会直说“退化为单测 + 机器 DoD”，不假装验过）。
           '@ | Write-Host
           Write-Host "::endgroup::"
 

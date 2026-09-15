@@ -14,7 +14,7 @@
  */
 import * as assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, readFileSync, readdirSync, accessSync, existsSync, constants as fsConsts } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, accessSync, existsSync, mkdirSync, constants as fsConsts } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { EXTENSION_ID, discoveredIds, hetExtension } from '../hostExtension';
@@ -197,20 +197,40 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
     bytes: LANE_ROOTFS.bytes,
     onLog: (l) => console.log('[real][rootfs] ' + l),
   });
-  assert.ok(rootfs.ok && rootfs.path, `官方 rootfs 必须能获取并通过 sha256 校验：${rootfs.reason ?? ''}`);
-  assert.strictEqual(rootfs.path, laneRootfsCachePath(localAppData, LANE_ROOTFS.sha256), '缓存路径必须按钉死的 sha256 命名');
-  console.log(`[real] rootfs ok: ${rootfs.path}（cached=${rootfs.cached === true}, ${rootfs.bytes} B）—— 钉死 sha256 在 Windows 上真验证过`);
+  if (!rootfs.ok || !rootfs.path) {
+    throw new Error(`官方 rootfs 必须能获取并通过 sha256 校验：${rootfs.reason ?? '(无原因)'}`);
+  }
+  const rootfsPath = rootfs.path;
+  assert.strictEqual(rootfsPath, laneRootfsCachePath(localAppData, LANE_ROOTFS.sha256), '缓存路径必须按钉死的 sha256 命名');
+  console.log(`[real] rootfs ok: ${rootfsPath}（cached=${rootfs.cached === true}, ${rootfs.bytes} B）—— 钉死 sha256 在 Windows 上真验证过`);
 
   console.log('[real][W3/6] 诱饵：用平台自己的工具放一个"同名但没有我们双标记"的发行版');
   const decoyInstall = join(process.env.RUNNER_TEMP ?? localAppData, 'het-decoy-install', base);
-  const decoyRun = await execRun('wsl.exe', wslImportArgs(base, decoyInstall, rootfs.path), { timeoutMs: 20 * 60_000 }).catch(
-    (err: Error) => ({ code: -1, stdout: '', stderr: err.message }),
-  );
+  // 目标目录必须先存在 —— 产品自己也是这么做的（`mkdirSync(installDir)`）。
+  // 2026-09-15 复跑实测：缺目录时 `wsl.exe --import` 以 0xFFFFFFFF 退出且**不给任何输出**。
+  mkdirSync(decoyInstall, { recursive: true });
+  const tryDecoy = async (): Promise<{ code?: number | null; stdout?: string; stderr?: string }> =>
+    await execRun('wsl.exe', wslImportArgs(base, decoyInstall, rootfsPath), { timeoutMs: 20 * 60_000 }).catch(
+      (err: Error) => ({ code: -1, stdout: '', stderr: err.message }),
+    );
+  let decoyRun = await tryDecoy();
+  let decoyAttempts = 1;
+  if ((decoyRun.code ?? 1) !== 0) {
+    const first = decodeWslOutput(`${decoyRun.stdout ?? ''}\n${decoyRun.stderr ?? ''}`).trim().split('\n')[0] || '(无输出)';
+    // 首次 wsl 调用可能在初始化服务 —— 重试一次并把这件事**大声说出来**：
+    // 如果重试就能成，说明产品那条路（不重试）在冷启动机器上会拿到一个不可读的失败。
+    console.log(`[real] 诱饵第 1 次写入失败（exit=${decoyRun.code}，输出：${first}）→ 重试一次（冷服务？）`);
+    decoyRun = await tryDecoy();
+    decoyAttempts = 2;
+  }
   const decoyCreated = (decoyRun.code ?? 1) === 0;
+  if (decoyCreated && decoyAttempts > 1) {
+    console.log('[real] ⚠️ 观察：首次 import 失败/重试才成 —— 产品本身**不**重试，需评估是否加一次重试（记录在报告 §6）');
+  }
   console.log(
     decoyCreated
-      ? `[real] 诱饵 ${base} 已注册（无我们的双标记）→ 本次自建必须换名，绝不接管`
-      : `[real] 诱饵未能注册（exit=${decoyRun.code}：${decodeWslOutput(String(decoyRun.stderr)).split('\n')[0]}）→ 换名判据由单测 + 机器 DoD 覆盖`,
+      ? `[real] 诱饵 ${base} 已注册（无我们的双标记，第 ${decoyAttempts} 次尝试）→ 本次自建必须换名，绝不接管`
+      : `[real] 诱饵未能注册（exit=${decoyRun.code}）：${decodeWslOutput(`${decoyRun.stdout ?? ''}\n${decoyRun.stderr ?? ''}`).trim().split('\n')[0] || '(无输出)'} → 换名判据由单测 + 机器 DoD 覆盖`,
   );
 
   console.log('[real][W4/6] 真实执行 het.envPrepare（复用缓存 → wsl --import → bootstrap）');

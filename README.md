@@ -123,7 +123,7 @@ fcpp 模板用 Conan / CMake / CI / Doxygen / semantic-release 把工程保障�
 |------|------|--------|--------|------|----------|
 | Ubuntu 24.04 | x64 | **linux-managed 隔离车道**（`~/.het-fti/managed-env`：私有 venv + 私有 CONAN_HOME + 生成式 profile；编译器走阶梯 13 → 14/15/12 → 发行版默认） | ✅ full | ✅ 车道内 apt 自愈 | 无（有免密 root 时全自动） |
 | Ubuntu 22.04 | x64 | 同上；仓库里没有 gcc-13 → 用兼容版 gcc-12，或加 PPA，或升级系统 | 🟡 取决于 gcov 版本 | ✅ | 首次可能需你按提示装一次编译器 |
-| Windows + WSL2 | x64 | 发行版内的**同构**托管车道（你已有的官方发行版，或我们自建 `het-lane-2404`） | ✅ full | ✅ 车道内 apt 自愈 | 无（自建发行版后全自动；CI 无嵌套虚拟化，故"发行版能否启动"留待真机 DoD） |
+| Windows + WSL2 | x64 | 发行版内的**同构**托管车道（你已有的官方发行版，或我们自建 `het-lane-2404`） | ✅ full | ✅ 车道内 apt 自愈 | 无（自建发行版后全自动；CI 实测：导入 → 启动 → 车道自举出 gcc-13 → 撤销干净） |
 | Windows 无 WSL2 | x64 | 先启用 WSL2（需虚拟化），或显式设 `toolchain: system` 走本机 MSVC 兼容 | ⛔ none | 🟡 宿主备齐则可用 | 启用 WSL2，或显式选择 system |
 | macOS arm64 | arm64 | macos-native（Xcode CLT + 车道 venv；Apple clang 按**实际版本**写入 profile） | ⛔ none（Apple clang 无 GNU gcov；llvm-cov→gcov 路线见 T20） | 🟡 venv sphinx ✅；doxygen/graphviz 走 brew（我们只报告不代装） | `xcode-select --install` 一次 GUI 确认 |
 
@@ -133,7 +133,7 @@ fcpp 模板用 Conan / CMake / CI / Doxygen / semantic-release 把工程保障�
 - **车道优先（lane-first）**：`managed` 语义一律先走隔离车道（Windows = WSL2 lane、Linux = linux-managed）；只有 `toolchain: system` 才走本机原生——构建/覆盖率/docs 均不 touch 系统或 conda 环境。
 - **CI（`CubicZebra/HeT-DevTools`，branch main）**：
   - **自动门禁**：`ci.yml › verify`（ubuntu/macos/windows：tsc / lint / 单测 / `audit:pins` / vsix 打包，push 与 PR 触发）。`audit:pins` 拦的是"把 CI 事实写进产品代码"（绝对路径、基线编译器字面量、被抄写一遍的版本下限）。
-  - **手动真机验证（按平台拆三个 workflow，一个平台 = 一个失败面）**：`env-fresh · linux`（`linux-managed` 含覆盖率 + `linux-system`）/ `env-fresh · windows`（`windows-system` + `windows-blocked`：无车道时拒绝并给一键切换）/ `env-fresh · macos`（`macos-lane`，覆盖率按平台跳过）。日志按 `SCENARIO → GATE → PREFLIGHT → SETUP → MAIN → ASSERT → EVIDENCE` 分区，证据上传为 `out/real-evidence.txt`。
+  - **手动真机验证（按平台拆三个 workflow，一个平台 = 一个失败面）**：`env-fresh · linux`（`linux-managed` 含覆盖率 + `linux-system` + 金丝雀）/ `env-fresh · windows`（`windows-system`、`windows-blocked`：无车道时拒绝并给一键切换、`windows-wsl-import`：自建私有发行版走完「计划/代价 → 官方 rootfs 真校验 → 导入 → 启动 → 车道自举 → 幂等复用 → 撤销」，并断言 0 侵入）/ `env-fresh · macos`（`macos-lane`，覆盖率按平台跳过）。日志按 `SCENARIO → GATE → PREFLIGHT → MAIN → ASSERT → CLEANUP → EVIDENCE` 分区，证据上传为 `out/real-evidence.txt`。
   - **证据里能查版本**：`vscode=` / `vscodeSource=` 记录本次跑的宿主 —— 回归作业一律跑**钉住版**（= 承诺下限 1.134.0），另有金丝雀作业跑最新版做信号；两者在证据里一眼可分。
   - 逐条证据与 run 号汇总在 `workspace/develope/platform-verification-report.md`（开发文档，不入包）。
 
