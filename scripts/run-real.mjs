@@ -64,6 +64,12 @@ if (process.env.HET_REAL_WSL_IMPORT === '1') {
       `[real] wsl-import-full：夹具保持 coverage=${meta.activate_code_coverage ? 'on' : 'off'}（车道是 Linux 语义 → lcov/genhtml 可用）；` +
         '工作区在 /mnt/<drive>（9p），构建比 ext4 慢，作业超时已放宽。',
     );
+    if (process.env.HET_REAL_SKIP_DECOY === '1') {
+      console.log(
+        '[real] wsl-import-full：**不建诱饵**（HET_REAL_SKIP_DECOY=1）—— 诱饵本身要真 import 一份 rootfs，' +
+          '实测在不同 runner 上 1–20+ 分钟；换名判据已由轻量场景取证，这里把预算给 DoD。',
+      );
+    }
   }
 }
 
@@ -90,13 +96,15 @@ console.log(
       HET_REAL_EXPECT_AFTER_SWITCH: process.env.HET_REAL_EXPECT_AFTER_SWITCH ?? '(unset)',
       HET_REAL_WSL_IMPORT: process.env.HET_REAL_WSL_IMPORT ?? '(unset)',
       HET_REAL_WSL_IMPORT_FULL: process.env.HET_REAL_WSL_IMPORT_FULL ?? '(unset)',
+      HET_REAL_SKIP_DECOY: process.env.HET_REAL_SKIP_DECOY ?? '(unset)',
     }),
 );
 console.log('[real] platform : ' + platform() + ' · node ' + process.version);
 console.log(
   '[real] asserting: ' +
     (process.env.HET_REAL_WSL_IMPORT_FULL === '1'
-      ? '自建提议与代价 → rootfs 校验 → import → 启动 → 车道自举 → 幂等自愈 → conan create + GTest → 覆盖率 → docs → 撤销'
+      ? '自建提议与代价 → rootfs 校验 → import → 启动 → 车道自举 → 幂等自愈 → conan create + GTest → 覆盖率 → docs → 撤销' +
+        (process.env.HET_REAL_SKIP_DECOY === '1' ? '（诱饵/换名由轻量场景覆盖）' : '（含诱饵 → 换名）')
       : process.env.HET_REAL_WSL_IMPORT === '1'
       ? '自建提议与代价 → rootfs 校验/缓存 → wsl --import → 0 侵入快照 → 撤销回到跑前'
       : 'provider decision → conan create → GTest' +

@@ -250,12 +250,18 @@ jobs:
           # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
           HET_REAL_WSL_IMPORT: "1"
           HET_REAL_WSL_IMPORT_FULL: ${{ inputs.scenario == 'wsl-import-full' && '1' || '' }}
+          # DoD 跑不建诱饵：诱饵本身要真 import 一份 rootfs（解压成 GB 级 vhdx），
+          # 实测同一份文件在不同 runner 上 1–20+ 分钟不等（2026-09-15 run 34946185911
+          # 就卡在这 20 分钟里）；换名/所有权判据由轻量场景取证（run 34944081639：
+          # 诱饵占名 → 我们用了 -2），这里把时间预算让给 DoD。
+          HET_REAL_SKIP_DECOY: ${{ inputs.scenario == 'wsl-import-full' && '1' || '' }}
           HET_REAL_FRESH: "1"
         run: |
           Write-Host "::group::MAIN — npm run test:real (self-provisioned distro)"
           Write-Host "断言链：计划提议 + 代价 → rootfs 真校验 → import → 启动 → 车道自举 → 计划翻到 win-wsl2（不 force）→ 车道级幂等（删 profile 必须自愈）→ 0 侵入 → 撤销"
           if ('${{ inputs.scenario }}' -eq 'wsl-import-full') {
             Write-Host "         + 完整 DoD：车道内 conan create + GTest + 覆盖率（lcov/genhtml）+ 文档（doxygen/sphinx）"
+            Write-Host "         （本场景不建诱饵 → 换名判据由 -f scenario=wsl-import 覆盖）"
           }
           npm run test:real
           Write-Host "::endgroup::"

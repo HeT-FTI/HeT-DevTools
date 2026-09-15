@@ -46,6 +46,10 @@ const EXPECT_BLOCKED = process.env.HET_REAL_EXPECT === 'blocked';
 const WSL_IMPORT = process.env.HET_REAL_WSL_IMPORT === '1';
 /** `wsl-import-full`：在自建发行版里**跑完整 DoD**（conan create + GTest + 覆盖率 + docs）。 */
 const WSL_IMPORT_FULL = process.env.HET_REAL_WSL_IMPORT_FULL === '1';
+// 2026-09-15（run 34946185911 实测）：诱饵本身要真 `wsl --import` 一份 rootfs，
+// 同一份文件在不同 runner 上从 1 分钟到 >20 分钟不等。DoD 跑（wsl-import-full）
+// 的目的不是换名判据（那条已由轻量场景取证），所以允许把它整段跳掉。
+const SKIP_DECOY = process.env.HET_REAL_SKIP_DECOY === '1';
 const EXPECT_PROVIDER = (process.env.HET_REAL_EXPECT_PROVIDER ?? '').trim();
 const EXPECT_AFTER_SWITCH = process.env.HET_REAL_EXPECT_AFTER_SWITCH === 'ok';
 
@@ -256,6 +260,56 @@ async function runLaneDod(projRoot: string, provider: string): Promise<{ passed:
  *   ⑤ `het.envRemove` 只撤销我们自己的那个，诱饵原样保留。
  * 验不了的（日志里明说）：发行版**能不能启动**（无硬件虚拟化）→ 机器 DoD（`run-lane-dod.mjs`）。
  */
+/**
+ * 诱饵：用平台自己的工具注册一个"名字在我们命名空间里、但没有我们双标记"的发行版
+ * —— T17d 的所有权/换名判据要靠它才有分辨力（没有诱饵时，按名字选和按标记选结果一样）。
+ *
+ * 代价：这一步要真 `wsl --import` 一份 rootfs（解压成 ext4.vhdx，GB 级写入）。
+ * 实测同一份 rootfs 在不同 runner 上 1–2 分钟到 >20 分钟都有，所以：
+ *   · 单次上限 10 分钟（**不是** 20）——慢也不至于把整个作业拖死；
+ *   · **只有"快速失败"才重试**（冷服务那类可恢复错误）；超时说明这台 runner 就是慢，
+ *     再等一次等于白烧 10 分钟；
+ *   · `HET_REAL_SKIP_DECOY=1` 时整段跳过（见上面的注释）。
+ */
+async function createDecoyDistro(base: string, rootfsPath: string): Promise<boolean> {
+  const localAppData = process.env.LOCALAPPDATA ?? '';
+  const decoyInstall = join(process.env.RUNNER_TEMP ?? localAppData, 'het-decoy-install', base);
+  // 目标目录必须先存在 —— 产品自己也是这么做的（`mkdirSync(installDir)`）。
+  // 2026-09-15 复跑实测：缺目录时 `wsl.exe --import` 以 0xFFFFFFFF 退出且**不给任何输出**。
+  mkdirSync(decoyInstall, { recursive: true });
+  const timeoutMs = 10 * 60_000;
+  const attempt = async (): Promise<{ code: number; out: string; ms: number }> => {
+    const t0 = Date.now();
+    const r = await execRun('wsl.exe', wslImportArgs(base, decoyInstall, rootfsPath), { timeoutMs }).catch(
+      (err: Error) => ({ code: -1, stdout: '', stderr: err.message }),
+    );
+    const out = decodeWslOutput(`${r.stdout ?? ''}\n${r.stderr ?? ''}`).trim();
+    return { code: r.code ?? -1, out, ms: Date.now() - t0 };
+  };
+  let run = await attempt();
+  if (run.code !== 0) {
+    if (run.ms >= timeoutMs - 1_000) {
+      console.log(
+        `[real] ⚠️ 诱饵 import 超时（${(run.ms / 1000).toFixed(0)}s ≥ ${timeoutMs / 1000}s）：这台 runner 的 wsl --import 就是慢。` +
+          '**不再重试**（重试等于再烧一次同样的时间）；换名/所有权判据由单测 + 轻量场景覆盖。',
+      );
+    } else {
+      // 快速失败通常是 wsl 服务冷启动 —— 重试一次并把这件事**大声说出来**：
+      // 如果重试就能成，说明产品那条路（不重试）在冷启动机器上会拿到一个不可读的失败。
+      const first = run.out.split('\n')[0] || '(无输出)';
+      console.log(`[real] 诱饵第 1 次写入快速失败（${(run.ms / 1000).toFixed(0)}s，exit=${run.code}，输出：${first}）→ 重试一次（冷服务？）`);
+      run = await attempt();
+    }
+  }
+  const created = run.code === 0;
+  console.log(
+    created
+      ? `[real] 诱饵 ${base} 已注册（无我们的双标记，用时 ${(run.ms / 1000).toFixed(0)}s）→ 本次自建必须换名，绝不接管`
+      : `[real] 诱饵未能注册（exit=${run.code}，用时 ${(run.ms / 1000).toFixed(0)}s）：${run.out.split('\n')[0] || '(无输出)'} → 换名判据由单测 + 轻量场景覆盖`,
+  );
+  return created;
+}
+
 async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<unknown>): Promise<void> {
   assert.strictEqual(process.platform, 'win32', 'wsl-import 场景只在 Windows 上有意义');
   const projRoot = join(ext.extensionPath, 'out', 'real-proj');
@@ -292,33 +346,13 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
   console.log(`[real] rootfs ok: ${rootfsPath}（cached=${rootfs.cached === true}, ${rootfs.bytes} B）—— 钉死 sha256 在 Windows 上真验证过`);
 
   console.log('[real][W3/6] 诱饵：用平台自己的工具放一个"同名但没有我们双标记"的发行版');
-  const decoyInstall = join(process.env.RUNNER_TEMP ?? localAppData, 'het-decoy-install', base);
-  // 目标目录必须先存在 —— 产品自己也是这么做的（`mkdirSync(installDir)`）。
-  // 2026-09-15 复跑实测：缺目录时 `wsl.exe --import` 以 0xFFFFFFFF 退出且**不给任何输出**。
-  mkdirSync(decoyInstall, { recursive: true });
-  const tryDecoy = async (): Promise<{ code?: number | null; stdout?: string; stderr?: string }> =>
-    await execRun('wsl.exe', wslImportArgs(base, decoyInstall, rootfsPath), { timeoutMs: 20 * 60_000 }).catch(
-      (err: Error) => ({ code: -1, stdout: '', stderr: err.message }),
+  if (SKIP_DECOY) {
+    console.log(
+      '[real][W3/6] ↳ 跳过（HET_REAL_SKIP_DECOY=1）：换名/所有权判据由轻量场景（`-f scenario=wsl-import`）覆盖' +
+        '（run 34944081639 已取证：诱饵占名 → 我们用了 -2）；本跑把时间预算全给 DoD。',
     );
-  let decoyRun = await tryDecoy();
-  let decoyAttempts = 1;
-  if ((decoyRun.code ?? 1) !== 0) {
-    const first = decodeWslOutput(`${decoyRun.stdout ?? ''}\n${decoyRun.stderr ?? ''}`).trim().split('\n')[0] || '(无输出)';
-    // 首次 wsl 调用可能在初始化服务 —— 重试一次并把这件事**大声说出来**：
-    // 如果重试就能成，说明产品那条路（不重试）在冷启动机器上会拿到一个不可读的失败。
-    console.log(`[real] 诱饵第 1 次写入失败（exit=${decoyRun.code}，输出：${first}）→ 重试一次（冷服务？）`);
-    decoyRun = await tryDecoy();
-    decoyAttempts = 2;
   }
-  const decoyCreated = (decoyRun.code ?? 1) === 0;
-  if (decoyCreated && decoyAttempts > 1) {
-    console.log('[real] ⚠️ 观察：首次 import 失败/重试才成 —— 产品本身**不**重试，需评估是否加一次重试（记录在报告 §6）');
-  }
-  console.log(
-    decoyCreated
-      ? `[real] 诱饵 ${base} 已注册（无我们的双标记，第 ${decoyAttempts} 次尝试）→ 本次自建必须换名，绝不接管`
-      : `[real] 诱饵未能注册（exit=${decoyRun.code}）：${decodeWslOutput(`${decoyRun.stdout ?? ''}\n${decoyRun.stderr ?? ''}`).trim().split('\n')[0] || '(无输出)'} → 换名判据由单测 + 机器 DoD 覆盖`,
-  );
+  const decoyCreated = !SKIP_DECOY && (await createDecoyDistro(base, rootfsPath));
 
   console.log('[real][W4/6] 真实执行 het.envPrepare（复用缓存 → wsl --import → bootstrap）');
   const res = (await vscode.commands.executeCommand('het.envPrepare')) as { ok?: boolean; state?: string; message?: string } | undefined;
@@ -419,6 +453,7 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
     ` planCost=ok intrude=none rootfs=pinned-sha256-verified idempotent=${imported ? 'self-heal-verified' : 'n/a'}` +
     (laneDod ? ` buildOk=true passed=${laneDod.passed} failed=0 coverage=${laneDod.coverage} docs=ok` : '') +
     ` distro=${ours ?? '(none)'} renamed=${decoyCreated && imported ? 'yes' : 'n/a'}` +
+    ` decoy=${SKIP_DECOY ? 'skipped' : decoyCreated ? 'present' : 'failed'}` +
     ` vscode=${vscode.version} vscodeSource=${process.env.HET_VSCODE_SOURCE ?? '?'}\n`;
   writeFileSync(join(__dirname, '..', 'real-evidence.txt'), evidence, 'utf8');
   console.log('[real] PASS ' + evidence.trim());
