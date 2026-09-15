@@ -34,6 +34,18 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # 2026-09-15：Windows 上模板曾被检出成 CRLF（=> 三份 vsix 不一致）。
+      # `.gitattributes`（`eol=lf`）与上面的 `core.autocrlf false` 都没能挡住 ——
+      # 所以现在**产物阶段**自己归一（`scripts/lf.mjs`，见 `npm run asset`）。
+      # 这步保留事实记录：到底是 git 转的，还是后面某步改的。
+      - name: "DIAG: 检出后的行尾现状"
+        shell: bash
+        run: |
+          echo "HOME=$HOME GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-unset}"
+          git config --list --show-origin | grep -iE 'autocrlf|core\.eol' || echo "(无 autocrlf/core.eol 配置)"
+          echo "模板属性：$(git check-attr text eol -- assets/template/.editorconfig | tr '\n' ' ')"
+          echo "检出后含 CRLF 的模板文件：$(grep -rlI $'\r' assets/template | wc -l) / $(find assets/template -type f | wc -l)"
+
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
@@ -66,8 +78,10 @@ jobs:
         run: |
           bad=$(grep -rlI $'\r' assets/template || true)
           if [ -n "$bad" ]; then
-            echo "::error::模板资源被检出成 CRLF，打出的 vsix 将与 linux/macOS 那份不一致："
+            echo "::error::模板资源里仍有 CRLF —— 打包出的 vsix 在 Windows 上与 linux/macOS 不一致："
             echo "$bad" | head -10
+            echo "--- 现场 ---"
+            ls --full-time .git/HEAD assets/template/.editorconfig 2>/dev/null | cat
             exit 1
           fi
           echo "模板资源全部为 LF（$(find assets/template -type f | wc -l) 个文件）"
