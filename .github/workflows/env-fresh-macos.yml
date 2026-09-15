@@ -46,7 +46,9 @@ jobs:
 
           本作业要证明：
             1) Provider 决策在 macOS 上是 macos-native（能力优先，不看 brew/pip 是否存在）；
-            2) 车道能从零自举：~/.het-fti/managed-env 私有 venv（pip conan）+ 生成的 apple-clang profile；
+            2) 车道能从零自举：~/.het-fti/managed-env 私有 venv（**用宿主自带的 Python**，从不代装）+ 生成的 apple-clang profile；
+               — 宿主 Python 必须是 >= 3.10 的那一个（docs 栈钉住 sphinx>=8）。runner 上 `python3`=3.14，
+                 而 `/usr/bin/python3`=3.9；车道过去偏好后者 → pip 报 'No matching distribution found for sphinx<9,>=8'。
             3) 车道内 `conan create` + GTest 全绿（Apple clang / libc++）；
             4) docs 可产出：venv sphinx + 宿主 doxygen/graphviz/make（缺失时是引导，不是崩）；
             5) 覆盖率断言**不**执行（macOS 有限支持，unsupported 不计失败）。
@@ -75,7 +77,8 @@ jobs:
         run: |
           echo "::group::PREFLIGHT (diagnostics)"
           echo "os:      $(sw_vers -productVersion) ($(uname -m))"
-          echo "python3: $(python3 --version 2>&1 || echo none)"
+          echo "python3: $(command -v python3) → $(python3 --version 2>&1 || echo none)"
+          echo "python3 (system): /usr/bin/python3 → $(/usr/bin/python3 --version 2>&1 || echo none)"
           echo "conan:   $(conan --version 2>/dev/null || echo none)"
           echo "cmake:   $(cmake --version 2>/dev/null | head -1 || echo none)"
           echo "ninja:   $(ninja --version 2>/dev/null || echo none)"
@@ -90,6 +93,15 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
           echo "::group::SETUP — host tools"
+          echo "· 车道会挑宿主里最新的 Python（docs 栈需要 >= 3.10，车道从不代装 Python）"
+          py3="$(command -v python3)"
+          pv="$("$py3" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "  PATH python3: $py3 ($pv) ｜ /usr/bin/python3: $(/usr/bin/python3 --version 2>&1)"
+          if ! awk -v v="$pv" -v m="3.10" 'BEGIN{split(v,a,".");split(m,b,".");exit !(a[1]>b[1]||(a[1]==b[1]&&a[2]>=b[2]))}'; then
+            echo "  PATH 上的 python3 过旧 → 用 brew 备一个新解释器（否则车道只能退回 system python）"
+            brew install python@3.12
+            echo "  $(command -v python3.12) $(python3.12 --version)"
+          fi
           echo "· venv /tmp/het-conan：宿主 conan（车道自举 + system 分支都用它）+ docs 的 sphinx/numpy"
           python3 -m venv /tmp/het-conan
           /tmp/het-conan/bin/pip install --quiet "conan>=2,<3"
@@ -143,6 +155,11 @@ jobs:
           echo "检查项：构建后 ~/.het-fti/managed-env 必须存在 —— 证明本次构建用的是托管 venv。"
           if [ ! -d "$HOME/.het-fti/managed-env" ]; then echo "::error::managed lane dir missing after build"; exit 1; fi
           ls "$HOME/.het-fti/managed-env/bin" | head -20 || true
+          # 车道的 venv 是拿宿主的哪个解释器建的？这是 F.13 的事后证据
+          # （车道从不代装 Python，只挑宿主已有的；docs 栈要求 >= 3.10）。
+          echo "—— lane venv interpreter (pyvenv.cfg) ——"
+          cat "$HOME/.het-fti/managed-env/venv/pyvenv.cfg" 2>/dev/null || echo "(no pyvenv.cfg)"
+          "$HOME/.het-fti/managed-env/venv/bin/python" -c 'import sys; print("lane python:", sys.executable, sys.version.split()[0])' || true
           echo "✔ lane in use: $HOME/.het-fti/managed-env"
 
       - name: "EVIDENCE: 本作业证明了什么"

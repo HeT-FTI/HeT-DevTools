@@ -76,8 +76,11 @@ describe('T07 macLane (macOS managed lane pure helpers)', () => {
     assert.ok(c.includes('"sphinx>=8,<9"'));
     assert.ok(c.includes('command -v doxygen'));
     assert.ok(c.includes('command -v dot'));
-    assert.ok(!c.includes('brew install'), 'we never install brew packages for the user');
-    assert.ok(!c.includes('apt-get'), 'no apt on macOS');
+    // "Only REPORTS" means: never EXECUTES brew. Guidance strings (echo "修复：…") are fine —
+    // the Python floor hint names the conventional macOS command on purpose.
+    assert.ok(!/(^|\n)\s*brew /u.test(c), 'we never install brew packages for the user');
+    assert.ok(c.includes('brew install python@3.12'), 'but we TELL the user the conventional command when their Python is too old');
+    assert.ok(!/(^|\n)\s*apt-get/u.test(c), 'no apt on macOS');
     const guide = macDocsGuide(['doxygen', 'graphviz']);
     assert.ok(guide.includes('brew install doxygen graphviz'));
     assert.ok(guide.includes('不影响构建'));

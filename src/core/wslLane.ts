@@ -15,6 +15,7 @@ import { posix } from 'node:path';
 import { LaneCompiler, laneProfileFor } from './laneProfile';
 import { LaneMirror, conanRemoteUpdateLine, mirrorShellExports } from './laneMirror';
 import { laneSettingsEnsureSteps, profileCompilerVersion } from './laneSettings';
+import { lanePythonFloorGuardSteps, laneVenvBootstrapSteps } from './lanePython';
 
 /** Lane root & tools inside the distro's Linux home (ext4 — venv-safe). */
 export interface WslLaneLayout {
@@ -97,19 +98,9 @@ export function wslLaneEnsureCommand(home: string, profileText: string, opts: La
     // CI-parity coverage needs the literal `…/.conan2/…` cache layout.
     `[ -d "${posix.join(l.root, 'conan2')}" ] && [ ! -d "${l.conanHome}" ] && mv "${posix.join(l.root, 'conan2')}" "${l.conanHome}"`,
     `mkdir -p "${l.profilesDir}"`,
-    `if [ ! -x "${posix.join(venvBin, 'conan')}" ]; then`,
-    '  PY=""',
-    '  CONDA_PY=""',
-    '  if command -v conda >/dev/null 2>&1; then CONDA_PY="$(dirname "$(command -v conda 2>/dev/null)")/python"; fi',
-    '  for c in /usr/bin/python3 "$CONDA_PY" "$(command -v python3 2>/dev/null || true)" "$(command -v python 2>/dev/null || true)"; do',
-    '    [ -n "$c" ] && [ -x "$c" ] || continue',
-    '    if "$c" -m venv --help >/dev/null 2>&1 && "$c" -m venv "' + l.venv + '" >/dev/null 2>&1; then PY="$c"; break; fi',
-    '    rm -rf "' + l.venv + '"',
-    '  done',
-    '  if [ -z "$PY" ]; then echo "FATAL: no python3 that can create venvs (install python3-venv via apt, or use a conda python)"; exit 3; fi',
-    '  if [ ! -x "' + posix.join(venvBin, 'pip') + '" ]; then "' + posix.join(l.venv, 'bin', 'python') + '" -m ensurepip --upgrade >/dev/null 2>&1 || true; fi',
-    `  "${posix.join(venvBin, 'pip')}" install --disable-pip-version-check -q "conan>=2.0,<3" "cmake>=4.0,<5" "ninja>=1.11"`,
-    'fi',
+    // The lane owns a private venv but uses the HOST's Python (never installs
+    // one). Preference order + the docs floor live in ./lanePython.
+    ...laneVenvBootstrapSteps(l.venv, LANE_VENV_PIP),
     // T18: point the lane's PRIVATE conan home at the corporate mirror (if any).
     ...(conanRemoteUpdateLine(opts.mirror, venvBin) ? [conanRemoteUpdateLine(opts.mirror, venvBin) as string] : []),
     `cat > "${l.profile}" <<'HET_WSL_PROFILE'`,
@@ -194,6 +185,9 @@ export function wslLaneBuildCommand(cwdWsl: string, home: string, buildType = 'D
 /** V5-4: pip packages for the docs stack (loose pins, per the manifest). */
 export const WSL_DOCS_PIP = ['"numpy>=1.26"', '"sphinx>=8,<9"', 'sphinx-intl', '"sphinx-rtd-theme>=2,<4"'];
 
+/** Lane build tooling installed into the private venv (conan drives cmake/ninja). */
+export const LANE_VENV_PIP = ['"conan>=2.0,<3"', '"cmake>=4.0,<5"', '"ninja>=1.11"'];
+
 /**
  * V5-4: idempotent docs-stack bootstrap inside the lane venv (runs as the
  * default user). System packages (doxygen/graphviz/make) are installed by the
@@ -206,6 +200,7 @@ export function wslLaneDocsEnsureCommand(home: string, opts: LaneEnsureOptions =
     'set -e',
     ...mirrorShellExports(opts.mirror),
     `export PATH="${venvBin}:$PATH"`,
+    ...lanePythonFloorGuardSteps(venvBin),
     `if [ ! -x "${posix.join(venvBin, 'sphinx-build')}" ]; then`,
     `  "${posix.join(venvBin, 'pip')}" install --disable-pip-version-check -q ${WSL_DOCS_PIP.join(' ')}`,
     'fi',

@@ -91,8 +91,12 @@ describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
     assert.ok(c.includes('HET_GCOV_SHIM'));
     assert.ok(c.includes('exec "/usr/bin/gcov-13" "$@"'));
     assert.ok(c.includes('CONDA_PY'), 'conda python is a fallback candidate');
-    // venv bootstrap only runs when conan is missing
-    assert.ok(c.includes('[ ! -x '));
+    // venv bootstrap is skipped when the lane venv is already usable
+    assert.ok(c.includes('lane_venv:reuse('), 'reports reuse of a ready venv');
+    // F.13: the interpreter is picked from the HOST, newest-first + docs floor
+    assert.ok(c.includes('lane_python_candidates:'), 'reports the probed interpreter candidates');
+    assert.ok(c.includes('lane_python_floor:'), 'reports whether the docs floor is met');
+    assert.ok(c.includes('lane_make_venv floor'), 'prefers an interpreter >= the docs floor');
     // never touches the user's conda envs
     assert.ok(!c.includes('conda activate'));
     assert.ok(!c.includes('pip install --user'));

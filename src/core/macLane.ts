@@ -22,6 +22,7 @@ import { posix } from 'node:path';
 import { LaneCompiler, LaneFacts, parseLaneFacts } from './laneProfile';
 import { LaneMirror, mirrorShellExports } from './laneMirror';
 import { normalizeAppleClangVersion } from './laneSettings';
+import { lanePythonFloorGuardSteps } from './lanePython';
 import { wslLaneLayout } from './wslLane';
 
 export interface MacFacts extends LaneFacts {
@@ -145,6 +146,10 @@ export function macLaneDocsEnsureCommand(home: string, pipPackages: readonly str
     'set -e',
     ...mirrorShellExports(opts.mirror),
     `export PATH="${venvBin}:$PATH"`,
+    // The macOS venv used to be built from `/usr/bin/python3` (3.9.x) → sphinx>=8
+    // has no wheel for it and the user only saw pip's resolution dump
+    // (env-fresh · macos run 34927513753). Explain the real reason instead.
+    ...lanePythonFloorGuardSteps(venvBin),
     `if [ ! -x "${posix.join(venvBin, 'sphinx-build')}" ]; then`,
     `  "${posix.join(venvBin, 'pip')}" install --disable-pip-version-check -q ${pipPackages.join(' ')}`,
     'fi',
