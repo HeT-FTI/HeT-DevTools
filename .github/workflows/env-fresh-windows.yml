@@ -37,7 +37,8 @@ on:
 jobs:
   windows-system:
     name: windows · 本机工具链（system + MSVC）
-    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'system' }}
+    # 未填 scenario（空字符串）也必须跑 —— 否则手动派发会“静默什么都不跑”。
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'system' }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -133,7 +134,7 @@ jobs:
 
   windows-blocked:
     name: windows · 车道不可用 → 拒绝 + 一键切换（绝不静默降级）
-    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'blocked' }}
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'blocked' }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:

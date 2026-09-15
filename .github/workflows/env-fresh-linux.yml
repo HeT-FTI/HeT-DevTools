@@ -37,7 +37,8 @@ on:
 jobs:
   linux-managed:
     name: linux · 托管车道（apt 自愈 + 覆盖率）
-    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'managed' }}
+    # 未填 scenario（空字符串）也必须跑 —— 否则手动派发会“静默什么都不跑”。
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'managed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -152,7 +153,7 @@ jobs:
 
   linux-system:
     name: linux · 本机工具链（system，不建车道）
-    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'system' }}
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'system' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
