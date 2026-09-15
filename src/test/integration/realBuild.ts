@@ -193,8 +193,19 @@ export async function run(): Promise<void> {
   }
 
   if (buildOk !== true) {
+    // A lane/provision failure happens BEFORE conan prints anything, so the
+    // conan tail alone is useless — surface the extension's own error, the
+    // resolved plan and the lane status (this is the CI debug contract).
+    console.log('[real][FAIL 1/4] het.getLastBuildError:');
+    console.log(lastError || '(empty — the build may have been blocked before the toolchain layer)');
+    console.log('[real][FAIL 2/4] provision plan: ' + JSON.stringify(plan));
+    const lane = await vscode.commands.executeCommand('het.getLinuxLane', true).then(
+      (v) => v,
+      (e) => `(het.getLinuxLane threw: ${String(e)})`,
+    );
+    console.log('[real][FAIL 3/4] linux lane status: ' + JSON.stringify(lane));
     const tail = (await vscode.commands.executeCommand<string>('het.getLastConanOutput')) ?? '';
-    console.log('[real] conan output tail:\n' + tail.slice(-4000));
+    console.log('[real][FAIL 4/4] conan output tail:\n' + tail.slice(-4000));
   }
   assert.strictEqual(buildOk, true, 'REAL conan create should succeed through the extension');
 

@@ -110,14 +110,31 @@ jobs:
           xvfb-run -a npm run test:real
           echo "::endgroup::"
 
-      - name: "ASSERT: 车道真的被使用（事后事实）"
+      - name: "ASSERT + POST-MORTEM: 车道真的被使用（事后事实）"
         if: always()
         run: |
-          echo "检查项：构建后 $HOME/.het-fti/managed-env 必须存在 —— 证明本次构建用的是托管 venv，而不是宿主工具。"
-          if [ ! -d "$HOME/.het-fti/managed-env" ]; then echo "::error::managed lane dir missing after build"; exit 1; fi
-          ls "$HOME/.het-fti/managed-env/bin" | head -20 || true
-          test -x "$HOME/.het-fti/managed-env/bin/conan" || echo "::warning::lane conan binary not where expected (lane layout changed?)"
-          echo "✔ lane in use: $HOME/.het-fti/managed-env"
+          echo "::group::POST-MORTEM — 车道事实（无论成败都打印，用于定位 MAIN 失败原因）"
+          LANE="$HOME/.het-fti/managed-env"
+          echo "lane root: $LANE"
+          if [ -d "$LANE" ]; then
+            echo "--- venv/bin (前 20) ---"; ls "$LANE/venv/bin" 2>/dev/null | head -20 || true
+            echo "--- 车道 conan ---"; "$LANE/venv/bin/conan" --version 2>/dev/null || echo "(缺失)"
+            echo "--- 车道 cmake ---"; "$LANE/venv/bin/cmake" --version 2>/dev/null | head -1 || echo "(缺失)"
+            echo "--- CONAN_HOME ---"; ls -a "$LANE/.conan2" 2>/dev/null | head -20 || true
+            echo "--- 生成的 profile ---"; cat "$LANE/.conan2/profiles/default" 2>/dev/null || echo "(缺失)"
+            echo "--- gcov shim ---"; cat "$LANE/venv/bin/gcov" 2>/dev/null || echo "(无 shim)"
+            echo "--- .conan2/p/b (包目录，前 10) ---"; ls "$LANE/.conan2/p/b" 2>/dev/null | head -10 || true
+          else
+            echo "(车道目录不存在 —— 说明构建没走到托管车道)"
+          fi
+          echo "--- 宿主相关事实 ---"
+          echo "gcc-13: $(command -v gcc-13 || echo 缺) | lcov: $(command -v lcov || echo 缺) | doxygen: $(command -v doxygen || echo 缺) | dot: $(command -v dot || echo 缺)"
+          echo "HET_CMAKE_*: ${HET_CMAKE_BUILD_REQUIRE:-(unset)} ${HET_CMAKE_MIN:-(unset)}"
+          echo "::endgroup::"
+          echo "检查项：构建后 $LANE 必须存在 —— 证明本次构建用的是托管 venv，而不是宿主工具。"
+          if [ ! -d "$LANE" ]; then echo "::error::managed lane dir missing after build"; exit 1; fi
+          test -x "$LANE/venv/bin/conan" || echo "::warning::lane conan binary not where expected (lane layout changed?)"
+          echo "✔ lane in use: $LANE"
 
       - name: "EVIDENCE: 本作业证明了什么"
         if: always()
