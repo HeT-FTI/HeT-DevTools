@@ -12,13 +12,13 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 
-const EXTENSION_ID = 'het-test-publisher.het-devtools';
+import { EXTENSION_ID, discoveredIds, hetExtension } from '../hostExtension';
 
 export async function run(): Promise<void> {
   console.log('[integration-smoke] starting');
 
-  const ext = vscode.extensions.getExtension(EXTENSION_ID);
-  assert.ok(ext, 'extension must be discovered in the test host: ' + EXTENSION_ID);
+  const ext = hetExtension() ?? vscode.extensions.getExtension(EXTENSION_ID);
+  assert.ok(ext, `extension must be discovered in the test host — expected "${EXTENSION_ID}"; discovered: ${discoveredIds()}`);
 
   await ext.activate();
   assert.strictEqual(ext.isActive, true, 'extension must be active after activate()');
@@ -27,8 +27,8 @@ export async function run(): Promise<void> {
   // Read via a registered command (deterministic; ext.exports can be flaky).
   const activationLine = (await vscode.commands.executeCommand<string>('het.getActivationLine')) ?? '';
   assert.ok(
-    activationLine.includes('activated \u2014 het-test-publisher.het-devtools'),
-    'expected activation line, got: ' + activationLine,
+    activationLine.includes(`activated \u2014 ${ext.id}`),
+    `expected activation line with "${ext.id}", got: ` + activationLine,
   );
   // Durable evidence for the outer runner (host stdout forwarding is unreliable).
   writeFileSync(join(__dirname, '..', 'activation-evidence.txt'), activationLine + '\n', 'utf8');

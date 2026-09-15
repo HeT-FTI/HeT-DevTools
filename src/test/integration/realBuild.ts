@@ -16,8 +16,7 @@ import * as assert from 'node:assert';
 import { writeFileSync, readFileSync, readdirSync, accessSync, existsSync, constants as fsConsts } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
-
-const EXTENSION_ID = 'het-test-publisher.het-devtools';
+import { EXTENSION_ID, discoveredIds, hetExtension } from '../hostExtension';
 
 interface ProviderPlan {
   provider?: string;
@@ -129,8 +128,9 @@ function findCovReportIndex(root: string, extraRoots: string[] = [], depth = 0):
 export async function run(): Promise<void> {
   console.log('[real][STEP 1/6] provider decision — capability-first, must match this host');
   console.log('[real] starting on ' + process.platform);
-  const ext = vscode.extensions.getExtension(EXTENSION_ID);
-  assert.ok(ext, 'extension must be discovered');
+  const ext = hetExtension();
+  assert.ok(ext, `extension must be discovered — expected id "${EXTENSION_ID}"; discovered: ${discoveredIds()}`);
+  console.log('[real] extension id: ' + ext!.id);
   await ext.activate();
 
   // Provider decision must match the real host (heuristic, capability-first).

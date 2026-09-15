@@ -74,7 +74,9 @@ mkdirSync(tmp, { recursive: true });
 mkdirSync(emptyWs, { recursive: true });
 rmSync(proj, { recursive: true, force: true });
 execFileSync('tar', ['-xf', vsix, '-C', tmp], { stdio: 'pipe' });
-const installed = join(extDir, `het-fti.het-devtools-${version}`);
+// VS Code names the installed folder `<publisher>.<name>-<version>` from
+// package.json — never hardcode it (a publisher rename silently breaks this).
+const installed = join(extDir, `${pkg.publisher}.${pkg.name}-${version}`);
 cpSync(join(tmp, 'extension'), installed, { recursive: true });
 rmSync(tmp, { recursive: true, force: true });
 if (!existsSync(join(installed, 'assets', 'template', 'metadata.json'))) {

@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 
-const EXTENSION_ID = 'het-test-publisher.het-devtools';
+import { EXTENSION_ID } from '../hostExtension';
 const DEST = process.env.HET_C7_DEST ?? '';
 
 export async function run(): Promise<void> {

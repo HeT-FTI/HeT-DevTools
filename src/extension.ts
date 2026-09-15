@@ -2,7 +2,7 @@ import { isAbsolute, join, dirname, delimiter } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
-import { EXTENSION_ID, LOG_CHANNEL_NAME, log, setOutputChannel } from './constants';
+import { LOG_CHANNEL_NAME, log, setOutputChannel } from './constants';
 import { locateConan, runConanCreate, resolveConanRuntime, ensureConanDefaultProfile } from './core/conanService';
 import { parseGTestOutput, GTestRunSummary } from './core/gtestRunner';
 import { runHealthCheck, healthGapLabels, verdictZh } from './core/healthCheck';
@@ -373,7 +373,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   channel = vscode.window.createOutputChannel(LOG_CHANNEL_NAME);
   setOutputChannel(channel);
   context.subscriptions.push(channel, buildDiagnostics);
-  activationLine = `activated — ${EXTENSION_ID} v${context.extension.packageJSON.version}`;
+  // `context.extension.id` is the authoritative `<publisher>.<name>` of THIS
+  // host — a hardcoded id breaks the moment the publisher is renamed
+  // (het-test-publisher → het-fti; see src/test/hostExtension.ts).
+  activationLine = `activated — ${context.extension.id} v${context.extension.packageJSON.version}`;
   log(activationLine);
   contextRef = context;
   track('activation');
