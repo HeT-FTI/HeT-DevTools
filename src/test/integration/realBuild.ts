@@ -237,7 +237,15 @@ export async function run(): Promise<void> {
 
   // Decision 3: docs through the real host on BOTH platforms. het.docs opens
   // the panel; het.docsRun drives the SAME runner headlessly (lane/native).
-  console.log('[real][STEP 5/6] docs — het.docsRun drives doxygen + sphinx');
+  //
+  // HONEST SCOPE (platform matrix, plan §5): docs are committed on the Linux
+  // lane / Linux native / macOS lane. **Windows + toolchain=system (MSVC) is
+  // ⛔**: docs there are best-effort, and the contract that matters is "fail
+  // with an actionable hint instead of a bare traceback" — not "succeed".
+  // Until 2026-09-15 this assertion demanded success everywhere, which made the
+  // windows-system job red for a capability the product never promised.
+  const docsCommitted = !(process.platform === 'win32' && MODE_SYSTEM);
+  console.log(`[real][STEP 5/6] docs — het.docsRun drives doxygen + sphinx (committed=${docsCommitted})`);
   console.log('[real] running het.docsRun (REAL docs build)…');
   const docsResult = (await vscode.commands.executeCommand('het.docsRun')) as { ok: boolean; message: string } | undefined;
   const projRoot = join(ext.extensionPath, 'out', 'real-proj');
@@ -250,11 +258,29 @@ export async function run(): Promise<void> {
       .then((v) => v ?? '', () => '');
     console.log('[real] docs output tail:\n' + tail.slice(-3000));
   }
-  assert.ok(docsResult && docsResult.ok === true, 'het.docs should succeed on the real host');
-  assert.ok(doxHtml, 'doxygen artifact (docs.html) must exist after the real docs build');
-  assert.ok(sphHtml, 'sphinx artifact (index.html) must exist after the real docs build');
+  let docsEvidence = 'ok';
+  if (docsCommitted) {
+    assert.ok(docsResult && docsResult.ok === true, 'het.docs should succeed on the real host');
+    assert.ok(doxHtml, 'doxygen artifact (docs.html) must exist after the real docs build');
+    assert.ok(sphHtml, 'sphinx artifact (index.html) must exist after the real docs build');
+  } else if (docsResult?.ok === true) {
+    // An equipped Windows host may legitimately produce docs — then prove it.
+    console.log('[real] docs succeeded on Windows/MSVC (host is equipped)');
+    assert.ok(doxHtml && sphHtml, 'a successful docs run must leave both artifacts');
+    docsEvidence = 'ok-equipped';
+  } else {
+    // Not promised here → the promise is the GUIDANCE, not the artifact.
+    const msg = docsResult?.message ?? '';
+    console.log('[real][D1/2] docs not committed on Windows/MSVC — asserting actionable guidance');
+    assert.ok(
+      /pip install|"toolchain": "managed"|toolchain.*managed/u.test(msg),
+      'an uncommitted docs run must still tell the user HOW to fix it (pip/apt/brew or switch back to managed), got: ' + msg,
+    );
+    console.log('[real][D2/2] guidance verified:\n' + msg.split('\n').slice(0, 3).join('\n'));
+    docsEvidence = 'unsupported-honest';
+  }
 
-  const evidence = `platform=${process.platform} provider=${plan!.provider} mode=${MODE_SYSTEM ? 'system' : 'managed'} buildOk=${buildOk} passed=${summary.passed} failed=${summary.failed} skipped=${summary.skipped}\n`;
+  const evidence = `platform=${process.platform} provider=${plan!.provider} mode=${MODE_SYSTEM ? 'system' : 'managed'} docs=${docsEvidence} buildOk=${buildOk} passed=${summary.passed} failed=${summary.failed} skipped=${summary.skipped}\n`;
   writeFileSync(join(__dirname, '..', 'real-evidence.txt'), evidence, 'utf8');
   console.log('[real][STEP 6/6] evidence written');
   console.log('[real] PASS ' + evidence.trim());

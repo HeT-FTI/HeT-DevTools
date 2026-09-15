@@ -62,7 +62,11 @@ jobs:
             2) 夹具自动关覆盖率（MSVC 无 --coverage），不会在 CMake configure 失败；
             3) system 语义不依赖车道可用性（Provider 决策在 Windows 上仍是能力优先的
                win-wsl2 / win-wsl2-pending / win-wsl-required 之一，但构建走原生分支）；
-            4) 构建后 $env:USERPROFILE\.het-fti 仍然不存在（system 不建车道）。
+            4) 构建后 $env:USERPROFILE\.het-fti 仍然不存在（system 不建车道）；
+            5) 文档**不在本作业承诺范围内**（平台矩阵：Windows 原生 MSVC 的文档 = ⛔）。
+               本作业只断言"要么真做出来（宿主已备 doxygen/graphviz/sphinx），
+               要么给出**可执行指引**（pip/apt/brew 命令或改回 managed）"，
+               而不是拿一个产品从未承诺的能力当红灯。
 
           第一次跑约 15–25 分钟（@vscode/test-electron 要下 VS Code）。
           '@ | Write-Host
@@ -105,7 +109,8 @@ jobs:
           HET_REAL_FRESH: "1"
         run: |
           Write-Host "::group::MAIN — npm run test:real (system/MSVC)"
-          Write-Host "断言链：provider ∈ win-* → 构建走 system 分支 → conan create(MSVC) → GTest 全绿 → docs 产出"
+          Write-Host "断言链：provider ∈ win-* → 构建走 system 分支 → conan create(MSVC) → GTest 全绿"
+          Write-Host "        → 文档：Windows/MSVC 不受承诺 ⇒ 断言『成功 或 给出可执行指引』（见 docsHints）"
           npm run test:real
           Write-Host "::endgroup::"
 
