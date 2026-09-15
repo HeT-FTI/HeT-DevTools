@@ -116,28 +116,22 @@ jobs:
           /tmp/het-conan/bin/python -c 'import numpy, sphinx; print("venv docs ok:", numpy.__version__)'
           echo "::endgroup::"
 
-      # @vscode/test-electron 自己在 macOS 上下载+解压 VS Code 不可靠
-      # （spawn .../MacOS/Electron ENOENT）；用 brew cask 装到 /Applications。
-      # scripts/run-real.mjs 会在 .app 内定位真正的主可执行文件（版本间名字有变化）。
-      - name: "SETUP: 安装 VS Code（brew cask）"
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_INSTALL_CLEANUP: "1"
-        run: |
-          if [ ! -d "/Applications/Visual Studio Code.app" ]; then
-            brew install --cask visual-studio-code
-          fi
-          ls -la "/Applications/Visual Studio Code.app/Contents/MacOS/" || true
-
+      # 不再预装 VS Code（教训）：brew cask 装的是**最新版**，而 run-real.mjs 当时优先用
+      # 本地安装 → 作业里写的 VSCODE_VERSION=1.95.0 被**静默忽略**（实测跑 1.136.1），
+      # “1.95 是承诺下限”在 macOS 上根本没被验证；同时也把 test-electron 的 darwin 主程序
+      # 名 bug 掩盖掉了。现在由 harness 自己下载钉住版并自己定位主程序：
+      #   1.95.0 → …/Visual Studio Code.app/Contents/MacOS/Electron
+      #   1.136.1 → …/Visual Studio Code.app/Contents/MacOS/Code
+      # （名字逐版本可能不同，所以绝不能硬编码 —— 这正是 @vscode/test-electron@2.5.2
+      #  util.js:155 的问题所在。）
       - name: "MAIN: 真实扩展宿主 —— macOS 车道构建 + 测试 + 文档"
         env:
-          # T28-B：macOS 过去一直在跑本地 brew cask 装的 VS Code（=最新版，实测 1.136.1），
-          # 作业里写的 1.95.0 被静默忽略（run-real.mjs 优先本地安装）。现在显式要求它
-          # **下载并运行钉住的那一版**（自己定位 .app 内主程序，绕开 @vscode/test-electron
-          # 硬编码 Contents/MacOS/Electron 的老 bug）；下载/定位失败会退回本地版并打印 WARN。
-          # 待这次跑绿、证据里出现 vscode=1.95.0 后，再加上 HET_REAL_EXPECT_VSCODE 变成硬断言。
+          # T28：macOS 现在也**真在跑钉住的 1.95.0**（证据：vscode=1.95.0
+          # vscodeSource=download@1.95.0，run 34930943299），所以和 Linux/Windows 一样
+          # 打开硬断言：宿主版本漂了就红，而不是继续绿着说假话。
           VSCODE_VERSION: "1.95.0"
           HET_VSCODE_HONOR_PIN: "1"
+          HET_REAL_EXPECT_VSCODE: "1.95.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: macos-native
         run: |
@@ -152,9 +146,8 @@ jobs:
                 → 覆盖率步骤跳过（macOS unsupported，不计失败）
                 → het.docsRun：doxygen（docs.html）+ sphinx（index.html）必须存在
 
-          注意（T28-B）：宿主版本会被打印并写进证据（vscode=<版本> vscodeSource=local:…|download@x）。
-          本作业现在会**下载并运行钉住的 1.95.0**（自己定位 .app 主程序）；若下载/定位失败
-          则退回 brew cask 的本地版并打印 WARN。
+          注意（T28）：宿主版本会被打印并写进证据（vscode=<版本> vscodeSource=local:…|download@x）。
+          本作业下载并运行**钉住的 1.95.0**（harness 自己定位 .app 主程序），版本不符即断言失败。
           EOF
           npm run test:real
           echo "::endgroup::"

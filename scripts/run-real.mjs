@@ -203,7 +203,11 @@ async function main() {
   if (vscodeExecutablePath) {
     opts.vscodeExecutablePath = vscodeExecutablePath;
   } else if (!process.env.VSCODE_VERSION) {
-    throw new Error('no local VS Code found and VSCODE_VERSION not set');
+    // T27 canary: “跑最新版”是一个**显式的选择**，不是默认行为 —— 回归作业必须钉住
+    // 承诺下限（1.95.0），否则“1.95 能跑”就成了空话。
+    if (process.env.HET_VSCODE_ALLOW_LATEST !== '1') {
+      throw new Error('no local VS Code found and VSCODE_VERSION not set (set HET_VSCODE_ALLOW_LATEST=1 to accept the latest build)');
+    }
   } else {
     // Pin the download: without this, @vscode/test-electron silently fetched the
     // LATEST VS Code (the CI job asked for 1.95.0 but ran 1.137.0 — and the newer
@@ -218,7 +222,7 @@ async function main() {
   process.env.HET_NO_UI = '1';
   // T28: tell the extension host WHERE this build came from, so `vscode=<ver> +
   // vscodeSource=<local:…|download@x>` lands in out/real-evidence.txt.
-  vscodeSource = vscodeSource ?? `download@${process.env.VSCODE_VERSION}`;
+  vscodeSource = vscodeSource ?? (process.env.VSCODE_VERSION ? `download@${process.env.VSCODE_VERSION}` : 'latest(auto)');
   process.env.HET_VSCODE_SOURCE = vscodeSource;
   console.log('[real] VS Code: ' + vscodeSource);
   console.log('[real] automation markers: HET_NO_UI=1' + (process.env.HET_VERIFY_PHASE ? ' HET_VERIFY_PHASE=' + process.env.HET_VERIFY_PHASE : ''));

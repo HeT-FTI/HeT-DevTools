@@ -17,9 +17,14 @@ name: env-fresh · linux
 #   ASSERT     事后事实（车道是否真的被使用）
 #   EVIDENCE   打印 out/real-evidence.txt（同时作为 Artifact 上传）
 #
+# 角色分工（T27）：功能回归作业一律跑**钉住版** 1.95.0（= engines.vscode 下限 = 对用户的
+# 承诺，硬断言 `HET_REAL_EXPECT_VSCODE`）；**最新版**只由 canary 作业负责，它的作用不是
+# 回归而是**信号**：新版宿主/UI/API 变了在这里先发现，而不是在用户机器上。
+#
 # 手动触发：
 #   gh workflow run env-fresh-linux --ref main
 #   gh workflow run env-fresh-linux --ref main -f scenario=managed
+#   gh workflow run env-fresh-linux --ref main -f scenario=canary
 #   gh run watch $(gh run list --workflow=env-fresh-linux -L1 --json databaseId -q '.[0].databaseId')
 
 on:
@@ -33,6 +38,7 @@ on:
           - all
           - managed
           - system
+          - canary
 
 jobs:
   linux-managed:
@@ -247,5 +253,82 @@ jobs:
         if: always()
         with:
           name: evidence-linux-system
+          path: out/real-evidence.txt
+          if-no-files-found: ignore
+
+  # T27 金丝雀：**不钉版本**，跑 runner 上能拿到的**最新版** VS Code。
+  # 它的结论不是“回归通过”，而是“在最新宿主上观察到什么” —— 失败不等于产品坏了，
+  # 但必须有人看（否则新版宿主的行为变化会在用户机器上第一次被发现）。
+  # 只跑 Linux 一份就够：宿主/UI/API 的漂移大多不是平台特定的，而 Windows/macOS 各跑
+  # 一份最新版的成本远高于它带来的额外信息。
+  linux-canary:
+    name: linux · 金丝雀（最新版 VS Code，只出信号）
+    if: ${{ inputs.scenario == 'canary' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        run: |
+          echo "::group::SCENARIO — latest VS Code canary"
+          cat <<'EOF'
+          模拟场景：用户装的是**最新版** VS Code（不是承诺下限 1.95.0）→ 扩展还能不能正常干活。
+
+          本作业要证明（/ 观察）：
+            1) 宿主版本：证据里的 vscode=<版本> **就是** runner 下载到的最新版（没有断言，因为它会漂）；
+            2) 在最新宿主上：扩展能被发现、能激活、provider 决策仍然正确；
+            3) 构建 + 测试仍然全绿（Linux 托管车道）；
+            4) 失败时的读法：这是**信号**，不是回归门槛 —— 说明新版宿主有行为变化，
+               要么修扩展，要么把 1.95 下限往上提（两者都要有意识地决定）。
+
+          与回归作业的区别（T27）：回归作业一律跑钉住版 1.95.0，且用
+          HET_REAL_EXPECT_VSCODE=1.95.0 硬断言；本作业故意不设该断言。
+          EOF
+          echo "::endgroup::"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+        run: |
+          echo "::group::PREFLIGHT (diagnostics)"
+          echo "os:      $(lsb_release -ds 2>/dev/null || head -2 /etc/os-release | tr '\n' ' ')"
+          echo "python3: $(python3 --version 2>&1 || echo none)"
+          echo "cmake:   $(cmake --version 2>/dev/null | head -1 || echo none)"
+          echo "gcc:     $(gcc --version 2>/dev/null | head -1 || echo none)"
+          echo "::endgroup::"
+
+      - name: "MAIN: 真实扩展宿主 —— 最新版 VS Code + 托管车道"
+        env:
+          HET_REAL_FRESH: "1"
+          HET_REAL_EXPECT_PROVIDER: linux-managed
+          # 允许“没有钉住版本”这条路：没有本地 VS Code 且 VSCODE_VERSION 为空时，
+          # harness 默认会拒绝运行（“钉住优先”），这里显式声明“本作业就是要跑最新版”。
+          HET_VSCODE_ALLOW_LATEST: "1"
+          # 注意：**故意不设** VSCODE_VERSION / HET_REAL_EXPECT_VSCODE。
+        run: |
+          echo "::group::MAIN — npm run test:real (latest VS Code, canary)"
+          cat <<'EOF'
+          断言链：扩展被宿主发现 → provider == linux-managed → 车道自举 → conan create + GTest
+          另外会打印 [real] host VS Code: <版本> (source: latest(auto)) 并写进证据。
+          EOF
+          xvfb-run -a npm run test:real
+          echo "::endgroup::"
+
+      - name: "EVIDENCE: 本次观察到什么"
+        if: always()
+        run: |
+          echo "::group::EVIDENCE (out/real-evidence.txt)"
+          if [ -f out/real-evidence.txt ]; then cat out/real-evidence.txt; else echo "(没有证据文件：作业在写出证据前就失败了，请看上一个失败步骤)"; fi
+          echo "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-linux-canary
           path: out/real-evidence.txt
           if-no-files-found: ignore
