@@ -22,6 +22,7 @@ import { decodeWslOutput, parseWslList, wslRunArgs } from '../../core/wslHost';
 import { LANE_ROOTFS, laneDistroBaseName, laneOwnerMarkerPath, laneRootfsCachePath, wslImportArgs } from '../../core/wslDistro';
 import { ensureRootfs } from '../../core/wslRootfs';
 import { run as execRun } from '../../utils/exec';
+import { parseCoveragePct } from '../../features/coverage/report';
 
 interface ProviderPlan {
   provider?: string;
@@ -89,14 +90,21 @@ function findUnder(root: string, targetName: string, wantFile: boolean, depth = 
   return null;
 }
 
-/** Parse genhtml index.html line coverage % (same rule as coverage/report). */
-function readCoveragePct(reportDir: string): string {
+/**
+ * 读 genhtml 的行覆盖率 —— **直接用产品自己的解析器**（`features/coverage/report`）。
+ *
+ * 2026-09-15 实测（run `34955519475`）：这里以前抄了一份"同规则"的实现，但正则写错了
+ * （它期待 `<百分比></td><td class="headerCovTableEntryLo">` 这种顺序，而 genhtml 的实际
+ * 结构是 `<td class="headerItem">Lines:</td><td class="headerCovTableEntryMed">76.9&nbsp;%</td>`，
+ * 且只有覆盖率**低**时才会是 `…Lo`）→ 永远解析不出数字，证据行写成 `coverage=?`，
+ * 而网关只检查了字面量 `coverage=` —— 于是一跑"全绿"里藏着一个没被证明的项。
+ * 教训与 F.24/F.25 同源：**规则要只有一处实现**，抄一份就是埋一个假判据。
+ */
+function readCoverageLinePct(reportDir: string): number | null {
   try {
-    const html = readFileSync(join(reportDir, 'index.html'), 'utf8');
-    const m = /(\d+(?:\.\d+)?)\s*%\s*<\/td>\s*<td class="headerCovTableEntryLo">/u.exec(html) ?? /lines:.*?(\d+(?:\.\d+)?)%/u.exec(html);
-    return m?.[1] ?? '?';
+    return parseCoveragePct(readFileSync(join(reportDir, 'index.html'), 'utf8')).line;
   } catch {
-    return '?';
+    return null;
   }
 }
 
@@ -199,7 +207,7 @@ async function assertLaneIdempotent(distro: string): Promise<void> {
  * 这是把"只能在真机验"的机械部分搬进 CI 的那一半（真机仍保留 升级/共存/内网 三项抽样）。
  * 唯一显著风险：工作区在 `/mnt/<drive>`（9p），构建比 ext4 慢 —— 作业超时已放宽到 120 分钟。
  */
-async function runLaneDod(projRoot: string, provider: string): Promise<{ passed: number; coverage: string }> {
+async function runLaneDod(projRoot: string, provider: string): Promise<{ passed: number; coverage: number }> {
   console.log('[real][F1/4] 车道内真实构建 + 测试（conan create + GTest，工作区在 /mnt/<drive>）…');
   await vscode.commands.executeCommand('het.test');
   const buildOk = await vscode.commands.executeCommand<boolean | null>('het.getBuildOk');
@@ -223,8 +231,11 @@ async function runLaneDod(projRoot: string, provider: string): Promise<{ passed:
     console.log('[real] 覆盖率缺失 —— conan output tail:\n' + tail.slice(-8000));
   }
   assert.ok(covIndex, '覆盖率报告 coverage_report/index.html 必须存在');
-  const pct = readCoveragePct(join(covIndex, '..'));
-  console.log(`[real] 覆盖率报告：${covIndex}（lines≈${pct}%）`);
+  const pct = readCoverageLinePct(join(covIndex, '..'));
+  console.log(`[real] 覆盖率报告：${covIndex}（lines≈${pct ?? '?'}%）`);
+  // 报告存在 ≠ 读得出来：解析不到百分比就说明判据/报告至少有一边不对，必须响亮失败
+  // （上一跑就是这里静默成 `?`，网关又只认字面量，于是"全绿"里混进一个未证明项）。
+  assert.ok(pct !== null && Number.isFinite(pct), `必须能从覆盖率报告里读出数字（实际 ${pct}）`);
 
   console.log('[real][F4/4] 文档：车道内 apt 自愈 doxygen/graphviz + venv sphinx');
   const docs = (await vscode.commands.executeCommand('het.docsRun')) as { ok?: boolean; message?: string } | undefined;
@@ -372,7 +383,7 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
   const imported = !!ours;
   const laneStarted = res?.ok === true && imported;
   /** `wsl-import-full` 下机械 DoD 的实测事实（证据行要用）。 */
-  let laneDod: { passed: number; coverage: string } | null = null;
+  let laneDod: { passed: number; coverage: number } | null = null;
   let branch: string;
   if (imported && laneStarted) {
     branch = 'imported';
@@ -618,8 +629,9 @@ export async function run(): Promise<void> {
     }
     assert.ok(covIndex, 'Linux lane coverage_report/index.html must exist after the real build');
     console.log('[real] coverage report: ' + covIndex);
-    const pct = readCoveragePct(covIndex.slice(0, covIndex.lastIndexOf('/')));
-    console.log('[real] coverage lines pct ≈ ' + pct);
+    const pct = readCoverageLinePct(covIndex.slice(0, covIndex.lastIndexOf('/')));
+    console.log('[real] coverage lines pct ≈ ' + (pct ?? '?'));
+    assert.ok(pct !== null && Number.isFinite(pct), `必须能从覆盖率报告里读出数字（实际 ${pct}）`);
   }
 
   // Docs scope (platform matrix, plan §5): the env-fresh jobs PREPARE the host

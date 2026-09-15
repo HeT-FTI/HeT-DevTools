@@ -321,7 +321,9 @@ jobs:
           if ($ev -match 'mode=wsl-import-full') {
             if ($ev -notmatch 'buildOk=true') { Write-Host "::error::full 模式必须带上 buildOk=true"; exit 1 }
             if ($ev -notmatch 'docs=ok') { Write-Host "::error::full 模式必须带上 docs=ok"; exit 1 }
-            if ($ev -notmatch 'coverage=') { Write-Host "::error::full 模式必须带上覆盖率实测值"; exit 1 }
+            # 必须带**数字**：`coverage=?` 也算"有这一段"，但那是"没读出来"，不是证据。
+            # 2026-09-15 实测：这条曾写成 `-notmatch 'coverage='`，于是 `coverage=?` 蒙混过关。
+            if ($ev -notmatch 'coverage=\d') { Write-Host "::error::full 模式必须带上覆盖率实测值（数字，而不是 '?'）"; exit 1 }
             if ($ev -notmatch 'idempotent=self-heal-verified') { Write-Host "::error::full 模式必须验到车道级幂等（自愈）"; exit 1 }
             Write-Host "✔ full：机械 DoD 的事实齐了"
           }
