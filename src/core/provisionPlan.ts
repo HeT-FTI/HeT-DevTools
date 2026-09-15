@@ -111,6 +111,15 @@ export function providerLabel(id: ProviderId): string {
   return PROVIDER_LABEL[id];
 }
 
+/**
+ * T19: providers that stand for a MANAGED LANE we own and can prepare (as
+ * opposed to "use whatever the host has" / "no lane at all"). The lifecycle
+ * phase uses this to tell "waiting for the user" apart from "blocked".
+ */
+export function isManagedLaneProvider(id: ProviderId): boolean {
+  return id === 'linux-managed' || id === 'win-wsl2' || id === 'win-wsl2-pending' || id === 'macos-native';
+}
+
 /** Minimal free-disk guidance (MB) before we warn about provisioning. */
 export const MIN_FREE_MB = 2048;
 

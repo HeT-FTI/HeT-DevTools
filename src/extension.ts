@@ -54,7 +54,8 @@ import { renderSearchQuery, renderTechDisclosure, PatentInput } from './core/pat
 import { resolveTemplateSource, resolveCloneRef, recommendedAnchors } from './core/templateService';
 import { discoverTools, TOOL_DEFS, ToolRow } from './core/toolchainDiscovery';
 import { getCurrentProvisionPlan, getHostCapabilities } from './features/env/provisionHost';
-import { providerLabel, ProvisionPrefs } from './core/provisionPlan';
+import type { ProviderDecision } from './core/provisionPlan';
+import { isManagedLaneProvider, providerLabel, ProvisionPrefs } from './core/provisionPlan';
 import { currentManagedStatus, managedGc, managedRemove } from './features/env/managedProvisioner';
 import { getWslLaneStatus } from './features/env/wslProbe';
 import { runWslConanCreate, runWslDocs, probeLaneDocsTools, LaneDocsTools, ensureWslLane } from './features/env/wslLane';
@@ -69,6 +70,16 @@ import { ensureMacLane, getMacLaneStatus, runMacConanCreate, runMacDocs } from '
 import { getLinuxLaneStatus, runLinuxConanCreate, runLinuxDocs, probeLinuxLaneFacts, linuxRootAvailable, ensureLinuxLane } from './features/env/linuxLane';
 import { ContractFacts, EnvContract, buildEnvContract } from './core/envContract';
 import { laneForPlatform, laneLcovFacts, laneMatrixLine } from './core/laneMatrix';
+import {
+  clearEnvPhaseRecord,
+  envPhaseView,
+  isConsented,
+  readEnvPhaseRecord,
+  withConsent,
+  withPhase,
+  writeEnvPhaseRecord,
+  type EnvPhaseView,
+} from './core/envPhase';
 import { docsFailureHint } from './core/docsHints';
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
 import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArchMessage } from './core/laneProfile';
@@ -441,6 +452,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
     const storage = contextRef?.globalStorageUri.fsPath ?? '';
     const managed = storage ? currentManagedStatus(storage, process.platform === 'win32') : null;
+    // T06: the unified contract is the preferred overview view — the four
+    // legacy per-platform blocks stay only as a fallback for payloads built
+    // elsewhere (tests/fixtures).
+    const contract = await collectEnvContract().catch(() => null);
+    // T19: one lifecycle strip for all three lanes. The phase is DERIVED from
+    // live facts (never a stale stored value); the persisted record only holds
+    // the user's consent and the reason of the last failure.
+    const phaseRecord = contextRef ? readEnvPhaseRecord(contextRef.globalState) : null;
+    const guideRow = contract?.rows.find((r) => r.required && r.disposition === 'guide');
+    const envPhase: EnvPhaseView = envPhaseView({
+      laneAvailable: plan ? isManagedLaneProvider(plan.provider) : false,
+      laneReady: contract?.ready === true,
+      consented: contextRef ? isConsented(contextRef.globalState) : false,
+      provisioning: envRun === 'provisioning',
+      guide: guideRow?.fix?.copy,
+      error: phaseRecord?.phase === 'blocked' ? phaseRecord.reason : undefined,
+      probed: true,
+    });
     return {
       projectName: currentProject?.metadata?.name,
       version: currentProject?.metadata?.version,
@@ -453,11 +482,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         : null,
       runtime: rt ? { version: rt.version, envName: rt.envName, custom: rt.overrideUser === true } : null,
       envRows,
+      envPhase,
       plan: plan ? { label: providerLabel(plan.provider), coverage: plan.coverage, reason: plan.reason } : null,
-      // T06: the unified contract is the preferred overview view — the four
-      // legacy per-platform blocks stay only as a fallback for payloads built
-      // elsewhere (tests/fixtures).
-      contract: await collectEnvContract().catch(() => null),
+      contract,
       managed: managed && managed.state !== 'absent' ? managed : null,
       wsl:
         process.platform === 'win32' && (plan?.provider === 'win-wsl2' || plan?.provider === 'win-wsl2-pending')
@@ -3886,7 +3913,7 @@ async function runEnvRemove(): Promise<{ ok: boolean; message: string }> {
       unregisterHint = `\n如需连发行版一起删除：wsl --unregister ${wsl.distro}（仅当你不再需要该发行版时执行）`;
     }
   }
-  void ctx.globalState.update('het.env.consented', false);
+  void clearEnvPhaseRecord(ctx.globalState);
   const message = removed.length
     ? `已清理托管环境：\n· ${removed.join('\n· ')}${unregisterHint}`
     : `未发现可清理的托管环境。${unregisterHint}`;
@@ -3966,6 +3993,9 @@ function wslRootfsOverride(): { url?: string; sha256?: string } {
   };
 }
 
+/** T19: an in-flight prepare (drives the 准备中 phase without a probe). */
+let envRun: 'idle' | 'provisioning' = 'idle';
+
 async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: string }> {
   const ctx = contextRef;
   if (!ctx) {
@@ -3977,7 +4007,9 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
     // Diagnostics: which requirements this lane heals itself vs asks the user for.
     log(`[env] lane matrix: ${laneMatrixLine(lane.id)}`);
   }
-  const consented = quietHost() || ctx.globalState.get<boolean>('het.env.consented', false) === true;
+  // T19: the lifecycle record is the single place the user's decision lives.
+  const recorded = readEnvPhaseRecord(ctx.globalState);
+  const consented = quietHost() || isConsented(ctx.globalState);
   if (!consented) {
     const choice = await askModal(
       '准备托管构建环境？将在隔离车道内下载 conan/cmake/ninja（Linux：~/.het-fti/managed-env；WSL2：发行版内同名路径），必要时用免密 root 安装编译器/lcov（会列出安装包）。可随时用「移除托管环境」清理。',
@@ -3986,8 +4018,33 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
     if (choice !== '同意并开始') {
       return { ok: false, state: 'absent', message: '已取消。' };
     }
-    await ctx.globalState.update('het.env.consented', true);
+    await writeEnvPhaseRecord(ctx.globalState, withConsent(recorded, Date.now()));
   }
+  // From here on the run is in flight: the card shows 准备中 instead of a stale
+  // 待准备, and a reload during the run cannot pretend nothing happened.
+  envRun = 'provisioning';
+  void writeEnvPhaseRecord(ctx.globalState, withPhase(readEnvPhaseRecord(ctx.globalState), 'provisioning', Date.now(), { lane: plan?.provider }));
+  let result: { ok: boolean; state: string; message: string };
+  try {
+    result = await provisionLane(plan, ctx);
+  } finally {
+    envRun = 'idle';
+  }
+  // T19: the terminal transition is recorded (never a silent stay in 准备中),
+  // and a failure keeps its reason so the card can show it after a reload.
+  const record = readEnvPhaseRecord(ctx.globalState);
+  void writeEnvPhaseRecord(
+    ctx.globalState,
+    withPhase(record, result.ok ? 'ready' : 'blocked', Date.now(), {
+      lane: plan?.provider,
+      reason: result.ok ? undefined : result.message,
+    }),
+  );
+  return result;
+}
+
+/** The actual lane provisioning (extracted so the run can be book-ended). */
+async function provisionLane(plan: ProviderDecision | null, ctx: vscode.ExtensionContext): Promise<{ ok: boolean; state: string; message: string }> {
   try {
     if (process.platform === 'win32') {
       const wsl = await getWslLaneStatus(true).catch(() => null);

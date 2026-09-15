@@ -10,6 +10,7 @@ import { PAGES, CockpitPage } from '../layout';
 import { CockpitState, CockpitWizard } from '../state';
 import type { ToolRow } from '../../../core/toolchainDiscovery';
 import type { Disposition, EnvContract } from '../../../core/envContract';
+import { EnvPhaseView, envPhaseHtml } from '../../../core/envPhase';
 
 export interface CockpitAssets {
   codiconCss: string;
@@ -62,6 +63,8 @@ export interface OverviewPayload {
   linux?: LinuxView | null;
   /** T06: the unified environment contract (rows/ready/next) — preferred view. */
   contract?: EnvContract | null;
+  /** T19: the lane lifecycle strip (detecting → needsConsent → provisioning → ready/blocked). */
+  envPhase?: EnvPhaseView | null;
 }
 
 export interface BuildTestPayload {
@@ -344,6 +347,7 @@ function overviewContent(p: OverviewPayload): string {
       <div class="card"><div class="ct">最近构建</div><div class="cv">${statusMark(p.lastBuildOk)} ${p.lastBuildOk === null ? '未运行' : p.lastBuildOk ? '成功' : '失败'}</div></div>
       <div class="card"><div class="ct">最近测试</div><div class="cv">${p.lastTest ? `${statusMark((p.lastTest.failed ?? 0) === 0)} ${p.lastTest.passed ?? 0}/${(p.lastTest.failed ?? 0) + (p.lastTest.passed ?? 0)}` : '未运行'}</div></div>
     </div>
+    ${envPhaseHtml(p.envPhase ?? null)}
     ${p.contract ? envCardHtml(p.contract) : `${envTopHtml(p.plan ?? null, p.managed ?? null)}
     ${envWslHtml(p.wsl ?? null)}
     ${envOsxHtml(p.osx ?? null)}
