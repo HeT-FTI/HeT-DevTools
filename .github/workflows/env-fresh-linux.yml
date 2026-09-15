@@ -174,10 +174,14 @@ jobs:
           本作业要证明：
             1) system 语义真的绕过托管车道（构建后 ~/.het-fti 仍然不存在）；
             2) 只用宿主 conan（pip venv）+ 系统 gcc + 宿主 CMake 就能完成 `conan create` + GTest；
-            3) 夹具自动关闭 activate_code_coverage（system/原生不承诺覆盖率），不会在 CMake 阶段炸。
+            3) 夹具自动关闭 activate_code_coverage（system/原生不承诺覆盖率），不会在 CMake 阶段炸；
+            4) 宿主**已备齐**文档前置（doxygen/graphviz/make + sphinx/numpy）时，文档也能跑通
+               —— 即 system 模式是"完整可用"的，只是把准备工具的责任交还用户。
 
           注意：Provider 决策仍按宿主能力解析（runner 有 apt+sudo → linux-managed），
           但构建分派会因 metadata.toolchain=system 走原生分支 —— 这正是要验证的“显式旁路”。
+          宿主**未**备齐工具时，正确行为是"诚实报错 + 可执行指引"（由 docsHints 单测覆盖），
+          因此本作业的 SETUP 会先把工具装齐。
           EOF
           echo "::endgroup::"
 
@@ -187,14 +191,23 @@ jobs:
           sudo -n true || { echo "::error::passwordless sudo unavailable (provider 将不是 linux-managed)"; exit 1; }
           echo "✔ fresh host + apt/sudo → provider 预期 linux-managed，构建走 system 分支"
 
-      - name: "SETUP: 宿主 conan（pip venv）+ 默认 profile"
+      - name: "SETUP: 宿主工具链（pip conan + 文档前置）"
         run: |
-          echo "安装宿主 conan 到 /tmp/het-conan 并 conan profile detect（system 模式的前提）。"
+          echo "system 模式 = 用宿主自己的工具，扩展**不会**替你安装（这是设计契约，不是缺陷）。"
+          echo "本作业模拟「工具已备齐的用户机」：宿主 conan/doxygen/graphviz/make + venv 里的 sphinx/numpy。"
+          echo "· 宿主 conan（pip venv）"
           python3 -m venv /tmp/het-conan
           /tmp/het-conan/bin/pip install --quiet "conan>=2,<3"
           echo "/tmp/het-conan/bin" >> "$GITHUB_PATH"
           /tmp/het-conan/bin/conan profile detect --force
+          echo "· 文档前置：apt doxygen/graphviz/make + pip sphinx/numpy（原生 docs 走宿主 python）"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq doxygen graphviz make
+          /tmp/het-conan/bin/pip install --quiet 'sphinx>=8,<9' sphinx-intl 'sphinx-rtd-theme>=2,<4' 'numpy>=1.26'
           echo "✔ host conan: $(/tmp/het-conan/bin/conan --version)"
+          echo "✔ doxygen: $(doxygen --version) | dot: $(dot -V 2>&1 | head -1)"
+          echo "✔ venv numpy/sphinx: $(/tmp/het-conan/bin/python -c 'import numpy, sphinx; print(numpy.__version__)')"
+          echo "（宿主缺前置时应当是「诚实报错 + 可执行指引」，由 src/test/docsHints.test.ts 单测覆盖）"
 
       - name: "MAIN: 真实扩展宿主 —— system 工具链构建"
         env:

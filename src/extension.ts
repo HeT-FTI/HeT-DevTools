@@ -67,6 +67,7 @@ import { getMacosLaneStatus } from './features/env/macosProbe';
 import { ensureMacLane, getMacLaneStatus, runMacConanCreate, runMacDocs } from './features/env/macLane';
 import { getLinuxLaneStatus, runLinuxConanCreate, runLinuxDocs, probeLinuxLaneFacts, linuxRootAvailable, ensureLinuxLane } from './features/env/linuxLane';
 import { ContractFacts, EnvContract, buildEnvContract } from './core/envContract';
+import { docsFailureHint } from './core/docsHints';
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
 import { laneCompilerGuide, unsupportedArchMessage } from './core/laneProfile';
 import { openHudPanel } from './features/hud/panel';
@@ -1573,9 +1574,19 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     const preamble = `[docs] ${python} docs/build.py @ ${root}`;
     lastDocsOutput += `${preamble}\n`;
     channel?.appendLine(preamble);
+    // `docs/build.py` shells out to `sphinx-build` / `sphinx-intl` / `doxygen` /
+    // `dot`. The interpreter we picked may live in a venv that is NOT on the
+    // host PATH (e.g. a venv python resolved from the conan runtime), in which
+    // case the sibling console scripts would not be found:
+    //   FileNotFoundError: [Errno 2] No such file or directory: 'sphinx-intl'
+    // Prepend the interpreter's own directory so its venv tools always resolve.
+    const pyDir = dirname(python);
+    const docsEnv = { ...process.env, PATH: `${pyDir}${delimiter}${process.env.PATH ?? ''}` };
+    channel?.appendLine(`[docs] PATH += ${pyDir}`);
     emitCockpitEvent({ type: 'log:start', title: `docs/build.py（本机）` });
     const result = await run(python, ['docs/build.py'], {
       cwd: root,
+      env: docsEnv,
       onStdout: stream,
       onStderr: stream,
       timeoutMs: 0,
@@ -1586,7 +1597,13 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     emitCockpitEvent({ type: 'log:done', ok });
     finish(ok);
     if (!ok) {
-      return { ok: false, message: '文档生成失败：请查看“输出 → HeT DevTools”中的原始日志（常见：注释标注/工具缺失）。' };
+      // A missing prerequisite must come back as an executable path, not a bare
+      // traceback (the env-fresh `linux-system` job hit exactly this with numpy).
+      const hint = docsFailureHint({ tail: lastDocsOutput.slice(-4000), python, platform: process.platform });
+      return {
+        ok: false,
+        message: hint ?? '文档生成失败：请查看“输出 → HeT DevTools”中的原始日志（常见：注释标注/工具缺失）。',
+      };
     }
     return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面。` };
   };
