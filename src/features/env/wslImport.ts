@@ -66,7 +66,7 @@ export interface ImportOutcome {
 export async function wslExeAvailable(): Promise<boolean> {
   try {
     const r = await run(wslExePath(), ['--status'], { timeoutMs: 20_000 });
-    return (r.code ?? 1) === 0 || /wsl|kernel|版本|Default/i.test(`${r.stdout}${r.stderr}`);
+    return (r.code ?? 1) === 0 || /wsl|kernel|版本|Default/i.test(`${wslText(r.stdout)}${wslText(r.stderr)}`);
   } catch {
     return false;
   }
@@ -133,6 +133,16 @@ function tailOf(text: string, lines = 12): string {
 }
 
 /**
+ * `wsl.exe` 自己的消息是 **UTF-16LE**（`wsl -l -q` 也是如此），直接拼进错误文本会变成
+ * `T\u0000h\u0000e\u0000…` —— 用户看到的就是这串乱码（2026-09-15 的 `windows-wsl-import`
+ * 首跑实测：真实原因 "The imported file is not a valid Linux distribution" 被藏在了 NUL
+ * 之间）。凡是要把 wsl.exe 的输出给人看的地方，都先过这一道。
+ */
+function wslText(raw: string): string {
+  return decodeWslOutput(raw ?? '');
+}
+
+/**
  * 失败时的统一尾巴（见 `core/wslDistro › laneFailureHint`）—— 本模块头部的契约是
  * “失败一律保留现场 + 给 A/C 两条路，绝不静默转 MSVC”，而它此前只在 `wsl --import`
  * 失败时给出；bootstrap 失败对用户是同一个处境（车道用不了），所以共用一段文案。
@@ -182,7 +192,7 @@ export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutco
       plan,
       cachePath: rootfs.path,
       reason:
-        `wsl --import 失败（exit=${imp.code}）：\n${tailOf(`${imp.stdout}\n${imp.stderr}`)}\n` +
+        `wsl --import 失败（exit=${imp.code}）：\n${tailOf(`${wslText(imp.stdout)}\n${wslText(imp.stderr)}`)}\n` +
         `常见原因：虚拟化/虚拟机平台未开启、磁盘空间不足、同名发行版被占用。${LANE_ROUTE_HINT}`,
     };
   }
@@ -261,7 +271,7 @@ export async function teardownLaneDistro(opts: {
     await run(wslExePath(), wslTerminateArgs(name), { timeoutMs: 60_000 }).catch(() => null);
     const un = await run(wslExePath(), wslUnregisterArgs(name), { timeoutMs: 5 * 60_000 }).catch((err: Error) => ({ code: -1, stderr: err.message, stdout: '' }));
     if ((un.code ?? 1) !== 0) {
-      return { ok: false, removed, reason: `wsl --unregister ${name} 失败：${tailOf(`${un.stdout}\n${un.stderr}`, 6)}` };
+      return { ok: false, removed, reason: `wsl --unregister ${name} 失败：${tailOf(`${wslText(un.stdout)}\n${wslText(un.stderr)}`, 6)}` };
     }
     rmSync(laneWslInstallDir(opts.localAppData, name), { recursive: true, force: true });
     removed.push(name);

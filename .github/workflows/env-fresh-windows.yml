@@ -185,17 +185,18 @@ jobs:
           本作业要证明（每条都要有机器证据）：
             1) 计划层必须提议「自建私有发行版」，并把代价（下载体积/磁盘）与「不会改动你已有的
                发行版」说清；
-            2) **0 侵入**：跑前/跑后的 `wsl -l -q` 对比 —— 已有发行版一个都不能消失，
-               新增的只能是我们自己命名的；
-            3) 真实执行会走到 `wsl --import`（rootfs 用极小样本 + 工作区覆盖，走的是同一条
-               「sha256 校验 → 缓存」路径；CI 不下载 340MB，官方镜像的钉死 sha 由单测 + 机器 DoD 覆盖）；
-            4) 失败必须给 A（`wsl --install -d Ubuntu-24.04`）/ C（`toolchain: system`）两条路，
-               且**绝不**把工程偷偷切成 system；
-            5) `het.envRemove` 之后发行版集合回到跑前。
+            2) 钉死 sha256 的**官方 rootfs 真下载 + 真校验**（缓存按 sha 命名、复用不重下）；
+            3) **0 侵入**：跑前/跑后的 `wsl -l -q` 对比 —— 已有发行版一个都不能消失；测试夹具会先
+               用一个**同名但没有我们双标记**的发行版占住基础名，产品必须换名（-2），
+               既不覆盖它、也不给它写任何标记；
+            4) 真实执行会走到 `wsl --import` → bootstrap；失败必须给 A（`wsl --install -d Ubuntu-24.04`）
+               / C（`toolchain: system`）两条路，且**绝不**把工程偷偷切成 system；
+            5) `het.envRemove` 只撤销我们自己的那个，诱饵原样保留。
 
-          诚实边界：导入后的发行版**能不能启动**验不了（托管 runner 无嵌套虚拟化）→ 那一段归机器
-          DoD（`scripts/run-lane-dod.mjs`）。若本 runner 恰好能 import，SETUP 会注册一个**同名但非
-          我们的**诱饵发行版，本作业即自动升级为「必须换名 -2，绝不接管」的完整断言。
+          首次运行（run 34940348222）的教训，已写进场景：托管 runner 的 WSL **能注册发行版**
+          （`wsl --import` 真的跑并做了镜像校验），但**没有硬件虚拟化**
+          （VirtualizationFirmwareEnabled=False）→ 发行版能建不能启动。因此预期结果是
+          `branch=imported-no-lane`（而不是“完全跑不起来”）。发行版“能不能启动”归机器 DoD。
           '@ | Write-Host
           Write-Host "::endgroup::"
 
@@ -236,28 +237,6 @@ jobs:
           Write-Host "::endgroup::"
           exit 0
 
-      - name: "SETUP: 同名诱饵 —— 若 runner 能 import，就试出「必须换名」"
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $dir = Join-Path $env:RUNNER_TEMP 'decoy-src'
-          $tar = Join-Path $env:RUNNER_TEMP 'decoy-rootfs.tar.gz'
-          $install = Join-Path $env:RUNNER_TEMP 'decoy-install'
-          New-Item -ItemType Directory -Force -Path $dir, $install | Out-Null
-          Set-Content -Path (Join-Path $dir 'decoy.txt') -Value 'not our lane' -Encoding utf8
-          tar -czf $tar -C $dir .
-          # 名字与计划的默认名一致 → 同名冲突必须走"换名"，绝不接管（I1）。
-          $name = 'het-lane-2404'
-          & wsl --import $name $install $tar --version 2 2>&1 | Out-String | Write-Host
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "✔ 诱饵已注册（$name，没有我们的双标记）：本次自建必须换名，绝不接管"
-            "decoy=1" | Set-Content out/wsl-decoy.txt -Encoding utf8
-          } else {
-            Write-Host "· 本 runner 无法 import（无嵌套虚拟化）→ 换名判据由 wslDistro / wslImportStub 单测（跨平台）与机器 DoD 覆盖"
-            "decoy=0" | Set-Content out/wsl-decoy.txt -Encoding utf8
-          }
-          exit 0
-
       - name: "MAIN: 真实扩展宿主 —— 计划/代价 → 真实执行 → 0 侵入"
         env:
           # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
@@ -293,8 +272,9 @@ jobs:
           $metaPath = 'out/real-proj/metadata.json'
           if (Test-Path $metaPath) {
             $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
-            if ($meta.toolchain -ne 'managed') { Write-Host "::error::失败路径不得改 toolchain（实际 $($meta.toolchain)）—— 绝不静默降级"; exit 1 }
-            Write-Host "✔ 自建没成时，工程仍然是 managed（没有偷偷切成 system）"
+            # managed = 模板里**没有** toolchain 这个键（默认语义）；“被切成 system”才是违约。
+            if ($meta.toolchain -eq 'system') { Write-Host "::error::失败路径不得改 toolchain（实际 $($meta.toolchain)）—— 绝不静默降级"; exit 1 }
+            Write-Host "✔ 自建没成时，工程仍然不是 system（没有偷偷降级）"
           } else {
             Write-Host "::warning::找不到 $metaPath（MAIN 可能在准备夹具前就失败了）"
           }
@@ -335,16 +315,13 @@ jobs:
         run: |
           Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
           if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
-          if (Test-Path out/wsl-decoy.txt) { Write-Host "诱饵（同名非我们的发行版）是否成立：$(Get-Content out/wsl-decoy.txt -Raw)" }
           Write-Host "::endgroup::"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: evidence-windows-wsl-import
-          path: |
-            out/real-evidence.txt
-            out/wsl-decoy.txt
+          path: out/real-evidence.txt
           if-no-files-found: ignore
 
   windows-blocked:

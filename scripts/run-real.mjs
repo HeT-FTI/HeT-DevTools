@@ -7,9 +7,7 @@
 import { runTests } from '@vscode/test-electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync, readdirSync, rmSync, readFileSync, writeFileSync, mkdirSync, cpSync, accessSync, constants as fsConsts } from 'node:fs';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, rmSync, readFileSync, writeFileSync, cpSync, accessSync, constants as fsConsts } from 'node:fs';
 import { platform, homedir } from 'node:os';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,29 +55,10 @@ console.log(
   `[real] project fixture ready: ${proj} (toolchain=${meta.toolchain ?? 'managed'} coverage=${meta.activate_code_coverage ? 'on' : 'off'})`,
 );
 
-// T17d-CI: the Windows self-provision scenario needs a rootfs that PASSES the sha256 check
-// but must not cost 340 MB in CI. We therefore build a tiny sample and point the extension at
-// it through WORKSPACE settings — the local/air-gapped source (`file://` or a plain path) is a
-// supported product path (core/wslRootfs), not a test-only shortcut.
+// 自建发行版场景不再需要夹具：它由 harness 自己取**产品钉死 sha256 的官方 rootfs**
+// （真下载 + 真校验），并用平台自己的工具放一个同名诱饵。这里只解释一下为什么没有夹具。
 if (process.env.HET_REAL_WSL_IMPORT === '1') {
-  const sampleDir = join(root, 'out', 'wsl-rootfs-sample');
-  const sampleTar = join(root, 'out', 'wsl-rootfs-sample.tar.gz');
-  rmSync(sampleDir, { recursive: true, force: true });
-  rmSync(sampleTar, { force: true });
-  mkdirSync(sampleDir, { recursive: true });
-  writeFileSync(join(sampleDir, 'rootfs-sample.txt'), 'het lane rootfs sample (CI, not a bootable image)\n', 'utf8');
-  // `tar` ships with Windows 10+ (bsdtar) and every Linux/macOS runner.
-  execFileSync('tar', ['-czf', sampleTar, '-C', sampleDir, '.'], { stdio: 'inherit' });
-  const bytes = readFileSync(sampleTar);
-  const sha = createHash('sha256').update(bytes).digest('hex');
-  mkdirSync(join(proj, '.vscode'), { recursive: true });
-  writeFileSync(
-    join(proj, '.vscode', 'settings.json'),
-    JSON.stringify({ 'het.env.wslRootfsUrl': sampleTar, 'het.env.wslRootfsSha256': sha }, null, 2) + '\n',
-    'utf8',
-  );
-  console.log(`[real] wsl-import fixture: rootfs sample ${sampleTar} (${bytes.length} B, sha256=${sha.slice(0, 16)}…)`);
-  console.log('[real] note: CI 用极小样本走同一条「sha256 校验 → 缓存 → import」路径；官方镜像的钉死 sha256 由单测 + 机器 DoD 覆盖');
+  console.log('[real] wsl-import fixture: 无（rootfs 用产品钉死的官方源；诱饵由 harness 用真 wsl.exe 注册）');
 }
 
 // Explicit scenario banner (T23): the job log must state WHAT is verified.

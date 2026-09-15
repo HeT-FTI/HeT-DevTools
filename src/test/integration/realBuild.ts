@@ -19,7 +19,9 @@ import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { EXTENSION_ID, discoveredIds, hetExtension } from '../hostExtension';
 import { decodeWslOutput, parseWslList } from '../../core/wslHost';
-import { laneOwnerMarkerPath } from '../../core/wslDistro';
+import { LANE_ROOTFS, laneDistroBaseName, laneOwnerMarkerPath, laneRootfsCachePath, wslImportArgs } from '../../core/wslDistro';
+import { ensureRootfs } from '../../core/wslRootfs';
+import { run as execRun } from '../../utils/exec';
 
 interface ProviderPlan {
   provider?: string;
@@ -152,23 +154,30 @@ const OUR_DISTRO_RE = /^het-lane-\d{4}(?:-\d+)?$/u;
 /**
  * T17d（CI 部分）：Windows 自建私有发行版的端到端契约。
  *
- * 托管 runner **无嵌套虚拟化**，所以这里能验的是（每一项都有机器证据）：
- *   ① 无发行版时的计划必须提议自建，并把代价（下载/磁盘）与 0 侵入说清；
- *   ② **0 侵入**：跑前/跑后 `wsl -l -q` 对比 —— 用户已有的发行版不允许消失，
- *      新增的只允许是我们自己命名的；
- *   ③ 真实执行 `het.envPrepare`（rootfs 校验/缓存 → `wsl --import` → bootstrap），
- *      失败必须给 A/C 两条路，且**绝不**偷偷把工程切成 `system`；
- *   ④ `het.envRemove` 之后回到跑前集合（导入成功时是硬断言）。
- * 验不了的（日志里明说）：导入后的发行版**能否启动** → 机器 DoD（`run-lane-dod.mjs`）。
- * 若 runner 恰好能 import（自托管/将来），同一段代码自动升级到完整断言（换名 + 幂等复用）。
+ * 2026-09-15 首跑教训（run 34940348222）：托管 runner 的 WSL **能注册发行版**（`wsl --import`
+ * 真的执行了并且做了镜像校验），只是**没有硬件虚拟化**（VirtualizationFirmwareEnabled=False）
+ * → 发行版能建不能启动。所以这里不再自造极小样本，而是用产品**钉死 sha256 的官方 rootfs**
+ * 走真实路径；并用平台自己的工具先放一个"同名但没有我们双标记"的发行版，把换名判据逼出来。
+ *
+ * 逐条机器证据：
+ *   ① 无发行版时的计划必须提议自建，并把代价（下载/磁盘）与"不会改动你已有的发行版"说清；
+ *   ② 钉死 sha256 的官方 rootfs 真下载 + 真校验（缓存路径必须按 sha 命名，复用不重下）；
+ *   ③ **0 侵入**：跑前/跑后 `wsl -l -q` 对比 —— 已有发行版不允许消失；同名诱饵不得被接管
+ *      （既不覆盖它，也不给它写我们的标记）；
+ *   ④ 真实执行 `het.envPrepare`：rootfs 复用缓存 → `wsl --import` → bootstrap；失败必须给
+ *      A/C 两条路，且**绝不**偷偷把工程切成 `system`（模板里 managed = 不写这个键）；
+ *   ⑤ `het.envRemove` 只撤销我们自己的那个，诱饵原样保留。
+ * 验不了的（日志里明说）：发行版**能不能启动**（无硬件虚拟化）→ 机器 DoD（`run-lane-dod.mjs`）。
  */
 async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<unknown>): Promise<void> {
   assert.strictEqual(process.platform, 'win32', 'wsl-import 场景只在 Windows 上有意义');
   const projRoot = join(ext.extensionPath, 'out', 'real-proj');
+  const localAppData = process.env.LOCALAPPDATA ?? '';
+  const base = laneDistroBaseName();
 
   console.log('[real][W1/6] 计划层：无发行版时必须提议自建，且代价 + 0 侵入先讲清');
   assert.ok(plan.setup && plan.setup.kind === 'wsl-import', `expected a wsl-import proposal, got ${JSON.stringify(plan.setup)}`);
-  assert.match(String(plan.setup.distro), /^het-lane-\d{4}/u, '必须用我们自己的命名（het-lane-<版本号>）');
+  assert.strictEqual(String(plan.setup.distro), base, `计划里的默认名必须是基础名 ${base}`);
   assert.match(String(plan.setup.costText), /\d+MB/u, '代价（下载体积）必须先讲清');
   assert.match(String(plan.setup.costText), /GB/u, '代价（磁盘占用）必须先讲清');
   assert.match(String(plan.note ?? ''), /不会改动你已有的(任何)?发行版/u, '0 侵入承诺必须写进计划文案');
@@ -176,86 +185,113 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
   assert.match(String(plan.note ?? ''), /toolchain=system/u, 'C 路线（本机工具链）必须保留');
   console.log('[real] plan.setup=' + JSON.stringify(plan.setup));
 
-  console.log('[real][W2/6] 0 侵入基线：跑前快照（真实 wsl.exe）');
+  console.log('[real][W2/6] 0 侵入基线 + 官方 rootfs（钉死 sha256）真下载真校验');
   const before = realWslList();
   console.log('[real] wsl -l -q before: ' + JSON.stringify(before));
-  const decoy = before.filter((n) => /^het-lane-\d{4}$/u.test(n));
-  if (decoy.length > 0) {
-    console.log(`[real] 已有同名（无标记）发行版 ${decoy.join('/')} —— 本次必须换名导入，绝不接管`);
-  } else {
-    console.log('[real] 本 runner 无同名发行版：换名判据由 wslDistro / wslImportStub 单测覆盖（跨平台），此处只验"新增的只能是我们自己的名字"');
-  }
+  assert.ok(!before.includes(base), `GATE 应保证裸机：基线里不该已有 ${base}`);
+  const cacheDir = join(localAppData, 'het-fti', 'wsl', 'cache');
+  const rootfs = await ensureRootfs({
+    url: LANE_ROOTFS.url,
+    sha256: LANE_ROOTFS.sha256,
+    cacheDir,
+    bytes: LANE_ROOTFS.bytes,
+    onLog: (l) => console.log('[real][rootfs] ' + l),
+  });
+  assert.ok(rootfs.ok && rootfs.path, `官方 rootfs 必须能获取并通过 sha256 校验：${rootfs.reason ?? ''}`);
+  assert.strictEqual(rootfs.path, laneRootfsCachePath(localAppData, LANE_ROOTFS.sha256), '缓存路径必须按钉死的 sha256 命名');
+  console.log(`[real] rootfs ok: ${rootfs.path}（cached=${rootfs.cached === true}, ${rootfs.bytes} B）—— 钉死 sha256 在 Windows 上真验证过`);
 
-  console.log('[real][W3/6] 真实执行 het.envPrepare（rootfs 校验/缓存 → wsl --import → bootstrap）');
+  console.log('[real][W3/6] 诱饵：用平台自己的工具放一个"同名但没有我们双标记"的发行版');
+  const decoyInstall = join(process.env.RUNNER_TEMP ?? localAppData, 'het-decoy-install', base);
+  const decoyRun = await execRun('wsl.exe', wslImportArgs(base, decoyInstall, rootfs.path), { timeoutMs: 20 * 60_000 }).catch(
+    (err: Error) => ({ code: -1, stdout: '', stderr: err.message }),
+  );
+  const decoyCreated = (decoyRun.code ?? 1) === 0;
+  console.log(
+    decoyCreated
+      ? `[real] 诱饵 ${base} 已注册（无我们的双标记）→ 本次自建必须换名，绝不接管`
+      : `[real] 诱饵未能注册（exit=${decoyRun.code}：${decodeWslOutput(String(decoyRun.stderr)).split('\n')[0]}）→ 换名判据由单测 + 机器 DoD 覆盖`,
+  );
+
+  console.log('[real][W4/6] 真实执行 het.envPrepare（复用缓存 → wsl --import → bootstrap）');
   const res = (await vscode.commands.executeCommand('het.envPrepare')) as { ok?: boolean; state?: string; message?: string } | undefined;
   console.log('[real] envPrepare → ' + JSON.stringify(res));
 
   const after = realWslList();
   console.log('[real] wsl -l -q after : ' + JSON.stringify(after));
-  const newNames = after.filter((n) => !before.includes(n));
-  const lost = before.filter((n) => !after.includes(n));
-  const ours = after.filter((n) => OUR_DISTRO_RE.test(n));
-  assert.deepStrictEqual(lost, [], 'I2：绝不能动/注销用户已有的发行版');
-  assert.ok(newNames.every((n) => OUR_DISTRO_RE.test(n)), `新增的发行版只能是我们自己的名字：${JSON.stringify(newNames)}`);
-  assert.ok(ours.length <= 1, `最多只允许一个托管发行版，实际 ${JSON.stringify(ours)}`);
+  assert.deepStrictEqual(before.filter((n) => !after.includes(n)), [], 'I2：绝不能动/注销用户已有的发行版');
+  const added = after.filter((n) => !before.includes(n));
+  assert.ok(added.every((n) => OUR_DISTRO_RE.test(n)), `新增的发行版只能是我们命名的：${JSON.stringify(added)}`);
+  // "我们的" = Windows 侧真的写了 owner 标记的那些（不靠名字猜，I1 的口径）。
+  const claimed = after.filter((n) => existsSync(laneOwnerMarkerPath(localAppData, n)));
+  assert.ok(claimed.length <= 1, `最多只允许一个托管发行版，实际 ${JSON.stringify(claimed)}`);
 
   const msg = String(res?.message ?? '');
-  const imported = ours.length === 1;
-  const laneStarted = res?.ok === true;
+  const ours = claimed[0];
+  const imported = !!ours;
+  const laneStarted = res?.ok === true && imported;
   let branch: string;
   if (imported && laneStarted) {
     branch = 'imported';
-    console.log(`[real][W4/6] 自建成功：${ours[0]}（双标记回读已通过）`);
-    const marker = laneOwnerMarkerPath(process.env.LOCALAPPDATA ?? '', ours[0]);
-    assert.ok(existsSync(marker), `Windows 侧 owner 标记必须存在：${marker}`);
+    console.log(`[real][W5/6] 自建成功：${ours}（双标记回读已通过）—— 车道真的起来了`);
     console.log('[real] 幂等复跑（"避免重复"的用户可见承诺）…');
     await vscode.commands.executeCommand('het.envPrepare');
     assert.deepStrictEqual(realWslList(), after, '第二次准备必须复用已就绪的发行版（不新建）');
   } else if (imported) {
-    // 发行版建了，但车道没起来（无嵌套虚拟化 / 镜像无法引导 / 双标记没对上）。
     branch = 'imported-no-lane';
-    console.log('[real][W4/6] 发行版已建但车道不可用（托管 runner 的预期）：\n' + msg.split('\n').slice(0, 4).join('\n'));
+    console.log('[real][W5/6] 发行版已建但车道不可用（本 runner 的预期：无硬件虚拟化）：\n' + msg.split('\n').slice(0, 5).join('\n'));
     assert.match(msg, /车道无法启动|双标记/u, '这条路径必须说清失败在哪一步');
     assert.match(msg, /wsl --install -d Ubuntu-24\.04/u, '必须给 A 路线');
     assert.match(msg, /toolchain: system/u, '必须给 C 路线');
   } else {
     branch = 'blocked';
-    console.log('[real][W4/6] 未能自建（当前托管 runner 的预期结果）：\n' + msg.split('\n').slice(0, 4).join('\n'));
+    console.log('[real][W5/6] 未能自建：\n' + msg.split('\n').slice(0, 5).join('\n'));
     assert.ok(msg.trim().length > 0, '失败必须带原因，不能是空话');
     // 只要求"说清了是 WSL 这条链上的事"；真正严格的是下面的 A/C 与"没有静默降级"。
     assert.match(msg, /wsl|WSL/u, '失败必须给出技术原因（全文已打印在上面的日志里）');
     assert.match(msg, /wsl --install -d Ubuntu-24\.04/u, '必须给 A 路线');
     assert.match(msg, /toolchain: system/u, '必须给 C 路线');
   }
-  // 同名（无标记）已存在 → 名字必须换，绝不接管（只要 import 真的发生就能验）。
-  if (imported && decoy.length > 0) {
-    assert.match(ours[0], /-\d+$/u, `同名（无标记）已存在时必须换名，实际 ${ours[0]}`);
-    console.log(`[real] 换名判据已验证：${decoy.join('/')} 保持不变，我们用了 ${ours[0]}`);
-  }
-  // 绝不静默降级：自建没成时，工程必须仍然是 managed（不是偷偷变成 system）。
-  const meta = JSON.parse(readFileSync(join(projRoot, 'metadata.json'), 'utf8')) as { toolchain?: string };
-  assert.strictEqual(meta.toolchain, 'managed', '自建失败时不得偷偷把工程改成 system');
 
-  console.log('[real][W5/6] het.envRemove —— 撤销后必须回到跑前的集合');
+  // ③ 换名判据：诱饵占住基础名时，我们必须换名（不覆盖、不冒充），诱饵原样还在。
+  if (imported && decoyCreated) {
+    assert.notStrictEqual(ours, base, '同名（无标记）存在时绝不接管基础名');
+    assert.match(ours, /-\d+$/u, `必须换名，实际 ${ours}`);
+    assert.ok(after.includes(base), '诱饵必须原样还在');
+    console.log(`[real] 换名判据已验证：诱饵 ${base} 保持原样，我们用了 ${ours}`);
+  }
+  // I2 的文件系统面：绝不给别人的发行版写我们的标记。
+  if (decoyCreated) {
+    assert.ok(!existsSync(laneOwnerMarkerPath(localAppData, base)), '绝不给别人的发行版写标记');
+  }
+  // 绝不静默降级：自建没成时工程必须仍是 managed（模板里 managed = 不写 toolchain 键）。
+  const meta = JSON.parse(readFileSync(join(projRoot, 'metadata.json'), 'utf8')) as { toolchain?: string };
+  assert.notStrictEqual(meta.toolchain, 'system', '自建失败时不得偷偷把工程改成 system');
+
+  console.log('[real][W6/6] het.envRemove —— 只撤销我们自己的那个，诱饵原样保留');
   await vscode.commands.executeCommand('het.envRemove');
   const cleaned = realWslList();
   console.log('[real] wsl -l -q after remove: ' + JSON.stringify(cleaned));
-  const leftover = cleaned.filter((n) => !before.includes(n));
   assert.deepStrictEqual(before.filter((n) => !cleaned.includes(n)), [], 'I2：撤销也不得碰用户已有的发行版');
-  if (branch === 'imported') {
-    assert.deepStrictEqual(cleaned, before, '移除托管环境后必须与跑前完全一致');
-  } else if (leftover.length > 0) {
-    // 建了但没成 → 没有写入双标记 → I1 故意不接管（不认领就不该注销）。
-    // 现场交给作业的 CLEANUP 步骤按"跑前之外 + 我们的命名"精确删除。
-    console.log('[real] 非我们所有的残留（I1 不接管，交 CI 清理）：' + JSON.stringify(leftover));
+  assert.deepStrictEqual(
+    cleaned.filter((n) => existsSync(laneOwnerMarkerPath(localAppData, n))),
+    [],
+    '撤销后不得留下我们的发行版/标记',
+  );
+  if (decoyCreated) {
+    assert.ok(cleaned.includes(base), '诱饵必须还在 —— 我们无权注销别人的发行版');
+    console.log('[real] 撤销干净：我们的发行版已注销，诱饵原样保留');
+  }
+  const leftover = cleaned.filter((n) => !before.includes(n));
+  if (leftover.length > 0) {
+    console.log('[real] 本次由夹具创建、需要作业 CLEANUP 处理的残留：' + JSON.stringify(leftover));
   }
 
   const evidence =
     `platform=${process.platform} provider=${plan.provider} mode=wsl-import branch=${branch} planCost=ok intrude=none` +
-    ` distro=${ours[0] ?? '(none)'} renamed=${decoy.length > 0 && branch === 'imported' ? 'yes' : 'n/a'}` +
+    ` rootfs=pinned-sha256-verified distro=${ours ?? '(none)'} renamed=${decoyCreated && imported ? 'yes' : 'n/a'}` +
     ` vscode=${vscode.version} vscodeSource=${process.env.HET_VSCODE_SOURCE ?? '?'}\n`;
   writeFileSync(join(__dirname, '..', 'real-evidence.txt'), evidence, 'utf8');
-  console.log('[real][W6/6] evidence written');
   console.log('[real] PASS ' + evidence.trim());
 }
 

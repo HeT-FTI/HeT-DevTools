@@ -31,7 +31,7 @@ interface Env {
 }
 
 /** 造一个假 wsl.exe + 假 rootfs；每个场景一个独立沙箱。 */
-function sandbox(opts: { importFail?: boolean; bootFail?: boolean } = {}): Env {
+function sandbox(opts: { importFail?: boolean; importFailUtf16?: boolean; bootFail?: boolean } = {}): Env {
   const root = mkdtempSync(join(tmpdir(), 'het-wslstub-'));
   const record = join(root, 'args.log');
   const exe = join(root, 'wsl-stub.sh');
@@ -52,6 +52,11 @@ case "$1" in
   --import)
     name="$2"; dir="$3"; tar="$4"
     mkdir -p "$dir"
+    if [ "${opts.importFailUtf16 ? '1' : '0'}" = "1" ]; then
+      # wsl.exe 自己的消息是 UTF-16LE：这里写真实的字节（NUL 夹在每个字符之间）
+      printf 'T\0h\0e\0 \0i\0m\0p\0o\0r\0t\0e\0d\0 \0f\0i\0l\0e\0' >&2
+      exit 1
+    fi
     if [ "${opts.importFail ? '1' : '0'}" = "1" ]; then echo "The operation could not be started" >&2; exit 1; fi
     # 注意：coreutils 在“文件名含反斜杠/换行”时会给输出行加反斜杠前缀；
     # 本测试沙箱的缓存路径（Windows 分隔符）在 Linux 上就是这种文件名 → 从 stdin 读可避免。
@@ -161,6 +166,23 @@ describe('T17b wslImport（桩 wsl.exe：决定链 + import + bootstrap + 0 侵�
       assert.match(out.reason ?? '', /wsl --import 失败（exit=1）/u);
       assert.match(out.reason ?? '', /The operation could not be started/u, '保留现场：把真实输出带出来');
       assert.match(out.reason ?? '', /路线 A.*路线 C|常见原因/u);
+    } finally {
+      rmSync(env.root, { recursive: true, force: true });
+    }
+  });
+
+  (POSIX ? it : it.skip)('wsl.exe 的消息是 UTF-16LE：给人看之前必须先解码（不能是 NUL 乱码）', async () => {
+    const env = sandbox({ importFailUtf16: true });
+    try {
+      const out = await withEnv(env, 'Ubuntu-24.04', () =>
+        importLaneDistro({ localAppData: env.localAppData, extensionVersion: '0.4.0', rootfs: { url: env.rootfs, sha256: STUB_SHA } }),
+      );
+      assert.strictEqual(out.ok, false);
+      // 2026-09-15 windows-wsl-import 首跑实测：真实原因被 NUL 夹碎成
+      // `T\u0000h\u0000e\u0000…`，用户看到的是乱码。
+      assert.ok(!(out.reason ?? '').includes('\u0000'), '不得把 NUL 乱码交给用户');
+      assert.match(out.reason ?? '', /The imported file/u, '必须能看到真实原因');
+      assert.match(out.reason ?? '', /wsl --install -d Ubuntu-24\.04/u, '路线 A');
     } finally {
       rmSync(env.root, { recursive: true, force: true });
     }
