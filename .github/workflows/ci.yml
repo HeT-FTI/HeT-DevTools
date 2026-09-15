@@ -23,6 +23,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # 必须在 checkout **之前**：Windows runner 的 git 默认 `core.autocrlf=true`，
+      # 会把 `assets/template/**` 检出成 CRLF → windows 那份 vsix 与 linux/macOS 那份
+      # 逐字节不同（2026-09-15 实测：155/158 个模板文件 hash 不一致，全是行尾差异）。
+      # 模板是发给所有平台的产物，交付物不能取决于打包机的 git 配置。
+      # （仓库另有 `.gitattributes` 声明 `assets/template/** text eol=lf` 做双保险。）
+      - name: Normalise line endings (template assets must stay LF)
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
 
       - name: Setup Node.js 22
@@ -48,6 +57,20 @@ jobs:
 
       - name: Package .vsix (dry-run artifact)
         run: npm run package
+
+      # 门禁：模板资源必须是 LF（否则打出来的包因平台而异，见上面的 checkout 步骤）。
+      # 只在 Windows 上跑 —— 那里才会发生行尾转换。
+      - name: Guard — packaged template must be LF (same bytes on every OS)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          bad=$(grep -rlI $'\r' assets/template || true)
+          if [ -n "$bad" ]; then
+            echo "::error::模板资源被检出成 CRLF，打出的 vsix 将与 linux/macOS 那份不一致："
+            echo "$bad" | head -10
+            exit 1
+          fi
+          echo "模板资源全部为 LF（$(find assets/template -type f | wc -l) 个文件）"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
