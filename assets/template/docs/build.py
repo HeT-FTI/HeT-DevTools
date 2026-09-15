@@ -443,7 +443,8 @@ class AutomationDoc:
         _meta_config = _meta_config.replace("%LIB_NAME%", self.meta.get('name'))
         _meta_config = _meta_config.replace("%PATTERNS%",
                                             ' '.join([f'*.{_}' for _ in self.meta.get('doc_doxygen_suffix')]))
-        _meta_config = _meta_config.replace("%GRAPHVIZ_BIN%", self.meta.get('graphviz_bin'))
+        _meta_config = _meta_config.replace("%GRAPHVIZ_BIN%",
+                                            self.meta.get('graphviz_bin') or '')   # T14: absent = use dot from PATH
 
         _build_folder = self._doxygen_root + sep + 'build'
         for _lang in self.meta.get('doc_languages'):

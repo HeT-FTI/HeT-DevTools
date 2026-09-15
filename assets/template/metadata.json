@@ -30,7 +30,6 @@
     "infra": {"GTest": ["gtest::gtest"], "pybind11": ["pybind11::module"]}
   },
   "baremetal_white_list": ["etl", "ArduinoJson"],
-  "graphviz_bin": "/usr/bin",
   "doc_languages": ["en", "zh"],
   "doc_versions": ["1.0", "2.0"],
   "doc_doxygen_folders": ["include", "src", "docs/doxygen/dox"],

@@ -210,8 +210,14 @@ class PackageTestConan(ConanFile):
         cmd1 = ['lcov', '--directory', coverage_folder, '--capture', '--output-file',
                 os.path.join(coverage_folder, 'coverage_test.info'), '--rc', 'geninfo_auto_base=1']
         subprocess.run(cmd1, check=True)
+        # T10/E4: derive the extraction pattern from the REAL package cache path
+        # (_pkg_uid comes from `conan cache path` above) instead of hard-coding
+        # `*/.conan2/p/b/…` — the managed lane may name CONAN_HOME anything
+        # (e.g. ~/.het-fti/managed-env/<name>), which used to make the filter
+        # match nothing → empty local coverage while CI passed. Kept a leading
+        # `*` so symlinked/macOS-private cache roots still match.
         cmd2 = ['lcov', '--extract', os.path.join(coverage_folder, 'coverage_test.info'),
-                f'*/.conan2/p/b/{_name[:3]}*', '--output-file',
+                f'*/p/b/{_pkg_uid}*', '--output-file',
                 os.path.join(coverage_folder, 'coverage_test.filtered.info')]
         subprocess.run(cmd2, check=True) # hard-coding: your package name len >= 3
         cmd3 = ['genhtml', os.path.join(coverage_folder, 'coverage_test.filtered.info'),

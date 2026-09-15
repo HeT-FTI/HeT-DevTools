@@ -1,4 +1,11 @@
-cmake_minimum_required(VERSION 3.28)
+# T09: the CI baseline is CMake 3.28 (ubuntu-24.04 runner). Hosts with an older
+# CMake may explicitly lower the floor — the default path is unchanged:
+#   cmake -DHET_CMAKE_MIN=3.15 ..
+if(DEFINED HET_CMAKE_MIN)
+  cmake_minimum_required(VERSION ${HET_CMAKE_MIN})
+else()
+  cmake_minimum_required(VERSION 3.28)
+endif()
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 string(JSON PROJECT_NAME_VALUE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "name")
 string(JSON TARGET_NAMESPACE_VALUE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "target")
