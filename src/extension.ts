@@ -147,9 +147,32 @@ function agoText(at: number | undefined): string | null {
  * True inside any automation host (unit/integration mocha, the installed-vsix
  * verify runner, or any harness that sets HET_NO_UI=1). These hosts must stay
  * zero-manual: no window toasts that a human would have to dismiss.
+ *
+ * `--extensionTestsPath` is the classic marker, but it is NOT guaranteed to be
+ * in the extension-host argv on every VS Code version (1.137 stopped carrying
+ * it) — so `run-real.mjs` ALSO sets HET_NO_UI=1, and every modal goes through
+ * `askModal()` which treats a refused dialog as "cancel" instead of crashing.
  */
 function quietHost(): boolean {
   return isTestHost || !!process.env.HET_VERIFY_PHASE || !!process.env.HET_NO_UI;
+}
+
+/**
+ * Modal confirm that can never break a command.
+ *
+ * A host that refuses dialogs (VS Code test hosts throw
+ * `DialogService: refused to show dialog in tests`; locked-down/remote hosts may
+ * too) must behave like "the user said no" — never like an exception that kills
+ * the whole flow (env-fresh · windows run 34925439823 died exactly there).
+ * Returns the picked label, or undefined when the dialog could not be shown.
+ */
+async function askModal(message: string, okLabel: string, cancelLabel = '取消'): Promise<string | undefined> {
+  try {
+    return await vscode.window.showWarningMessage(message, { modal: true }, okLabel, cancelLabel);
+  } catch (err) {
+    log(`[ui] 宿主拒绝显示弹窗 → 按「取消」处理：${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
 }
 
 /** A no-op-safe wrapper for success/error toasts that would distract in automation. */
@@ -158,13 +181,20 @@ function maybeToast(kind: 'info' | 'warn' | 'error', message: string, ...buttons
     log(message.replace(/\n/g, ' '));
     return undefined;
   }
-  if (kind === 'error') {
-    return vscode.window.showErrorMessage(message, ...buttons);
-  }
-  if (kind === 'warn') {
-    return vscode.window.showWarningMessage(message, ...buttons);
-  }
-  return vscode.window.showInformationMessage(message, ...buttons);
+  // A host that refuses dialogs rejects this promise — never let that surface as
+  // an unhandled rejection (and never as a failed command).
+  const shown = kind === 'error'
+    ? vscode.window.showErrorMessage(message, ...buttons)
+    : kind === 'warn'
+      ? vscode.window.showWarningMessage(message, ...buttons)
+      : vscode.window.showInformationMessage(message, ...buttons);
+  return shown.then(
+    (v) => v,
+    (err) => {
+      log(`[ui] 宿主拒绝显示提示 → 忽略：${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    },
+  );
 }
 
 /** Sniffed conan runtime (conda env + PATH emulation), cached 30 s. */
@@ -3862,19 +3892,17 @@ async function switchToSystemToolchain(): Promise<{ ok: boolean; message: string
   const quiet = quietHost();
   const choice = quiet
     ? '切换为 system'
-    : await vscode.window.showWarningMessage(
+    : (await askModal(
         '改用本机工具链（兼容模式）？\n\n' +
           '将把 metadata.json 的 toolchain 设为 "system"：\n' +
           '· 构建/测试走本机 conan + MSVC（Windows）或系统 gcc/clang\n' +
           '· 需要你自行准备：conan 2、C/C++ 编译器、CMake（模板要求 ≥3.28，可用 -DHET_CMAKE_MIN 自降）\n' +
           '· Windows/MSVC 无覆盖率（该能力仅在 WSL2 托管车道可用）\n\n' +
           '改回 "managed" 即可恢复车道语义（并支持一键准备）。',
-        { modal: true },
         '切换为 system',
-        '取消',
-      );
+      )) ?? '取消';
   if (choice !== '切换为 system') {
-    return { ok: false, message: '已取消。' };
+    return { ok: false, message: quiet ? '已取消。' : '已取消（未确认切换）。' };
   }
   try {
     const file = join(project.root, 'metadata.json');
@@ -3914,11 +3942,9 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
   const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
   const consented = quietHost() || ctx.globalState.get<boolean>('het.env.consented', false) === true;
   if (!consented) {
-    const choice = await vscode.window.showWarningMessage(
+    const choice = await askModal(
       '准备托管构建环境？将在隔离车道内下载 conan/cmake/ninja（Linux：~/.het-fti/managed-env；WSL2：发行版内同名路径），必要时用免密 root 安装编译器/lcov（会列出安装包）。可随时用「移除托管环境」清理。',
-      { modal: true },
       '同意并开始',
-      '取消',
     );
     if (choice !== '同意并开始') {
       return { ok: false, state: 'absent', message: '已取消。' };

@@ -131,6 +131,19 @@ export async function run(): Promise<void> {
   const ext = hetExtension();
   assert.ok(ext, `extension must be discovered — expected id "${EXTENSION_ID}"; discovered: ${discoveredIds()}`);
   console.log('[real] extension id: ' + ext!.id);
+  // Automation-host markers: `quietHost()` must be TRUE in this harness, otherwise
+  // any consent modal is attempted and VS Code rejects it (that killed
+  // env-fresh · windows run 34925439823 on VS Code 1.137, whose extension-host
+  // argv no longer carries `--extensionTestsPath`). Printed so the next such
+  // failure explains itself.
+  console.log(
+    '[real] automation markers: ' +
+      JSON.stringify({
+        HET_NO_UI: process.env.HET_NO_UI ?? '(unset)',
+        HET_VERIFY_PHASE: process.env.HET_VERIFY_PHASE ?? '(unset)',
+        argvHasTestsPath: process.argv.some((a) => a.includes('--extensionTestsPath')),
+      }),
+  );
   await ext.activate();
 
   // Provider decision must match the real host (heuristic, capability-first).

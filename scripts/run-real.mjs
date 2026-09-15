@@ -164,7 +164,23 @@ async function main() {
     opts.vscodeExecutablePath = vscodeExecutablePath;
   } else if (!process.env.VSCODE_VERSION) {
     throw new Error('no local VS Code found and VSCODE_VERSION not set');
+  } else {
+    // Pin the download: without this, @vscode/test-electron silently fetched the
+    // LATEST VS Code (the CI job asked for 1.95.0 but ran 1.137.0 — and the newer
+    // host stopped carrying `--extensionTestsPath` in the extension-host argv,
+    // which is how the modal-detection bug surfaced). Pinning keeps every job on
+    // the same host version.
+    opts.version = process.env.VSCODE_VERSION;
   }
+  // This harness IS an automation host: make it explicit instead of relying on
+  // argv sniffing, so modals/toasts are never attempted (vscode refuses dialogs
+  // in test hosts and the rejection used to kill the command).
+  process.env.HET_NO_UI = '1';
+  console.log(
+    '[real] VS Code: ' +
+      (vscodeExecutablePath ? `local ${vscodeExecutablePath}` : `download @ ${process.env.VSCODE_VERSION}`),
+  );
+  console.log('[real] automation markers: HET_NO_UI=1' + (process.env.HET_VERIFY_PHASE ? ' HET_VERIFY_PHASE=' + process.env.HET_VERIFY_PHASE : ''));
   await runTests(opts);
   console.log('[real] host exited cleanly');
 }
