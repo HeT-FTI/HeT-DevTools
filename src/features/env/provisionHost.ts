@@ -17,6 +17,7 @@ import {
   providerLabel,
   resolveProviderDecision,
 } from '../../core/provisionPlan';
+import { wslExePath } from '../../core/wslHost';
 
 let cached: { at: number; caps: HostCapabilities } | null = null;
 
@@ -29,7 +30,7 @@ function pathHas(leaf: string): boolean {
 /** `wsl.exe -l -q` exit 0 + any output ⇒ at least one distro is ready. */
 async function wslDefaultReady(): Promise<boolean> {
   try {
-    const r = await run('wsl.exe', ['-l', '-q'], { timeoutMs: 4000 });
+    const r = await run(wslExePath(), ['-l', '-q'], { timeoutMs: 4000 });
     if (r.code !== 0) {
       return false;
     }

@@ -9,7 +9,7 @@
  * Windows for the diagnostics parser.
  */
 import { run } from '../../utils/exec';
-import { decodeWslOutput, toWslPath, wslRunArgs } from '../../core/wslHost';
+import { decodeWslOutput, toWslPath, wslExePath, wslRunArgs } from '../../core/wslHost';
 import { settingsCompilerKey } from '../../core/laneSettings';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,7 +67,7 @@ export async function runWslScript(
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const tmp = writeWslTempScript(content);
   try {
-    const r = await run('wsl.exe', wslRunArgs(distro, 'bash', [tmp.wsl]), { timeoutMs });
+    const r = await run(wslExePath(), wslRunArgs(distro, 'bash', [tmp.wsl]), { timeoutMs });
     return { code: r.code ?? -1, stdout: r.stdout, stderr: r.stderr };
   } finally {
     rmSync(tmp.win, { force: true });
@@ -76,7 +76,7 @@ export async function runWslScript(
 
 /** Resolve the distro default user's $HOME (as the lane will run). */
 async function distroHome(distro: string): Promise<string> {
-  const r = await run('wsl.exe', wslRunArgs(distro, 'bash', ['-lc', 'printf %s "$HOME"']), {
+  const r = await run(wslExePath(), wslRunArgs(distro, 'bash', ['-lc', 'printf %s "$HOME"']), {
     timeoutMs: 15_000,
   });
   if (r.code !== 0 || !decodeWslOutput(r.stdout).trim()) {
@@ -143,7 +143,7 @@ export async function probeLaneDocsTools(distro: string): Promise<LaneDocsTools>
 
 /** Quiet, idempotent root apt install of one or more packages (no conda). */
 async function rootApt(distro: string, ...pkgs: string[]): Promise<void> {
-  await run('wsl.exe', ['-d', distro, '-u', 'root', '--', 'bash', '-lc',
+  await run(wslExePath(), ['-d', distro, '-u', 'root', '--', 'bash', '-lc',
     `export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1 || true; apt-get install -y -qq ${pkgs.join(' ')} >/dev/null 2>&1 || true`,
   ], { timeoutMs: 15 * 60_000 });
 }
@@ -206,7 +206,7 @@ export async function ensureWslLane(distro: string, opts: { mirror?: LaneMirror 
   const runEnsure = async (): Promise<Awaited<ReturnType<typeof run>>> => {
     const tmp = writeWslTempScript(cmd);
     try {
-      return await run('wsl.exe', wslRunArgs(distro, 'bash', [tmp.wsl]), {
+      return await run(wslExePath(), wslRunArgs(distro, 'bash', [tmp.wsl]), {
         timeoutMs: 15 * 60_000,
       });
     } finally {
@@ -268,7 +268,7 @@ export async function runWslConanCreate(
   let stdout = '';
   let stderr = '';
   try {
-    const r = await run('wsl.exe', wslRunArgs(distro, 'bash', [tmp.wsl], cwdWsl), {
+    const r = await run(wslExePath(), wslRunArgs(distro, 'bash', [tmp.wsl], cwdWsl), {
       timeoutMs: opts.timeoutMs ?? 0,
       onStdout: (c) => {
         stdout += c;
@@ -307,12 +307,12 @@ export async function ensureWslDocs(distro: string, opts: { mirror?: LaneMirror 
   }
   const home = await distroHome(distro);
   // System tools first (root self-heal when any is missing).
-  await run('wsl.exe', aptDocsInstallArgs(distro), { timeoutMs: 15 * 60_000 });
+  await run(wslExePath(), aptDocsInstallArgs(distro), { timeoutMs: 15 * 60_000 });
   // Then the venv docs packages + report (user level).
   const cmd = wslLaneDocsEnsureCommand(home, { mirror: opts.mirror });
   const tmp = writeWslTempScript(cmd);
   try {
-    const r = await run('wsl.exe', wslRunArgs(distro, 'bash', [tmp.wsl]), { timeoutMs: 20 * 60_000 });
+    const r = await run(wslExePath(), wslRunArgs(distro, 'bash', [tmp.wsl]), { timeoutMs: 20 * 60_000 });
     if (r.code !== 0) {
       const tail = `${r.stdout}\n${r.stderr}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
       throw new Error(`WSL 文档工具链准备失败（exit=${r.code}）：\n${tail}`);
@@ -340,7 +340,7 @@ export async function runWslDocs(
   let stdout = '';
   let stderr = '';
   try {
-    const r = await run('wsl.exe', wslRunArgs(distro, 'bash', [tmp.wsl], cwdWsl), {
+    const r = await run(wslExePath(), wslRunArgs(distro, 'bash', [tmp.wsl], cwdWsl), {
       timeoutMs: opts.timeoutMs ?? 0,
       onStdout: (c) => {
         stdout += c;

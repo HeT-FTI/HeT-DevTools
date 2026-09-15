@@ -17,6 +17,8 @@
  *   I3 不侵占系统位置（安装目录固定在 %LOCALAPPDATA%\het-fti\wsl\<name>，可被 envRemove 完全撤销）
  */
 
+import { localSourcePath } from './wslRootfs';
+
 /** 我们的发行版前缀 —— 名字所有权靠它 + owner 标记共同证明。 */
 export const LANE_DISTRO_PREFIX = 'het-lane-';
 /** 发行版对应的 Ubuntu LTS 代号后缀（2404 = 24.04 noble）。 */
@@ -195,8 +197,10 @@ export function laneRootfsSource(overrides: { url?: string; sha256?: string } = 
   if (!url) {
     return { ok: true, url: LANE_ROOTFS.url, sha256: LANE_ROOTFS.sha256, bytes: LANE_ROOTFS.bytes };
   }
-  if (!/^https?:\/\//u.test(url) && !url.startsWith('file://') && !/^[a-zA-Z]:[\\/]/u.test(url)) {
-    return { ok: false, reason: `het.env.wslRootfsUrl 必须是 http(s)/file:// 或本地绝对路径：${url}` };
+  // 口径必须与真正去取文件的模块一致（core/wslRootfs.localSourcePath），
+  // 否则会出现"这里放行、那里取不到"或反过来的分裂（T17b 桩测试抓到过：POSIX 绝对路径被误拒）。
+  if (!/^https?:\/\//u.test(url) && localSourcePath(url) === undefined) {
+    return { ok: false, reason: `het.env.wslRootfsUrl 必须是 http(s)/file://、本地绝对路径或 UNC 共享：${url}` };
   }
   if (!sha) {
     return {
@@ -317,32 +321,98 @@ export function wslTerminateArgs(name: string): string[] {
 }
 
 /**
- * `/etc/wsl.conf`：少 PATH 污染（更接近 CI），保留 /mnt 挂载，开着 interop。
- * 注意 **不** 设 `[user]`（默认 root = uid0，正好是车道需要的 rootExec）。
+ * `/etc/wsl.conf`：我们"必须要求"的键（其余一律**保留**）。
+ *
+ * 为什么要合并而不是覆写（T17b 实测）：Canonical 的官方 WSL 镜像自带
+ * `[boot] systemd=true` —— 直接 `cat >` 会把厂商的选择改掉。我们只 **加** 自己需要的：
+ *   · `[interop] appendWindowsPath=false`：Windows PATH 混进 Linux 会让 conan/gcc 探针
+ *     看到"存在但跑不了"的 exe（E1 那类假就绪的温床），也与"与 CI 同构"相悖；
+ *   · `[automount] options="metadata"`：/mnt/c 保留可执行位/权限元数据。
  */
-export function wslConfText(): string {
-  return [
-    '[interop]',
-    'enabled = true',
-    // Windows PATH 混进 Linux PATH 会让 conan/gcc 探针看到 Windows 的 exe（"看起来存在但跑不了"），
-    // 也与我们承诺的"与 CI 同构"相悖。
-    'appendWindowsPath = false',
-    '',
-    '[automount]',
-    'enabled = true',
-    'options = "metadata"',
-    '',
-    '[boot]',
-    'systemd = false',
-    '',
-  ].join('\n');
+export const WSL_CONF_DESIRED: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  interop: { enabled: 'true', appendWindowsPath: 'false' },
+  automount: { enabled: 'true', options: '"metadata"' },
+};
+
+/** 解析成"前导 + 各 section"，保留注释/空行/未知 section 的原样（为后面原样写回）。 */
+export function parseWslConf(text: string): { name?: string; lines: string[] }[] {
+  const out: { name?: string; lines: string[] }[] = [{ lines: [] }];
+  for (const line of (text ?? '').split(/\r?\n/u)) {
+    const m = /^\s*\[([^\]]+)\]\s*$/u.exec(line);
+    if (m) {
+      out.push({ name: m[1].trim(), lines: [line] });
+    } else {
+      out[out.length - 1].lines.push(line);
+    }
+  }
+  return out;
+}
+
+function serializeWslConf(sections: { name?: string; lines: string[] }[]): string {
+  const body = sections.map((s) => s.lines.join('\n')).join('\n');
+  // 去掉首/尾多余空行，统一以单个换行结尾（保证幂等：合并两次结果一致）
+  return `${body.replace(/^\n+/u, '').replace(/\n+$/u, '')}\n`;
+}
+
+/** key 匹配宽松一点（`enabled = true` / `enabled=true` / 大小写）。 */
+function keyOf(line: string): string | undefined {
+  const m = /^\s*([A-Za-z0-9_.-]+)\s*=/u.exec(line);
+  return m ? m[1].toLowerCase() : undefined;
 }
 
 /**
- * bootstrap 脚本（在新建发行版内跑一次）：写 wsl.conf + locale + owner 标记，并打印证据行。
- * 只接受 `isOurDistroName` 的名字 —— 违反者直接抛错（防调用方误传到用户发行版）。
+ * 把 `desired` 合并进已有的 wsl.conf：已存在的同名 section 只补/改我们管的键，
+ * 其它键与注释原样保留；没有的 section 追加到末尾。**幂等**。
  */
-export function laneBootstrapScript(input: { name: string; sha256: string; extensionVersion: string }): string {
+export function mergeWslConf(existing: string, desired: Readonly<Record<string, Readonly<Record<string, string>>>> = WSL_CONF_DESIRED): string {
+  const sections = parseWslConf(existing);
+  for (const [section, keys] of Object.entries(desired)) {
+    let target = sections.find((s) => s.name?.toLowerCase() === section.toLowerCase());
+    if (!target) {
+      target = { name: section, lines: [`[${section}]`] };
+      // 已有内容且末尾不是空行时补一个空行，避免和上一段粘在一起
+      const last = sections[sections.length - 1];
+      if (last.lines.length > 0 && last.lines[last.lines.length - 1].trim() !== '') {
+        last.lines.push('');
+      }
+      sections.push(target);
+    }
+    for (const [key, value] of Object.entries(keys)) {
+      const lower = key.toLowerCase();
+      const idx = target.lines.findIndex((l) => keyOf(l) === lower);
+      const rendered = `${key} = ${value}`;
+      if (idx >= 0) {
+        target.lines[idx] = rendered;
+      } else {
+        // 插到该 section 的最后一行的**有效**键之后（保留其后的注释/空行）
+        let at = target.lines.length;
+        while (at > 1 && target.lines[at - 1].trim() === '') {
+          at -= 1;
+        }
+        target.lines.splice(at, 0, rendered);
+      }
+    }
+  }
+  return serializeWslConf(sections);
+}
+
+/** 官方镜像**缺**的东西（T17b 实测）：没有 `ensurepip`（Debian 把 venv 拆包）→ 建 venv 会失败。
+ * 这是我们自己的发行版，直接在 bootstrap 里一次装好，比“第一次 ensure 失败后再自愈”确定得多。 */
+export const LANE_BOOTSTRAP_APT = ['python3-venv'] as const;
+
+/**
+ * bootstrap 脚本（在新建发行版内跑一次）：补镜像缺的包 + 合并 wsl.conf + 写 owner 标记，并打印证据行。
+ * 只接受 `isOurDistroName` 的名字 —— 违反者直接抛错（防调用方误传到用户发行版）。
+ *
+ * `wslConf` 由调用方先读-合并得到（`mergeWslConf`），这里只负责落盘。
+ */
+export function laneBootstrapScript(input: {
+  name: string;
+  sha256: string;
+  extensionVersion: string;
+  wslConf?: string;
+  aptPackages?: readonly string[];
+}): string {
   if (!isOurDistroName(input.name)) {
     throw new Error(`refusing to bootstrap a distro that is not ours: ${input.name}`);
   }
@@ -352,17 +422,29 @@ export function laneBootstrapScript(input: { name: string; sha256: string; exten
     extensionVersion: input.extensionVersion,
     createdAt: '', // 由调用方在真机侧填 ISO 时间（这里不引入时钟依赖，保持纯函数）
   }));
+  const apt = input.aptPackages ?? LANE_BOOTSTRAP_APT;
+  const conf = input.wslConf ?? mergeWslConf('');
   return [
     'set -e',
+    // 镜像自带 [boot] systemd=true 等厂商设置 → 只合并我们需要的键，其余原样保留（见 WSL_CONF_DESIRED）。
     `cat > /etc/wsl.conf <<'HET_WSL_CONF'`,
-    wslConfText().trimEnd(),
+    conf.trimEnd(),
     'HET_WSL_CONF',
+    // 官方 wsl 镜像缺 ensurepip（python3 -m venv 会失败）→ 我们自己的发行版，直接装好。
+    `if [ ${apt.length} -gt 0 ]; then`,
+    '  export DEBIAN_FRONTEND=noninteractive',
+    '  apt-get update -qq',
+    `  apt-get install -y -qq --no-install-recommends ${apt.join(' ')}`,
+    'fi',
+    // locale：镜像没有 locale-gen（实测），能跑就跑，跑不动就只落 LANG（C.UTF-8 本来也不需要生成）
     'if command -v locale-gen >/dev/null 2>&1; then locale-gen en_US.UTF-8 >/dev/null 2>&1 || true; fi',
     'echo LANG=C.UTF-8 > /etc/default/locale',
     `echo '${owner}' > /etc/het-lane.json`,
     `echo lane_distro:${input.name}`,
     `echo lane_distro_owner:${LANE_DISTRO_LANE_ID}`,
     `echo lane_distro_rootfs:${input.sha256}`,
+    `echo lane_distro_python:$([ -x /usr/bin/python3 ] && /usr/bin/python3 -V 2>&1 || echo -)`,
+    `echo lane_distro_venv:$([ -x /usr/bin/python3 ] && /usr/bin/python3 -m venv --help >/dev/null 2>&1 && echo ok || echo missing)`,
   ].join('\n');
 }
 

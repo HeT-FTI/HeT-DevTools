@@ -9,11 +9,11 @@ import {
   laneRootfsSource,
   laneTeardownPlan,
   laneWslInstallDir,
+  mergeWslConf,
   parseOwnerRecord,
   pickLaneDistroName,
   planWslDistro,
   wslImportArgs,
-  wslConfText,
 } from '../core/wslDistro';
 
 const SHA = '8251e27ffff381a4af5f41dcb94d867de3e0d9774a9241908ab34555d99315ea';
@@ -96,6 +96,11 @@ describe('T17a wslDistro (managed 自托管发行版：命名/0 侵入不变式/
 
     // 形状不对的 URL 也拒绝
     assert.strictEqual(laneRootfsSource({ url: 'not-a-url', sha256: SHA }).ok, false);
+    // 但本地路径/UNC 必须放行（口径要与 core/wslRootfs.localSourcePath 一致；
+    // T17b 桩测试抓到过：POSIX 绝对路径曾被误拒 → 内网离线场景直接不可用）
+    for (const local of ['/tmp/a.tar.gz', 'C:\\repo\\a.tar.gz', '\\\\fileserver\\share\\a.tar.gz', 'file:///tmp/a.tar.gz']) {
+      assert.strictEqual(laneRootfsSource({ url: local, sha256: SHA }).ok, true, `${local} 应被接受`);
+    }
     assert.strictEqual(laneRootfsSource({ url: 'https://mirror.internal/x.tar.gz', sha256: 'zzz' }).ok, false);
     // 合法覆盖
     const okOverride = laneRootfsSource({ url: 'https://mirror.internal/x.tar.gz', sha256: SHA });
@@ -156,18 +161,40 @@ describe('T17a wslDistro (managed 自托管发行版：命名/0 侵入不变式/
     assert.throws(() => laneBootstrapScript({ name: 'Ubuntu-24.04', sha256: SHA, extensionVersion: '0.4.0' }), /not ours/u);
   });
 
-  it('bootstrap：写 wsl.conf（不把 Windows PATH 混进 Linux）+ locale + owner 标记 + 证据行', () => {
-    const script = laneBootstrapScript({ name: 'het-lane-2404', sha256: SHA, extensionVersion: '0.4.0' });
+  it('bootstrap：合并 wsl.conf（保留厂商设置）+ 装镜像缺的包 + owner 标记 + 证据行', () => {
+    // 官方 wsl 镜像自带的 wsl.conf（实测原文）
+    const vendor = '[boot]\nsystemd=true\n';
+    const merged = mergeWslConf(vendor);
+    const script = laneBootstrapScript({ name: 'het-lane-2404', sha256: SHA, extensionVersion: '0.4.0', wslConf: merged });
     assert.match(script, /appendWindowsPath = false/u, 'Windows PATH 混入会让探针看到"存在但跑不了"的 exe');
-    assert.match(script, /appendWindowsPath = false/u);
-    assert.match(script, /systemd = false/u);
+    assert.match(script, /options = "metadata"/u);
+    assert.match(script, /\[boot\]/u);
+    assert.match(script, /systemd=true/u, '厂商的 [boot] systemd=true 必须原样保留');
+    assert.match(script, /apt-get install -y -qq --no-install-recommends python3-venv/u, '镜像缺 ensurepip → 我们自己的发行版直接装好');
     assert.match(script, /locale-gen/u);
     assert.match(script, /LANG=C\.UTF-8/u);
     assert.match(script, /\/etc\/het-lane\.json/u);
     assert.match(script, /lane_distro:het-lane-2404/u);
     assert.match(script, /lane_distro_owner:wsl2-managed/u);
+    assert.match(script, /lane_distro_venv:/u, '把"venv 可用吗"写进证据');
     // 绝不出现"改默认发行版"这种事
     assert.doesNotMatch(script, /--set-default/u);
-    assert.strictEqual(wslConfText().includes('appendWindowsPath = false'), true);
+  });
+
+  it('mergeWslConf：保留厂商设置与注释、只动我们的键、且幂等', () => {
+    const vendor = '# 厂商注释\n[boot]\nsystemd=true\n\n[interop]\nenabled = true\n';
+    const once = mergeWslConf(vendor);
+    assert.match(once, /# 厂商注释/u, '注释保留');
+    assert.match(once, /\[boot\]\nsystemd=true/u, '[boot] 原样');
+    assert.match(once, /\[interop\]\nenabled = true\nappendWindowsPath = false/u, '已有的 interop 只补键');
+    assert.match(once, /\[automount\]/u, '缺的 section 追加');
+    assert.strictEqual(mergeWslConf(once), once, '合并两次结果必须一致（幂等）');
+    assert.strictEqual(mergeWslConf(''), mergeWslConf(mergeWslConf('')));
+
+    // 已知键值被手改 → 改回我们要求的值（appendWindowsPath 是硬要求）
+    const tampered = '[interop]\nappendWindowsPath = true\n';
+    assert.match(mergeWslConf(tampered), /appendWindowsPath = false/u);
+    // 大小写/空格宽松匹配
+    assert.match(mergeWslConf('[Interop]\nAPPENDWINDOWSPATH=true\n'), /appendWindowsPath = false/u);
   });
 });

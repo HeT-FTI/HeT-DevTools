@@ -77,6 +77,7 @@ import { TEMPLATE_REPO } from './core/templateDefaults';
 import { encodeMarker, parseMarker, parseCommitList, renderSyncPlan, markerPath } from './core/templateSync';
 import { FcppMetadata, FcppProject, ParsedIssue } from './types';
 import { normalizeLocale, t as _tl } from './utils/i18n';
+import { wslExePath } from './core/wslHost';
 
 /** Locale-aware label helper (zh/en runtime chrome). */
 function L(key: string, params?: Record<string, string | number>): string {
@@ -3861,7 +3862,7 @@ async function runEnvRemove(): Promise<{ ok: boolean; message: string }> {
   if (process.platform === 'win32') {
     const wsl = await getWslLaneStatus(true).catch(() => null);
     if (wsl?.distro) {
-      const res = await run('wsl.exe', ['-d', wsl.distro, '--', 'bash', '-lc', 'rm -rf "$HOME/.het-fti"']).catch(() => null);
+      const res = await run(wslExePath(), ['-d', wsl.distro, '--', 'bash', '-lc', 'rm -rf "$HOME/.het-fti"']).catch(() => null);
       if (res && res.code === 0) {
         removed.push(`WSL 车道（${wsl.distro}）：~/.het-fti`);
       }

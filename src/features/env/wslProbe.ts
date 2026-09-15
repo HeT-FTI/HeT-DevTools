@@ -7,7 +7,7 @@
  * sudo, no human interaction — pure capability report for the dashboard.
  */
 import { run } from '../../utils/exec';
-import { MANAGED_DISTRO, WslToolSnapshot, decodeWslOutput, parseWslList, parseWslToolReport } from '../../core/wslHost';
+import { MANAGED_DISTRO, WslToolSnapshot, decodeWslOutput, parseWslList, parseWslToolReport, wslExePath } from '../../core/wslHost';
 import { LaneFacts, baselineNote, laneFactsScript, parseLaneFacts, unsupportedArchMessage } from '../../core/laneProfile';
 import { runWslScript } from './wslLane';
 
@@ -32,7 +32,7 @@ let cache: { at: number; status: WslLaneStatus } | null = null;
 
 async function listDistros(): Promise<string[]> {
   try {
-    const r = await run('wsl.exe', ['-l', '-q'], { timeoutMs: 8000 });
+    const r = await run(wslExePath(), ['-l', '-q'], { timeoutMs: 8000 });
     if (r.code !== 0) {
       return [];
     }
