@@ -8,7 +8,7 @@ import { runTests } from '@vscode/test-electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readdirSync, rmSync, readFileSync, writeFileSync, cpSync, accessSync, constants as fsConsts } from 'node:fs';
-import { platform } from 'node:os';
+import { platform, homedir } from 'node:os';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tpl = join(root, 'assets', 'template');
@@ -24,13 +24,62 @@ rmSync(proj, { recursive: true, force: true });
 cpSync(tpl, proj, { recursive: true });
 const metaPath = join(proj, 'metadata.json');
 const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+
+// T23/CI fresh-host switches (see .github/workflows/env-fresh-{linux,windows,macos}.yml):
+//   HET_REAL_FRESH=1           → wipe the host managed lane (~/.het-fti) first,
+//                                so provisioning is proven from scratch
+//   HET_REAL_TOOLCHAIN=system  → fixture gets metadata.toolchain=system (native
+//                                loop; coverage off — MSVC/native limitation)
+//   HET_REAL_EXPECT=blocked    → managed build must REFUSE with guidance
+const modeSystem = process.env.HET_REAL_TOOLCHAIN === 'system';
+if (process.env.HET_REAL_FRESH === '1') {
+  const lane = join(homedir(), '.het-fti');
+  rmSync(lane, { recursive: true, force: true });
+  console.log('[real] fresh host: removed ' + lane);
+}
+
 // Coverage stays ON for Linux (the managed lane runs lcov/genhtml — real
 // lane-coverage validation). macOS has no GNU gcov/lcov, so disable it there.
 if (platform() === 'darwin' && meta.activate_code_coverage !== false) {
   meta.activate_code_coverage = false;
   writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
 }
-console.log(`[real] project fixture ready: ${proj} (coverage=${meta.activate_code_coverage ? 'on' : 'off'})`);
+if (modeSystem && meta.toolchain !== 'system') {
+  // Same effect as `het.useSystemToolchain`: build/test on the host toolchain.
+  // Coverage is a lane-only capability → off, so CMake configure cannot fail.
+  meta.toolchain = 'system';
+  meta.activate_code_coverage = false;
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+}
+console.log(
+  `[real] project fixture ready: ${proj} (toolchain=${meta.toolchain ?? 'managed'} coverage=${meta.activate_code_coverage ? 'on' : 'off'})`,
+);
+
+// Explicit scenario banner (T23): the job log must state WHAT is verified.
+const scenario =
+  process.env.HET_REAL_EXPECT === 'blocked'
+    ? 'blocked-guidance → explicit system switch'
+    : modeSystem
+      ? 'system toolchain (no lane)'
+      : 'managed lane (fresh)';
+console.log('='.repeat(78));
+console.log('[real] SCENARIO : ' + scenario);
+console.log(
+  '[real] switches : ' +
+    JSON.stringify({
+      HET_REAL_FRESH: process.env.HET_REAL_FRESH ?? '(unset)',
+      HET_REAL_TOOLCHAIN: process.env.HET_REAL_TOOLCHAIN ?? '(unset)',
+      HET_REAL_EXPECT: process.env.HET_REAL_EXPECT ?? '(unset)',
+      HET_REAL_EXPECT_PROVIDER: process.env.HET_REAL_EXPECT_PROVIDER ?? '(unset)',
+      HET_REAL_EXPECT_AFTER_SWITCH: process.env.HET_REAL_EXPECT_AFTER_SWITCH ?? '(unset)',
+    }),
+);
+console.log('[real] platform : ' + platform() + ' · node ' + process.version);
+console.log(
+  '[real] asserting: provider decision → conan create → GTest' +
+    (modeSystem ? ' → docs artifacts' : ' → coverage report (linux lane) → docs artifacts'),
+);
+console.log('='.repeat(78));
 
 // Native macOS docs must run under the SAME python that owns conan + the docs
 // deps (the CI conan venv /tmp/het-conan, where sphinx/numpy are installed).

@@ -1,5 +1,13 @@
 name: CI (lint / test / package)
 
+# 本文件只做**自动静态门禁**：push / PR 时跑三 OS 的 lint + 单测 + 打包（几十秒，必跑）。
+# 真实工具链（裸机车道）验证**按平台拆分**为三个手动 workflow，便于定位与重跑：
+#   linux   → .github/workflows/env-fresh-linux.yml   （managed lane / system）
+#   windows → .github/workflows/env-fresh-windows.yml （system+MSVC / lane-blocked → 一键切换）
+#   macos   → .github/workflows/env-fresh-macos.yml   （macos-native lane + docs）
+# （原 ci.yml › platform-real 的 macOS+Linux 混合矩阵已移除：macOS 归 env-fresh-macos，
+#   Linux 真实构建归 env-fresh-linux › linux-managed。）
+
 "on":
   push:
     branches: [main]
@@ -44,83 +52,5 @@ jobs:
           name: het-devtools-vsix-${{ matrix.os }}
           path: "*.vsix"
           if-no-files-found: error
-
-  # P2 platform REAL run — macOS native + Linux extension host driving a REAL
-  # conan build through the extension (fixture = COMMITTED assets/template;
-  # coverage ON on the Linux lane / OFF on macOS). Converged (run
-  # 34196799144 all green) → now MANUAL ONLY (workflow_dispatch) to save quota.
-  platform-real:
-    name: platform-real (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Bootstrap conan into PATH (native lane runtime)
-        run: |
-          python3 -m venv /tmp/het-conan
-          /tmp/het-conan/bin/pip install --quiet "conan>=2,<3"
-          echo "/tmp/het-conan/bin" >> "$GITHUB_PATH"
-
-      # conan 2 needs a default profile before the first `create`; fresh
-      # runners have none (~/.conan2/profiles/default missing -> error). Detect
-      # once so the native lane can build (gcc on Linux, apple-clang on macOS).
-      - name: Conan default profile detect (fresh runners)
-        run: conan profile detect --force
-
-      - name: Ensure macOS build tools (cmake/ninja)
-        if: runner.os == 'macOS'
-        run: |
-          command -v cmake >/dev/null 2>&1 || brew install cmake
-          command -v ninja >/dev/null 2>&1 || brew install ninja
-
-      # Decision 3 (docs real on macOS): native docs build needs doxygen/
-      # graphviz on PATH and sphinx inside the PATH python (the conan venv).
-      - name: macOS docs toolchain (doxygen/graphviz + sphinx venv)
-        if: runner.os == 'macOS'
-        run: |
-          command -v doxygen >/dev/null 2>&1 || brew install doxygen
-          command -v dot >/dev/null 2>&1 || brew install graphviz
-          /tmp/het-conan/bin/pip install --quiet 'sphinx>=8,<9' 'sphinx-intl' 'sphinx-rtd-theme>=2,<4' 'numpy>=1.26'
-          /tmp/het-conan/bin/python -c 'import numpy, sphinx; print("venv docs ok:", numpy.__version__)'
-          echo "PATH python -> $(command -v python || echo none) | python3 -> $(command -v python3 || echo none)"
-
-      # @vscode/test-electron's own macOS download+unzip is unreliable on the
-      # runners (spawn .../MacOS/Electron ENOENT); install VS Code via the brew
-      # cask to /Applications. scripts/run-real.mjs LOCATES the main executable
-      # inside the .app at runtime (name has varied across versions).
-      - name: Install VS Code (macOS, brew cask)
-        if: runner.os == 'macOS'
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_INSTALL_CLEANUP: "1"
-        run: |
-          if [ ! -d "/Applications/Visual Studio Code.app" ]; then
-            brew install --cask visual-studio-code
-          fi
-          ls -la "/Applications/Visual Studio Code.app/Contents/MacOS/" || true
-
-      - name: REAL extension-host build (VS Code 1.95; xvfb on headless Linux)
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:real
-          else
-            npm run test:real
-          fi
-        env:
-          VSCODE_VERSION: "1.95.0"
 
 

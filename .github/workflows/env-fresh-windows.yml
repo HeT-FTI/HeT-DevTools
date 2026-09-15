@@ -1,0 +1,233 @@
+name: env-fresh · windows
+
+# T23 裸机验证 · Windows —— 模拟「全新 Windows 机器装 VS Code + HeT DevTools 后直接构建」。
+#
+# 为什么按平台拆成三个 workflow（而不是一个矩阵）：
+#   一个平台 = 一个失败面。日志更短、重跑更便宜、红了不必翻别的平台。
+#     linux   → env-fresh-linux.yml
+#     windows → 本文件（env-fresh-windows.yml）
+#     macos   → env-fresh-macos.yml
+#
+# 日志结构固定为：SCENARIO → GATE → SETUP → MAIN（断言链）→ ASSERT → EVIDENCE。
+#
+# 诚实缺口（写在这里以免误读绿灯）：
+#   Windows 的**托管车道 = WSL2**。GitHub 托管 runner 没有嵌套虚拟化，`wsl --install` 起不来，
+#   所以「车道真的能自举」这一段无法在托管 runner 上验证 → 由本地 DoD 脚本
+#   `scripts/run-lane-dod.mjs`（真机，需本地 Windows）覆盖。
+#   因此本 workflow 覆盖的是：① system（MSVC 兼容模式）能构建；② 无车道时 managed 必须
+#   「拒绝 + 给可执行指引」，且一键切换 system 后能构建成功。
+#
+# 手动触发：
+#   gh workflow run env-fresh-windows --ref main
+#   gh workflow run env-fresh-windows --ref main -f scenario=blocked
+#   gh run watch $(gh run list --workflow=env-fresh-windows -L1 --json databaseId -q '.[0].databaseId')
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 要跑哪个场景
+        type: choice
+        default: all
+        options:
+          - all
+          - system
+          - blocked
+
+jobs:
+  windows-system:
+    name: windows · 本机工具链（system + MSVC）
+    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'system' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        shell: pwsh
+        run: |
+          Write-Host "::group::SCENARIO — fresh windows · system toolchain (MSVC)"
+          @'
+          模拟场景：Windows 用户显式选择「本机工具链（兼容模式）」——metadata.toolchain="system"。
+
+          本作业要证明：
+            1) Windows 上 system 语义可用：宿主 conan（pip venv）+ MSVC + 宿主 CMake 能完成 `conan create` + GTest；
+            2) 夹具自动关覆盖率（MSVC 无 --coverage），不会在 CMake configure 失败；
+            3) system 语义不依赖车道可用性（Provider 决策在 Windows 上仍是能力优先的
+               win-wsl2 / win-wsl2-pending / win-wsl-required 之一，但构建走原生分支）；
+            4) 构建后 $env:USERPROFILE\.het-fti 仍然不存在（system 不建车道）。
+
+          第一次跑约 15–25 分钟（@vscode/test-electron 要下 VS Code）。
+          '@ | Write-Host
+          Write-Host "::endgroup::"
+
+      - name: "GATE: 宿主必须是裸机（无车道）"
+        shell: pwsh
+        run: |
+          Write-Host "检查项：$env:USERPROFILE\.het-fti 必须不存在。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::error::unexpected pre-existing lane"; exit 1 }
+          Write-Host "✔ no ~/.het-fti on the runner"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+        shell: pwsh
+        run: |
+          Write-Host "::group::PREFLIGHT (diagnostics)"
+          Write-Host "os:      $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          Write-Host "python:  $(if (Get-Command python -ErrorAction SilentlyContinue) { python --version 2>&1 } else { 'none' })"
+          Write-Host "conan:   $(if (Get-Command conan -ErrorAction SilentlyContinue) { conan --version } else { 'none' })"
+          Write-Host "cmake:   $(if (Get-Command cmake -ErrorAction SilentlyContinue) { (cmake --version | Select-Object -First 1) } else { 'none' })"
+          Write-Host "cl.exe:  $(if (Get-Command cl.exe -ErrorAction SilentlyContinue) { 'on PATH' } else { 'VS installed (via vcvars/conan detect)' })"
+          Write-Host "wsl:     $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'wsl.exe present' } else { 'absent' })"
+          Write-Host "::endgroup::"
+
+      - name: "SETUP: 宿主 conan（pip venv）+ MSVC 默认 profile"
+        shell: pwsh
+        run: |
+          Write-Host "安装宿主 conan 并 conan profile detect（MSVC）。"
+          python -m venv "$env:RUNNER_TEMP\het-conan"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet "conan>=2,<3"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile detect --force
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\het-conan\Scripts"
+          Write-Host "✔ host conan: $(& "$env:RUNNER_TEMP\het-conan\Scripts\conan" --version)"
+          Write-Host "✔ profile: $(& "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile path default)"
+
+      - name: "MAIN: 真实扩展宿主 —— MSVC + 宿主 conan 构建"
+        env:
+          VSCODE_VERSION: "1.95.0"
+          HET_REAL_TOOLCHAIN: system
+          HET_REAL_FRESH: "1"
+        run: |
+          Write-Host "::group::MAIN — npm run test:real (system/MSVC)"
+          Write-Host "断言链：provider ∈ win-* → 构建走 system 分支 → conan create(MSVC) → GTest 全绿 → docs 产出"
+          npm run test:real
+          Write-Host "::endgroup::"
+
+      - name: "ASSERT: system 语义不得创建车道"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "检查项：构建后 ~/.het-fti 必须仍然不存在。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::error::system toolchain must not provision a lane"; exit 1 }
+          Write-Host "✔ no lane created (system semantics respected)"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
+          if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
+          Write-Host "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-windows-system
+          path: out/real-evidence.txt
+          if-no-files-found: ignore
+
+  windows-blocked:
+    name: windows · 车道不可用 → 拒绝 + 一键切换（绝不静默降级）
+    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'blocked' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        shell: pwsh
+        run: |
+          Write-Host "::group::SCENARIO — fresh windows · lane blocked → explicit switch"
+          @'
+          模拟场景：全新 Windows 机器（没有可用的 WSL2 发行版），用户直接点「构建并测试」。
+
+          本作业要证明「车道优先 + 绝不静默降级」这条设计契约：
+            1) managed 项目在无 WSL2 车道时**拒绝构建**，并给出可执行指引；
+            2) 指引必须包含 WSL2 要求 + toolchain=system 的旁路，
+               且**不得**再出现旧行为里的“找不到 conan”误导文案；
+            3) 用户在弹窗/卡片里选择「改用本机工具链（兼容模式）」→ metadata 落盘 toolchain=system
+               （并在非 Linux 平台自动关闭 activate_code_coverage）；
+            4) 切换后重新构建必须成功（宿主 conan + MSVC）。
+
+          已知边界：若本 runner 恰好有可用的 WSL2 发行版，第 1) 步会“合法地”失败
+          （说明 managed 真的跑起来了）→ 此时应按 provider 分支：有车道走 managed 断言，无车道走 blocked 断言。
+          '@ | Write-Host
+          Write-Host "::endgroup::"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+        shell: pwsh
+        run: |
+          Write-Host "::group::PREFLIGHT (diagnostics)"
+          Write-Host "wsl.exe: $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'present' } else { 'absent' })"
+          if (Get-Command wsl -ErrorAction SilentlyContinue) {
+            Write-Host "wsl -l -v:"; (wsl -l -v 2>&1 | Out-String) | Write-Host
+          }
+          Write-Host "conan:   $(if (Get-Command conan -ErrorAction SilentlyContinue) { conan --version } else { 'none (本作业随后安装)' })"
+          Write-Host "::endgroup::"
+
+      - name: "SETUP: 宿主 conan（pip venv）—— 供“切换后重构建”使用"
+        shell: pwsh
+        run: |
+          Write-Host "安装宿主 conan：切到 system 后需要它来完成第二次构建。"
+          python -m venv "$env:RUNNER_TEMP\het-conan"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet "conan>=2,<3"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile detect --force
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\het-conan\Scripts"
+          Write-Host "✔ host conan ready"
+
+      - name: "MAIN: 真实扩展宿主 —— 被拒绝 → 一键切换 → 重构建"
+        env:
+          VSCODE_VERSION: "1.95.0"
+          HET_REAL_FRESH: "1"
+          HET_REAL_EXPECT: blocked
+          HET_REAL_EXPECT_AFTER_SWITCH: ok
+        run: |
+          Write-Host "::group::MAIN — npm run test:real (blocked → useSystemToolchain → rebuild)"
+          @'
+          断言链：
+            het.test（managed）
+              → 构建结果 != true
+              → het.getLastBuildError 含 “WSL2” 与 “toolchain”
+              → 不含 “找不到 conan”
+            het.useSystemToolchain
+              → metadata.json 的 toolchain == "system"
+              → （Windows）activate_code_coverage == false
+            het.test（system）
+              → 构建结果 == true
+          '@ | Write-Host
+          npm run test:real
+          Write-Host "::endgroup::"
+
+      - name: "ASSERT: 切换后仍不得创建车道"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "检查项：构建后 ~/.het-fti 必须不存在（切换 system 也没有建车道）。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::warning::lane exists unexpectedly"; exit 1 }
+          Write-Host "✔ no lane created"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
+          if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
+          Write-Host "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-windows-blocked
+          path: out/real-evidence.txt
+          if-no-files-found: ignore

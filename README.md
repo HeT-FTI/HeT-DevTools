@@ -119,7 +119,10 @@ fcpp 模板用 Conan / CMake / CI / Doxygen / semantic-release 把工程保障�
 - **覆盖率语义**：Linux = full（lane，真机验证）；Windows = full（WSL2 lane）/ none（本机 MSVC 兼容）；macOS = none（当前，规划中）。`activate_code_coverage` 开关与 provider 的 reason/note/label 均已如实标注。
 - **支持的架构**：Windows x64 · Linux x64 · macOS arm64；macOS x64 与 Linux arm64 不在承诺范围。
 - **车道优先（lane-first）**：`managed` 语义一律先走隔离车道（Windows = WSL2 lane、Linux = linux-managed），车道无法自愈或 `toolchain: system` 才回落本机原生——构建/覆盖率/docs 均不 touch 系统或 conda 环境；原生仅作最后手段。
-- **CI（`CubicZebra/HeT-DevTools`，branch main）**：`verify`（ubuntu/macos/windows：tsc/lint/单测/vsix 打包）+ `platform-real`（ubuntu-latest / macos-latest 真机扩展宿主：conan create + GTest + docs，ubuntu 另含 lane 覆盖率报告；**workflow_dispatch 手动触发**）。收敛基线：run `34196799144` 全绿；详细证据见开发文档 `workspace/develope/platform-verification-report.md`。
+- **CI（`CubicZebra/HeT-DevTools`，branch main）**：
+  - **自动门禁**：`ci.yml › verify`（ubuntu/macos/windows：tsc / lint / 单测 / vsix 打包，push 与 PR 触发）。
+  - **手动真机验证（按平台拆分，便于定位与重跑）**：`env-fresh · linux`（`linux-managed` 托管车道含覆盖率 + `linux-system`）/ `env-fresh · windows`（`windows-system` MSVC + `windows-blocked` 无车道时的拒绝与一键切换）/ `env-fresh · macos`（`macos-lane`，覆盖率不支持故跳过）。每个作业日志自带 SCENARIO/GATE/MAIN/EVIDENCE 说明并上传 `out/real-evidence.txt`。
+  - 历史收敛基线：run `34196799144` 全绿；详细证据见开发文档 `workspace/develope/platform-verification-report.md`。
 
 ## 开发
 

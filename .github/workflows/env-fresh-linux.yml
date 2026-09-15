@@ -1,0 +1,216 @@
+name: env-fresh · linux
+
+# T23 裸机验证 · Linux —— 模拟「全新 Ubuntu 机器装 VS Code + HeT DevTools 后直接构建」。
+#
+# 为什么按平台拆成三个 workflow（而不是一个矩阵）：
+#   一个平台 = 一个失败面。日志更短、重跑更便宜、红了不必翻别的平台。
+#     linux   → 本文件（env-fresh-linux.yml）
+#     windows → env-fresh-windows.yml
+#     macos   → env-fresh-macos.yml
+#   自动门禁（push/PR 的 lint + 单测 + 打包）仍在 ci.yml › verify，不在这里。
+#
+# 每个作业的日志结构固定为：
+#   SCENARIO   这个作业要证明什么（人工判据，直接读）
+#   GATE       环境前提（不满足则该作业的结论不成立）
+#   PREFLIGHT  runner 自带工具（区分“环境问题”还是“代码问题”）
+#   MAIN       真实 VS Code 扩展宿主内跑 [real][STEP n/6] 断言链
+#   ASSERT     事后事实（车道是否真的被使用）
+#   EVIDENCE   打印 out/real-evidence.txt（同时作为 Artifact 上传）
+#
+# 手动触发：
+#   gh workflow run env-fresh-linux --ref main
+#   gh workflow run env-fresh-linux --ref main -f scenario=managed
+#   gh run watch $(gh run list --workflow=env-fresh-linux -L1 --json databaseId -q '.[0].databaseId')
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 要跑哪个场景
+        type: choice
+        default: all
+        options:
+          - all
+          - managed
+          - system
+
+jobs:
+  linux-managed:
+    name: linux · 托管车道（apt 自愈 + 覆盖率）
+    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'managed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        run: |
+          echo "::group::SCENARIO — fresh linux · managed lane"
+          cat <<'EOF'
+          模拟场景：全新 Ubuntu 机器（无 ~/.het-fti、无私有 venv/conan）→ 安装扩展 → 一键准备 → 构建并测试。
+
+          本作业要证明：
+            1) 能力优先的 Provider 决策在「有 apt + 免密 sudo」的宿主上真的选择 linux-managed（托管车道）；
+            2) 车道能从零自举：私有 venv（pip conan/cmake/ninja）+ 生成式 gcc-13 profile + 私有 CONAN_HOME；
+            3) apt 自愈可用：缺 gcc-13/lcov 时经免密 root 自动安装（runner 上通常 lcov 缺失）；
+            4) 车道内 `conan create` + GTest 全绿，且覆盖率报告真实生成（lcov/genhtml）；
+            5) docs（doxygen+sphinx）在车道内可产出。
+
+          失败时优先看：AssertionError 的上一段 [real] 输出 + ASSERT 步骤 + Artifact。
+          EOF
+          echo "::endgroup::"
+
+      - name: "GATE 1: 宿主必须还是“裸机”（无托管车道）"
+        run: |
+          echo "检查项：$HOME/.het-fti 必须不存在 —— 否则本作业就不是“从零自举”，应判失败。"
+          if [ -e "$HOME/.het-fti" ]; then echo "::error::unexpected pre-existing lane at $HOME/.het-fti"; exit 1; fi
+          echo "✔ no ~/.het-fti on the runner"
+
+      - name: "GATE 2: 车道自愈的前提（apt + 免密 sudo）"
+        run: |
+          echo "检查项：apt-get 存在 + sudo -n true 成功 —— 这是 linux-managed 被选中并由 root 自愈 gcc-13/lcov 的前提。"
+          command -v apt-get >/dev/null || { echo "::error::apt-get missing"; exit 1; }
+          sudo -n true || { echo "::error::passwordless sudo unavailable"; exit 1; }
+          echo "✔ apt-get + passwordless sudo"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+        run: |
+          echo "::group::PREFLIGHT (diagnostics)"
+          echo "os:      $(lsb_release -ds 2>/dev/null || head -2 /etc/os-release | tr '\n' ' ')"
+          echo "python3: $(python3 --version 2>&1 || echo none)"
+          echo "conan:   $(conan --version 2>/dev/null || echo none)"
+          echo "cmake:   $(cmake --version 2>/dev/null | head -1 || echo none)"
+          echo "gcc:     $(gcc --version 2>/dev/null | head -1 || echo none)"
+          echo "lcov:    $(lcov --version 2>/dev/null || echo none)"
+          echo "arch:    $(uname -m)"
+          echo "::endgroup::"
+
+      - name: "MAIN: 真实扩展宿主 —— 从零自举托管车道并构建"
+        env:
+          VSCODE_VERSION: "1.95.0"
+          HET_REAL_FRESH: "1"
+          HET_REAL_EXPECT_PROVIDER: linux-managed
+        run: |
+          echo "::group::MAIN — npm run test:real (managed lane, fresh)"
+          cat <<'EOF'
+          即将执行：npm run test:real
+            · 夹具：assets/template → out/real-proj（toolchain=managed，activate_code_coverage=on）
+            · 断言链：
+                provider == linux-managed
+                → het.test：车道自举（venv/pip + apt 自愈）→ conan create --build=missing → GTest 全绿
+                → 覆盖率报告 coverage_report/index.html 必须存在（车道 lcov/genhtml）
+                → het.docsRun：doxygen + sphinx 产物必须存在
+          EOF
+          xvfb-run -a npm run test:real
+          echo "::endgroup::"
+
+      - name: "ASSERT: 车道真的被使用（事后事实）"
+        if: always()
+        run: |
+          echo "检查项：构建后 $HOME/.het-fti/managed-env 必须存在 —— 证明本次构建用的是托管 venv，而不是宿主工具。"
+          if [ ! -d "$HOME/.het-fti/managed-env" ]; then echo "::error::managed lane dir missing after build"; exit 1; fi
+          ls "$HOME/.het-fti/managed-env/bin" | head -20 || true
+          test -x "$HOME/.het-fti/managed-env/bin/conan" || echo "::warning::lane conan binary not where expected (lane layout changed?)"
+          echo "✔ lane in use: $HOME/.het-fti/managed-env"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        run: |
+          echo "::group::EVIDENCE (out/real-evidence.txt)"
+          if [ -f out/real-evidence.txt ]; then cat out/real-evidence.txt; else echo "(没有证据文件：作业在写出证据前就失败了，请看上一个失败步骤)"; fi
+          echo "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-linux-managed
+          path: out/real-evidence.txt
+          if-no-files-found: ignore
+
+  linux-system:
+    name: linux · 本机工具链（system，不建车道）
+    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'system' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        run: |
+          echo "::group::SCENARIO — fresh linux · system toolchain"
+          cat <<'EOF'
+          模拟场景：用户明确选择「本机工具链（兼容模式）」——metadata.toolchain="system"。
+
+          本作业要证明：
+            1) system 语义真的绕过托管车道（构建后 ~/.het-fti 仍然不存在）；
+            2) 只用宿主 conan（pip venv）+ 系统 gcc + 宿主 CMake 就能完成 `conan create` + GTest；
+            3) 夹具自动关闭 activate_code_coverage（system/原生不承诺覆盖率），不会在 CMake 阶段炸。
+
+          注意：Provider 决策仍按宿主能力解析（runner 有 apt+sudo → linux-managed），
+          但构建分派会因 metadata.toolchain=system 走原生分支 —— 这正是要验证的“显式旁路”。
+          EOF
+          echo "::endgroup::"
+
+      - name: "GATE: 裸机前提（无车道 + apt/sudo 让 provider 判到 linux-managed）"
+        run: |
+          if [ -e "$HOME/.het-fti" ]; then echo "::error::unexpected pre-existing lane"; exit 1; fi
+          sudo -n true || { echo "::error::passwordless sudo unavailable (provider 将不是 linux-managed)"; exit 1; }
+          echo "✔ fresh host + apt/sudo → provider 预期 linux-managed，构建走 system 分支"
+
+      - name: "SETUP: 宿主 conan（pip venv）+ 默认 profile"
+        run: |
+          echo "安装宿主 conan 到 /tmp/het-conan 并 conan profile detect（system 模式的前提）。"
+          python3 -m venv /tmp/het-conan
+          /tmp/het-conan/bin/pip install --quiet "conan>=2,<3"
+          echo "/tmp/het-conan/bin" >> "$GITHUB_PATH"
+          /tmp/het-conan/bin/conan profile detect --force
+          echo "✔ host conan: $(/tmp/het-conan/bin/conan --version)"
+
+      - name: "MAIN: 真实扩展宿主 —— system 工具链构建"
+        env:
+          VSCODE_VERSION: "1.95.0"
+          HET_REAL_TOOLCHAIN: system
+          HET_REAL_FRESH: "1"
+          HET_REAL_EXPECT_PROVIDER: linux-managed
+        run: |
+          echo "::group::MAIN — npm run test:real (metadata.toolchain=system)"
+          cat <<'EOF'
+          断言链：provider 仍为 linux-managed（能力决策）→ 但构建走 system 分支
+                  → conan create（宿主 conan）→ GTest 全绿
+                  → 覆盖率断言跳过（夹具已关 activate_code_coverage）+ docs 仍须成功
+          EOF
+          xvfb-run -a npm run test:real
+          echo "::endgroup::"
+
+      - name: "ASSERT: system 语义不得创建车道"
+        if: always()
+        run: |
+          echo "检查项：构建后 $HOME/.het-fti 必须仍然不存在 —— 否则说明 system 语义偷偷建了托管环境。"
+          if [ -e "$HOME/.het-fti" ]; then echo "::error::system toolchain must not provision a lane"; ls -la "$HOME/.het-fti"; exit 1; fi
+          echo "✔ no lane created (system semantics respected)"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        run: |
+          echo "::group::EVIDENCE (out/real-evidence.txt)"
+          if [ -f out/real-evidence.txt ]; then cat out/real-evidence.txt; else echo "(没有证据文件)"; fi
+          echo "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-linux-system
+          path: out/real-evidence.txt
+          if-no-files-found: ignore
