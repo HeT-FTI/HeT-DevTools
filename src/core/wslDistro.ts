@@ -51,6 +51,18 @@ export function isOurDistroName(name: string): boolean {
   return LANE_DISTRO_NAME_RE.test((name ?? '').trim());
 }
 
+/**
+ * 车道该用哪个发行版（纯函数，便于单测）：
+ *   ① **我们自建的**（`het-lane-*`）优先 —— T17 之后它是 managed 的正牌宿主；
+ *   ② 其次旧的托管名（`het-fcpp`，历史兼容）；
+ *   ③ 再到用户已有发行版的第一个（gcc 系统级，维持既有语义）。
+ * 默认发行版是用户的，我们从不改 `wsl --set-default`（I2）。
+ */
+export function chooseDistroForLane(distros: readonly string[], legacyManaged = 'het-fcpp'): string | undefined {
+  const list = [...distros].map((d) => d.trim()).filter(Boolean);
+  return list.find((d) => isOurDistroName(d)) ?? (list.includes(legacyManaged) ? legacyManaged : list[0]);
+}
+
 export interface DistroNameChoice {
   /** 选定的名字；`undefined` = 无法安全命名（走 A/C）。 */
   name?: string;

@@ -58,6 +58,7 @@ import { providerLabel, ProvisionPrefs } from './core/provisionPlan';
 import { currentManagedStatus, managedGc, managedRemove } from './features/env/managedProvisioner';
 import { getWslLaneStatus } from './features/env/wslProbe';
 import { runWslConanCreate, runWslDocs, probeLaneDocsTools, LaneDocsTools, ensureWslLane } from './features/env/wslLane';
+import { importLaneDistro, teardownLaneDistro } from './features/env/wslImport';
 import { collectEnvSample, envConanFact } from './features/env/envSample';
 import { buildEnvDump, dumpFileName, redactRoots } from './core/envDump';
 import { findCoverageReport, readCoveragePct } from './features/coverage/report';
@@ -1512,7 +1513,12 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
       const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
       if (plan?.provider === 'win-wsl2-pending') {
         finish(false);
-        return { ok: false, message: 'managed 文档构建需要 WSL2 发行版（当前无可用发行版）。请先 wsl --install -d Ubuntu-24.04，或把 metadata.toolchain 设为 system。' };
+        return {
+          ok: false,
+          message:
+            'managed 文档构建需要 WSL2 发行版（当前无可用发行版）。可点「一键准备环境」由托管车道自建私有发行版（不动你已有的发行版）；' +
+            '也可自行 wsl --install -d Ubuntu-24.04，或把 metadata.toolchain 设为 system。',
+        };
       }
     }
     // T07: macOS + managed → docs INSIDE the macOS lane (venv sphinx; doxygen/
@@ -3860,6 +3866,12 @@ async function runEnvRemove(): Promise<{ ok: boolean; message: string }> {
   }
   let unregisterHint = '';
   if (process.platform === 'win32') {
+    // T17：自建的托管发行版也一起撤销（只注销带我们双标记的那些；用户的发行版不碰）。
+    const keepCache = vscode.workspace.getConfiguration('het.env').get<boolean>('keepRootfsCache', false) === true;
+    const td = await teardownLaneDistro({ localAppData: localAppDataDir(), keepCache }).catch(() => null);
+    if (td?.removed?.length) {
+      removed.push(`自建发行版：${td.removed.join('、')}${keepCache ? '（保留 rootfs 缓存）' : '（含 rootfs 缓存）'}`);
+    }
     const wsl = await getWslLaneStatus(true).catch(() => null);
     if (wsl?.distro) {
       const res = await run(wslExePath(), ['-d', wsl.distro, '--', 'bash', '-lc', 'rm -rf "$HOME/.het-fti"']).catch(() => null);
@@ -3935,6 +3947,20 @@ async function switchToSystemToolchain(): Promise<{ ok: boolean; message: string
  * (linux-managed / win-wsl2); macOS keeps the native path until its own lane
  * lands (T07 remainder). Consent still happens exactly once.
  */
+/** T17：`%LOCALAPPDATA%`（Windows 上托管发行版的落点，I3）。 */
+function localAppDataDir(): string {
+  return process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local');
+}
+
+/** T17：rootfs 覆盖（内网/镜像/离线）；校验规则在 core/wslDistro（覆盖必须同时给 sha256）。 */
+function wslRootfsOverride(): { url?: string; sha256?: string } {
+  const cfg = vscode.workspace.getConfiguration('het.env');
+  return {
+    url: cfg.get<string>('wslRootfsUrl') ?? '',
+    sha256: cfg.get<string>('wslRootfsSha256') ?? '',
+  };
+}
+
 async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: string }> {
   const ctx = contextRef;
   if (!ctx) {
@@ -3960,6 +3986,29 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
         const message = `WSL2 车道已就绪（${wsl.distro}）${r.note ? ` · ${r.note}` : ''}`;
         maybeToast('info', message);
         return { ok: true, state: 'ready', message };
+      }
+      // T17c：检测到 WSL2 但无发行版 → 托管车道**自建**（不碰用户已有的发行版，也不静默转 MSVC）。
+      if (plan?.setup?.kind === 'wsl-import') {
+        maybeToast('info', `正在自建私有发行版（${plan?.setup?.distro ?? 'het-lane'}）…`);
+        const imp = await importLaneDistro({
+          localAppData: localAppDataDir(),
+          extensionVersion: (ctx.extension.packageJSON as { version?: string }).version ?? '0.0.0',
+          rootfs: wslRootfsOverride(),
+          onLog: (line) => log(`[wsl-import] ${line}`),
+        });
+        if (imp.ok && imp.distro) {
+          await vscode.commands.executeCommand('het.refresh');
+          const lane = await ensureWslLane(imp.distro, { mirror: laneMirrorConfig() });
+          const message =
+            `已自建私有发行版并准备车道（${imp.distro}）${imp.cachePath ? ' · 复用已校验的 rootfs 缓存' : ''}` +
+            `${lane.note ? ` · ${lane.note}` : ''}`;
+          maybeToast('info', message);
+          return { ok: true, state: 'ready', message };
+        }
+        // 失败：把现场（含 A/C 两条路）如实带出，绝不静默降级。
+        const message = imp.reason ?? '自建发行版失败。';
+        maybeToast('error', message);
+        return { ok: false, state: 'error', message };
       }
       const message = winLaneBlockedMessage(plan?.provider ?? 'win-wsl-required', wsl?.distro);
       maybeToast('warn', message);

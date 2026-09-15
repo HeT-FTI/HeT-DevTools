@@ -16,6 +16,17 @@
  * the `HET_FAKE_HOST` JSON override used by both tests and the host adapter.
  */
 
+import { laneDistroBaseName, laneImportCostText } from './wslDistro';
+
+/** T17：`win-wsl2-pending` 时由托管车道**自建**发行版（一键），而不是让用户自己去装。 */
+export interface LaneSetup {
+  kind: 'wsl-import';
+  /** 建议的发行版名（真实名字在执行时按同名冲突规则确定）。 */
+  distro: string;
+  /** 给人看的代价（下载/磁盘/预计时间）。 */
+  costText: string;
+}
+
 export type ProviderId =
   | 'linux-native'
   | 'linux-managed'
@@ -74,6 +85,8 @@ export interface ProviderDecision {
   provider: ProviderId;
   /** Human reason (zh) shown on the dashboard env block. */
   reason: string;
+  /** T17：托管车道可**自建**宿主（目前只有 Windows 自建 WSL2 发行版）。 */
+  setup?: LaneSetup;
   /** Coverage semantic this provider guarantees. */
   coverage: CoverageSemantic;
   /** The manifest slice this provider must satisfy. */
@@ -224,7 +237,10 @@ export function resolveProviderDecision(caps: HostCapabilities, _prefs?: Provisi
         reason: 'Windows：检测到 WSL2，但尚无可用发行版',
         coverage: 'partial',
         manifest: MAN,
-        note: '在 dashboard「托管环境」创建/安装一个 WSL2 发行版（如 `wsl --install -d Ubuntu-24.04`）后即为全语义（gcc + lcov）；或设 metadata.toolchain=system 走本机兼容模式。',
+        setup: { kind: 'wsl-import', distro: laneDistroBaseName(), costText: laneImportCostText() },
+        note:
+          '可直接「一键自建私有发行版」（' + laneImportCostText() + '），不会改动你已有的发行版；' +
+          '也可自行安装官方发行版（`wsl --install -d Ubuntu-24.04`），或设 metadata.toolchain=system 走本机兼容模式。',
       };
     }
     // No usable WSL2 → explicit guidance only (no silent gcc-style fallback;

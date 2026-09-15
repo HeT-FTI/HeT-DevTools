@@ -79,6 +79,21 @@
           "default": "",
           "description": "%config.envConanRemote%"
         },
+        "het.env.wslRootfsUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envWslRootfsUrl%"
+        },
+        "het.env.wslRootfsSha256": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envWslRootfsSha256%"
+        },
+        "het.env.keepRootfsCache": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.envKeepRootfsCache%"
+        },
         "het.env.httpProxy": {
           "type": "string",
           "default": "",

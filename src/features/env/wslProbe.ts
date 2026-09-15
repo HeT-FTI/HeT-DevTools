@@ -8,6 +8,7 @@
  */
 import { run } from '../../utils/exec';
 import { MANAGED_DISTRO, WslToolSnapshot, decodeWslOutput, parseWslList, parseWslToolReport, wslExePath } from '../../core/wslHost';
+import { chooseDistroForLane, isOurDistroName } from '../../core/wslDistro';
 import { LaneFacts, baselineNote, laneFactsScript, parseLaneFacts, unsupportedArchMessage } from '../../core/laneProfile';
 import { runWslScript } from './wslLane';
 
@@ -97,11 +98,16 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
   const distros = await listDistros();
   const status: WslLaneStatus = { available: distros.length > 0, tools: {}, ready: false };
   if (!status.available) {
-    status.note = '未检测到 WSL2 发行版（托管车道需要启用 WSL2：wsl --install -d Ubuntu-24.04；或设 metadata.toolchain=system）。';
+    status.note = '未检测到 WSL2 发行版：可「一键准备环境」由托管车道自建私有发行版（无需手动安装），或设 metadata.toolchain=system 走本机兼容模式。';
     cache = { at: Date.now(), status };
     return status;
   }
-  const chosen = distros.includes(MANAGED_DISTRO) ? MANAGED_DISTRO : distros[0];
+  const chosen = chooseDistroForLane(distros, MANAGED_DISTRO);
+  if (chosen === undefined) {
+    status.available = false;
+    cache = { at: Date.now(), status };
+    return status;
+  }
   status.distro = chosen;
   // T02: compiler/arch/lcov from the SAME ladder the build uses.
   const facts = await probeDistroFacts(chosen);
@@ -124,7 +130,11 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
     status.tools.ninja = lane.ninja;
   }
   status.ready = !!facts.compiler && !!facts.arch;
-  status.note = chosen === MANAGED_DISTRO ? '托管 distro（het-fcpp）' : `复用现有发行版 ${chosen}（gcc 系统级）`;
+  status.note = isOurDistroName(chosen)
+    ? `托管 distro（自建 · ${chosen}）`
+    : chosen === MANAGED_DISTRO
+      ? `托管 distro（${MANAGED_DISTRO}）`
+      : `复用现有发行版 ${chosen}（gcc 系统级）`;
   if (!facts.compiler) {
     status.note += ' · 编译器未就绪（首次「构建并测试」将按阶梯自动准备）';
   } else if (!facts.arch) {
