@@ -1,5 +1,5 @@
-# T09: the CI baseline is CMake 3.28 (ubuntu-24.04 runner). Hosts with an older
-# CMake may explicitly lower the floor — the default path is unchanged:
+# Downstream contract (HeT DevTools): the CI baseline stays 3.28. Hosts with an
+# older CMake may explicitly lower the floor — the default path is unchanged:
 #   cmake -DHET_CMAKE_MIN=3.15 ..
 if(DEFINED HET_CMAKE_MIN)
   cmake_minimum_required(VERSION ${HET_CMAKE_MIN})

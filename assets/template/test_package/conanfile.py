@@ -218,7 +218,8 @@ class PackageTestConan(ConanFile):
         cmd1 = ['lcov', '--directory', coverage_folder, '--capture', '--output-file',
                 os.path.join(coverage_folder, 'coverage_test.info'), '--rc', 'geninfo_auto_base=1']
         subprocess.run(cmd1, check=True)
-        # T10/E4: scope the report to OUR package by the DERIVED cache entry root.
+        # Downstream contract (HeT DevTools): scope the report to OUR package by
+        # the DERIVED cache entry root.
         # The cache folder is named `<pkgname-prefix><hash>` (e.g. fcpp2501d113050e3),
         # so neither the old literal `*/.conan2/p/b/<name[:3]>*` (breaks as soon as
         # CONAN_HOME is renamed) nor a package-id based pattern (matches nothing at

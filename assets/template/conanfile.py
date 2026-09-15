@@ -190,11 +190,12 @@ class PackageRecipe(ConanFile):
         return _tmp + ['"' + _ + '.hpp";' for _ in self.meta.get("user_modules")]
 
     def build_requirements(self):
-        # T09: CI pins the CMake binary through metadata.cmake_version (fetched
-        # from ConanCenter for reproducibility). A self-provisioned toolchain
-        # (managed lane venv already has cmake on PATH) can opt out to avoid a
-        # SECOND CMake download:  HET_CMAKE_BUILD_REQUIRE=none
-        # (or pin a different one: HET_CMAKE_BUILD_REQUIRE=3.30.5).
+        # Downstream contract (HeT DevTools): CI pins the CMake binary through
+        # metadata.cmake_version (ConanCenter, reproducible). A self-provisioned
+        # toolchain (the managed-lane venv already has cmake on PATH) can opt out
+        # to avoid a SECOND CMake download:
+        #   HET_CMAKE_BUILD_REQUIRE=none      → skip
+        #   HET_CMAKE_BUILD_REQUIRE=3.30.5    → pin another version
         _override = (os.environ.get('HET_CMAKE_BUILD_REQUIRE') or '').strip()
         if _override.lower() == 'none':
             return
