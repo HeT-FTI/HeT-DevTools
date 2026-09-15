@@ -241,6 +241,24 @@ jobs:
           Write-Host "wsl -l -v:"
           & wsl -l -v 2>&1 | Out-String | Write-Host
           Write-Host "虚拟化（VirtualizationFirmwareEnabled）：$((Get-CimInstance Win32_Processor | Select-Object -First 1).VirtualizationFirmwareEnabled)"
+          # 2026-09-15 实测（run 34946185911）：作业跑到 46 分钟时**宿主 runner 与服务器失联**
+          # （注解原文：The hosted runner lost communication with the server），
+          # MAIN 之后的步骤全部 null、日志 blob 都没上传 —— 这种死法不留任何证据。
+          # 下面这几行是"下次死之前先把现场留下"：磁盘 / 内存 / 杀软 / 已有 vhdx 占用。
+          # 本作业要在 C: 上落一个 GB 级 ext4.vhdx，`wsl --import` 是重 I/O 步骤。
+          Write-Host "--- 资源现场（供失联时对照）---"
+          Get-PSDrive C,D -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host ("磁盘 {0}: 已用 {1:N1} GB / 剩余 {2:N1} GB" -f $_.Name, ($_.Used / 1GB), ($_.Free / 1GB)) }
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host ("内存：剩余 {0:N1} GB / 共 {1:N1} GB" -f ($os.FreePhysicalMemory / 1MB), ($os.TotalVisibleMemorySize / 1MB))
+          Write-Host "Defender 排除项：$((Get-MpPreference -ErrorAction SilentlyContinue).ExclusionPath -join '; ')（空 = 无排除，大包导入会明显变慢）"
+          $wslRoots = @("$env:LOCALAPPDATA\het-fti", "$env:RUNNER_TEMP")
+          foreach ($r in $wslRoots) {
+            if (Test-Path $r) {
+              $sz = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+              Write-Host ("{0} 现有占用：{1:N2} GB" -f $r, ($sz / 1GB))
+            }
+          }
           Write-Host '（`wsl -l -v` / `--status` 在无发行版时向 stderr 输出并返回非 0 —— 那是预期，不是故障）'
           Write-Host "::endgroup::"
           exit 0
