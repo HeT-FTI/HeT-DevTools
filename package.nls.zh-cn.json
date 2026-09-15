@@ -52,5 +52,7 @@
   "cmd.openDocsArtifact": "HeT DevTools: 打开文档产物（Sphinx/Doxygen）",
   "cmd.openBuildOutput": "HeT DevTools: 打开构建输出",
   "cmd.openCoverageReport": "HeT DevTools: 打开覆盖率报告",
-  "cmd.healthReport": "HeT DevTools: 工程健康明细"
+  "cmd.healthReport": "HeT DevTools: 工程健康明细",
+  "config.hudFontSize": "悬停监控卡字号（px，10–20，默认 13.5）。",
+  "config.hudDisableHud": "停用悬停监控卡，改用快捷列表（chip 的 Snooze/HUD 开关会写这一项）。"
 }

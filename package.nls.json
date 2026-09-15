@@ -52,5 +52,7 @@
   "cmd.openDocsArtifact": "HeT DevTools: Open docs artifact (Sphinx/Doxygen)",
   "cmd.openBuildOutput": "HeT DevTools: Open build output",
   "cmd.openCoverageReport": "HeT DevTools: Open coverage report",
-  "cmd.healthReport": "HeT DevTools: Project health details"
+  "cmd.healthReport": "HeT DevTools: Project health details",
+  "config.hudFontSize": "Hover HUD font size in px (10–20; default 13.5).",
+  "config.hudDisableHud": "Disable the hover HUD and use the quick list instead (the chip Snooze/HUD toggle writes this)."
 }

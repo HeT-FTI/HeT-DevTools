@@ -98,6 +98,18 @@
           "type": "string",
           "default": "",
           "description": "%config.envHttpProxy%"
+        },
+        "het.hud.fontSize": {
+          "type": "number",
+          "default": 13.5,
+          "minimum": 10,
+          "maximum": 20,
+          "description": "%config.hudFontSize%"
+        },
+        "het.hud.disableHud": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.hudDisableHud%"
         }
       }
     },

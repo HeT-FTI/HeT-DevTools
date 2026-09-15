@@ -4,8 +4,19 @@ All notable changes follow [Conventional Commits](https://www.conventionalcommit
 
 ## [Unreleased]
 
+### Added
+
+- **Windows 无发行版时自建托管发行版（T17，对用户环境 0 侵入）**：`het.env.prepare` 从 Canonical 官方源拉取钉死 sha256 的 Ubuntu 24.04 rootfs，导入为 `het-lane-2404`（重名自动 `-2`），代价先讲清（约 340MB 下载 / 1.5–2.5GB 磁盘）。三条不变式：只碰带我们双标记的发行版；不碰用户的发行版（不 `--set-default` / 不 `--unregister` / 不在其中写文件）；全部落在 `%LOCALAPPDATA%\het-fti\wsl\` 且「移除托管环境」一键撤销。失败时给 A（手动装官方发行版）/ C（改 `toolchain: system`）两条路，**绝不静默转 MSVC**。
+- **车道 × 需求对齐矩阵 + 两道新门禁（T21/T22）**：
+  - `npm run audit:pins`：拦“把 CI 事实写进产品代码”（绝对路径、基线编译器字面量、被抄写一遍的版本下限），归属模块与测试豁免；接进 `ci.yml › verify`。首次跑就抓出一处真重复（`toolchainDetector` 把 cmake/python 下限又写了一遍）已改为从单一来源派生。
+  - `core/laneMatrix.ts`：3 条车道 × 9 个车道管辖需求，每格写清「车道自动处置 / 需用户一步 / 平台不支持」+ 一句理由 + 可核对的证据（证据 = 某份产物里的标记：生成出的 shell 脚本，或真正的执行层源码）。`git` 是唯一豁免项（宿主/模板提供），豁免名单本身也被断言。
+- **环境生命周期状态机（T19）**：`detecting → needsConsent → provisioning → ready/blocked`——相位由当前事实实时推导（正在准备永远压过已就绪），持久化只存两件无法重新探测的事（同意时间、上次失败原因）；总览页多一条状态条，准备中不给可点按钮，移除托管环境时连同旧的 `het.env.consented` 一并清掉（下次重新询问）。
+- **声明了 `het.hud.fontSize` / `het.hud.disableHud`**：代码一直在读写这两项，但没写进 `contributes.configuration`——设置界面里搜不到、也没有取值边界。现补上（字号 10–20，默认 13.5）并补中英文案。
+
 ### Changed
 
+- **托管车道不再写死编译器/架构（T01/T08/T09）**：Linux/WSL 车道按 **gcc-13（基线）→ 14/15/12 → 发行版默认** 逐级探测，探不到且有免密 root 时按同一阶梯安装，**写进 profile 的永远是选中的那个版本**（Ubuntu 22.04 仓库无 gcc-13 → 兼容版/PPA/升级三选一，扩展给可复制命令）；架构由 `uname -m` 探测，不支持时明确报错而不沿用 CI 的设定；gcov 用车道 venv 内的 shim 对齐所选编译器（不动系统文件）。0.2.0 的 CHANGELOG 条目“缺 gcc-13/lcov 时给出可执行指引”描述的是当时行为（只给指引）；现在改为“阶梯自愈 + 阶梯安装”，指引仅作为最后一级。
+- **文档对账（T24）**：README 的平台矩阵、车道自愈、命令清单、无 git 建工程、`system` 语义重写为“以代码事实为准”：补上 22.04 兼容模式、无 WSL2、arm64 边界、Python ≥ 3.10（`sphinx>=8`）、CMake 只下一份、覆盖率不支持时显示 `—` 而不是 `✗`、CI 证据里的 `vscode=`/`vscodeSource=`。历史上写的“在 dashboard「托管环境」创建发行版”现在真的存在了（T17c），不再只是文案。
 - **VS Code 下限从 `1.95.0` 抬到 `1.134.0`（`engines.vscode`）**：1.95 是 2024-10 的宿主，为它养 macOS 兼容分支不划算。实证：macOS 的 app 主程序名逐版本不同 —— `microsoft/vscode#291948`（2026-02，里程碑 1.110）把它从写死的 `Electron` 改成 `product.nameShort`（`Code`），`#326502`（2026-07，1.131）删掉了 `Electron` 兼容软链；我直接读了官方 `darwin-arm64` 包的中央目录确认：1.109.5 只有 `Electron`、1.110.0 两者都有、1.131.0 起只有 `Code`。**1.134.0 是"环境里不存在 Electron + 三条线（`engines.vscode` / `@types/vscode` / CI 钉住版）零错位"的唯一点**（`@types/vscode` 只发布离散版本：…1.125.0 → 1.134.0 → 1.136.0，**没有 1.131.0**）。
 - `@types/vscode` 由 `^1.95.0`（锁文件实际解析到 1.134.0）改为 `~1.134.0`：让**编译期** API 面与对用户的承诺一致 —— 之前承诺 1.95、却按 1.134 的类型写代码，属于"声明 ≠ 实际"（本次修正后 `tsc` 仍干净，说明我们本来就没用到更新的 API）。
 
