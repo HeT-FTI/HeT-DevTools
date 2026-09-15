@@ -68,6 +68,7 @@ import { getMacosLaneStatus } from './features/env/macosProbe';
 import { ensureMacLane, getMacLaneStatus, runMacConanCreate, runMacDocs } from './features/env/macLane';
 import { getLinuxLaneStatus, runLinuxConanCreate, runLinuxDocs, probeLinuxLaneFacts, linuxRootAvailable, ensureLinuxLane } from './features/env/linuxLane';
 import { ContractFacts, EnvContract, buildEnvContract } from './core/envContract';
+import { laneForPlatform, laneLcovFacts, laneMatrixLine } from './core/laneMatrix';
 import { docsFailureHint } from './core/docsHints';
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
 import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArchMessage } from './core/laneProfile';
@@ -3792,9 +3793,13 @@ async function collectEnvContract(): Promise<EnvContract> {
     facts.conan = mac?.tools.conan;
     facts.cmake = pickCmake(mac?.tools.cmake);
     facts.ninja = mac?.tools.ninja;
-    // macOS = limited support: no GNU gcov/lcov (llvm-cov adapter is T20).
-    facts.lcovSupported = false;
-    facts.lcovUnsupportedReason = 'macOS/Apple clang 无 GNU gcov（有限支持）';
+    // T21: the coverage capability comes from the LANE MATRIX (single source),
+    // so the card, the dump and the parity test cannot disagree about macOS.
+    const lcov = laneLcovFacts('macos-native');
+    facts.lcovSupported = lcov.supported;
+    if (lcov.reason) {
+      facts.lcovUnsupportedReason = lcov.reason;
+    }
     facts.laneHealable = true;
     if (!mac?.clt) {
       facts.laneGuide = 'xcode-select --install   （装好后重新“一键准备环境”）';
@@ -3967,6 +3972,11 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
     return { ok: false, state: 'absent', message: '扩展未就绪。' };
   }
   const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
+  const lane = laneForPlatform(process.platform);
+  if (lane) {
+    // Diagnostics: which requirements this lane heals itself vs asks the user for.
+    log(`[env] lane matrix: ${laneMatrixLine(lane.id)}`);
+  }
   const consented = quietHost() || ctx.globalState.get<boolean>('het.env.consented', false) === true;
   if (!consented) {
     const choice = await askModal(

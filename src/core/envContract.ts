@@ -63,6 +63,24 @@ export const FIX_USE_SYSTEM: EnvFix = {
   action: 'env:use-system',
 };
 
+/**
+ * Canonical requirement order — contract rows, chips and the T21 lane parity
+ * matrix all iterate THIS list, so a new requirement cannot be added in one
+ * place and silently forgotten in another.
+ */
+export const REQUIREMENT_IDS: readonly RequirementId[] = [
+  'git',
+  'python',
+  'compiler',
+  'conan',
+  'cmake',
+  'ninja',
+  'lcov',
+  'doxygen',
+  'graphviz',
+  'make',
+];
+
 export const ROW_LABELS: Record<RequirementId, string> = {
   git: 'Git',
   python: 'Python',
