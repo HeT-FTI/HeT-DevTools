@@ -10,6 +10,7 @@
  */
 import { run } from '../../utils/exec';
 import { decodeWslOutput, toWslPath, wslRunArgs } from '../../core/wslHost';
+import { settingsCompilerKey } from '../../core/laneSettings';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, writeFileSync } from 'node:fs';
@@ -200,6 +201,7 @@ export async function ensureWslLane(distro: string, opts: { mirror?: LaneMirror 
     arch: facts.arch,
     gcov: facts.gcov,
     mirror: opts.mirror,
+    settingsCompiler: settingsCompilerKey(facts.compiler.name, 'Linux'),
   });
   const runEnsure = async (): Promise<Awaited<ReturnType<typeof run>>> => {
     const tmp = writeWslTempScript(cmd);

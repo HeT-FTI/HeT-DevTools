@@ -42,6 +42,7 @@ import {
   parseLaneFacts,
   unsupportedArchMessage,
 } from '../../core/laneProfile';
+import { settingsCompilerKey } from '../../core/laneSettings';
 import { LaneMirror, mirrorCacheKey } from '../../core/laneMirror';
 
 const uidRoot = (() => {
@@ -177,6 +178,7 @@ export async function ensureLinuxLane(opts: { mirror?: LaneMirror } = {}): Promi
     arch: facts.arch,
     gcov: facts.gcov,
     mirror: opts.mirror,
+    settingsCompiler: settingsCompilerKey(facts.compiler.name, 'Linux'),
   });
   const runEnsure = (): Promise<{ code: number; stdout: string; stderr: string }> => runLinuxScript(cmd, 15 * 60_000);
   let r = await runEnsure();

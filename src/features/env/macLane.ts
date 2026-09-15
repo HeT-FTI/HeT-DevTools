@@ -17,6 +17,7 @@ import { rmSync, writeFileSync } from 'node:fs';
 import { run } from '../../utils/exec';
 import type { BuildSummary } from '../../core/conanService';
 import { laneProfileWith } from '../../core/laneProfile';
+import { settingsCompilerKey } from '../../core/laneSettings';
 import { LaneMirror, mirrorCacheKey } from '../../core/laneMirror';
 import { macCompiler, macFactsScript, macDocsGuide, macGuide, macLaneDocsEnsureCommand, parseMacFacts, MacFacts } from '../../core/macLane';
 import { WSL_DOCS_PIP, managedLaneBuildCommand, managedLaneDocsRunCommand, managedLaneEnsureCommand } from '../../core/wslLane';
@@ -120,6 +121,7 @@ export async function ensureMacLane(opts: { mirror?: LaneMirror } = {}): Promise
     compiler,
     arch,
     mirror: opts.mirror,
+    settingsCompiler: settingsCompilerKey(compiler.name, 'Macos'),
   });
   const r = await runMacScript(cmd, 20 * 60_000);
   if (r.code !== 0) {

@@ -49,6 +49,18 @@ describe('T07 macLane (macOS managed lane pure helpers)', () => {
     assert.ok(p.includes(c.cc) && p.includes(c.cxx));
   });
 
+  // env-fresh · macos run 34926785628 died with
+  //   Invalid setting '21.0.0' is not a valid 'settings.compiler.version' value
+  // because Apple reports 3 components while conan's settings.yml lists ≤2.
+  it('normalises the Apple 3-component version to conan vocabulary (21.0.0 → 21.0)', () => {
+    const f = parseMacFacts(cltReady.replace('lane_cc_version:16.0.0', 'lane_cc_version:21.0.0'));
+    const c = macCompiler(f)!;
+    assert.strictEqual(c.version, '21.0');
+    const p = laneProfileWith('Macos', c, f.arch, 'Release');
+    assert.ok(p.includes('compiler.version=21.0'));
+    assert.ok(!p.includes('21.0.0'), 'the raw 3-component string must never reach the profile');
+  });
+
   it('probe script asks for CLT/clang ONLY (no gcc/gcov assumptions)', () => {
     const s = macFactsScript();
     assert.ok(s.includes('xcode-select -p'));

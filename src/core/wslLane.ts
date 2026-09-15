@@ -14,6 +14,7 @@
 import { posix } from 'node:path';
 import { LaneCompiler, laneProfileFor } from './laneProfile';
 import { LaneMirror, conanRemoteUpdateLine, mirrorShellExports } from './laneMirror';
+import { laneSettingsEnsureSteps, profileCompilerVersion } from './laneSettings';
 
 /** Lane root & tools inside the distro's Linux home (ext4 — venv-safe). */
 export interface WslLaneLayout {
@@ -66,6 +67,8 @@ export interface LaneEnsureOptions {
   arch?: string;
   /** gcov matching the chosen compiler (written as a venv-local shim). */
   gcov?: string;
+  /** conan settings.yml key for this lane's compiler (`apple-clang` / `gcc`). */
+  settingsCompiler?: string;
   /** T18: corporate mirror/proxy (pip index · conan remote · http proxy). */
   mirror?: LaneMirror;
 }
@@ -112,6 +115,10 @@ export function wslLaneEnsureCommand(home: string, profileText: string, opts: La
     `cat > "${l.profile}" <<'HET_WSL_PROFILE'`,
     profileText,
     'HET_WSL_PROFILE',
+    // conan's settings.yml is a closed vocabulary: a brand-new compiler version
+    // makes EVERY build fail (`Invalid setting '21.0.0' …`). Teach the lane's
+    // own copy before any build runs (never the user's).
+    ...laneSettingsEnsureSteps(opts.settingsCompiler ?? '', profileCompilerVersion(profileText), venvBin, l.conanHome),
     `touch "${posix.join(l.conanHome, '.conan_home_marker')}"`,
     ...gcovShimSteps(opts.gcov, venvBin),
     `echo lane_conan:$(${posix.join(venvBin, 'conan')} --version 2>/dev/null | head -1 || echo -)`,

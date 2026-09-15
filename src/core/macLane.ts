@@ -21,6 +21,7 @@
 import { posix } from 'node:path';
 import { LaneCompiler, LaneFacts, parseLaneFacts } from './laneProfile';
 import { LaneMirror, mirrorShellExports } from './laneMirror';
+import { normalizeAppleClangVersion } from './laneSettings';
 import { wslLaneLayout } from './wslLane';
 
 export interface MacFacts extends LaneFacts {
@@ -95,7 +96,16 @@ export function macCompiler(facts: MacFacts): LaneCompiler | undefined {
   if (!facts.compiler) {
     return undefined;
   }
-  return { ...facts.compiler, libcxx: 'libc++', baseline: 'native' };
+  // Apple reports `21.0.0`; conan's settings.yml lists at most `21` / `21.0`.
+  // Passing the raw string made EVERY macOS lane build die with
+  //   `Invalid setting '21.0.0' is not a valid 'settings.compiler.version' value`
+  // (env-fresh · macos run 34926785628).
+  return {
+    ...facts.compiler,
+    version: normalizeAppleClangVersion(facts.compiler.version),
+    libcxx: 'libc++',
+    baseline: 'native',
+  };
 }
 
 /** Actionable guidance when the CLT (or python3) is missing — no root needed. */
