@@ -18,9 +18,14 @@ const dest = join(root, 'assets', 'template');
  * 与其跟构建机的 git 配置搏斗，不如在打包前把这件事做死（见 `lf.mjs`）。
  */
 const applyLf = (dir) => {
-  const changed = normalizeLfInPlace(dir);
+  const { changed, stats } = normalizeLfInPlace(dir);
+  // **每次都打**：下次行尾再出问题，日志里直接有"是什么形态"，不用再猜一轮。
+  console.log(
+    `[asset] 行尾检查：${stats.files} 个文件（二进制 ${stats.binary}）；` +
+      `CRLF ${stats.crlf}、反向 LFCR ${stats.lfcr}、单独 CR ${stats.loneCr} → 归一 ${changed.length} 个`,
+  );
   if (changed.length > 0) {
-    console.warn(`[asset] 已把 ${changed.length} 个模板文件从 CRLF 归一为 LF（本机的行尾设置不对；产物已保证一致）`);
+    console.warn('[asset] 已把上述文件从 CR 归一为 LF（本机检出的行尾设置不对；产物已由我们自己保证一致）');
     console.warn(`[asset]   例：${changed.slice(0, 3).join('、')}`);
   }
   return changed.length;

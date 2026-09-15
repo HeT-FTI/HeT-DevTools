@@ -44,7 +44,13 @@ jobs:
           echo "HOME=$HOME GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-unset}"
           git config --list --show-origin | grep -iE 'autocrlf|core\.eol' || echo "(无 autocrlf/core.eol 配置)"
           echo "模板属性：$(git check-attr text eol -- assets/template/.editorconfig | tr '\n' ' ')"
-          echo "检出后含 CRLF 的模板文件：$(grep -rlI $'\r' assets/template | wc -l) / $(find assets/template -type f | wc -l)"
+          echo "检出后含 CR 的模板文件：$(grep -rlI $'\r' assets/template | wc -l) / $(find assets/template -type f | wc -l)"
+          # 字节级现场：CR 到底是哪种形态（CRLF / LFCR / 单独 CR）—— 上一轮就是这里没看清
+          f=assets/template/.editorconfig
+          echo "$f：CR 字节 $(tr -dc '\r' < "$f" | wc -c) ｜ LF 字节 $(tr -dc '\n' < "$f" | wc -c)"
+          head -c 48 "$f" | od -c | head -4
+          # 交叉判据：上面的 grep 与 Node 读到的字节是否一致（不一致 = 判据本身有问题）
+          node scripts/check-template-lf.mjs || true
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -70,21 +76,11 @@ jobs:
       - name: Package .vsix (dry-run artifact)
         run: npm run package
 
-      # 门禁：模板资源必须是 LF（否则打出来的包因平台而异，见上面的 checkout 步骤）。
-      # 只在 Windows 上跑 —— 那里才会发生行尾转换。
+      # 门禁：进 vsix 的模板必须是 LF（否则打出来的包因平台而异，见上面的 checkout 步骤）。
+      # 用 Node 版判据（读到的字节说了算）：上一轮 grep 版在 Windows 上给出的结论自相矛盾，
+      # 详见 scripts/check-template-lf.mjs 的注释。
       - name: Guard — packaged template must be LF (same bytes on every OS)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          bad=$(grep -rlI $'\r' assets/template || true)
-          if [ -n "$bad" ]; then
-            echo "::error::模板资源里仍有 CRLF —— 打包出的 vsix 在 Windows 上与 linux/macOS 不一致："
-            echo "$bad" | head -10
-            echo "--- 现场 ---"
-            ls --full-time .git/HEAD assets/template/.editorconfig 2>/dev/null | cat
-            exit 1
-          fi
-          echo "模板资源全部为 LF（$(find assets/template -type f | wc -l) 个文件）"
+        run: node scripts/check-template-lf.mjs
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
