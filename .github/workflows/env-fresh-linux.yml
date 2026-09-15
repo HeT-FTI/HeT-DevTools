@@ -95,6 +95,9 @@ jobs:
       - name: "MAIN: 真实扩展宿主 —— 从零自举托管车道并构建"
         env:
           VSCODE_VERSION: "1.95.0"
+          # T28：1.95.0 是 engines.vscode 下限 = 对用户的承诺 → 必须是真的在跑它
+          # （证据里 vscode=1.95.0 / vscodeSource=download@1.95.0 已核实），谁漂了谁红。
+          HET_REAL_EXPECT_VSCODE: "1.95.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: linux-managed
         run: |
@@ -212,6 +215,7 @@ jobs:
       - name: "MAIN: 真实扩展宿主 —— system 工具链构建"
         env:
           VSCODE_VERSION: "1.95.0"
+          HET_REAL_EXPECT_VSCODE: "1.95.0"
           HET_REAL_TOOLCHAIN: system
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: linux-managed

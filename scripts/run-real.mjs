@@ -111,10 +111,8 @@ function isExec(p) {
 // macOS: locate the app's MAIN executable without hardcoding its name (the
 // cask layout has varied: Electron / Visual Studio Code / …). Prefer the known
 // names, else the first executable that is not a Helper.
-function macAppExecutable() {
-  const app = '/Applications/Visual Studio Code.app';
-  const macosDir = join(app, 'Contents', 'MacOS');
-  if (!existsSync(macosDir)) {
+function macAppExecutable(macosDir) {
+  if (!macosDir || !existsSync(macosDir)) {
     return undefined;
   }
   const known = ['Electron', 'Visual Studio Code', 'Code'];
@@ -142,16 +140,58 @@ function macAppExecutable() {
   return undefined;
 }
 
+// T28-B: `@vscode/test-electron`'s own darwin resolution is hardcoded to
+// `Visual Studio Code.app/Contents/MacOS/Electron` (see its util.js), a name that
+// no longer exists in modern builds → `spawn … ENOENT`. That is WHY this harness
+// used the brew cask app and silently ignored VSCODE_VERSION. Given the path it
+// would have produced, derive the .app bundle and find the real main binary.
+function darwinExecutableFromDownloadedPath(downloaded) {
+  if (!downloaded) {
+    return undefined;
+  }
+  const macosDir = dirname(downloaded);
+  return macAppExecutable(macosDir);
+}
+
 const candidates = [
   process.env.VSCODE_EXECUTABLE_PATH,
-  ...(platform() === 'darwin' ? [macAppExecutable()] : []),
+  ...(platform() === 'darwin' ? [macAppExecutable('/Applications/Visual Studio Code.app/Contents/MacOS')] : []),
   'C:/Users/Chen/AppData/Local/Programs/Microsoft VS Code/Code.exe',
   '/usr/bin/code',
   '/Applications/Visual Studio Code.app/Contents/MacOS/Electron',
 ].filter(Boolean);
-const vscodeExecutablePath = candidates.find((p) => p && existsSync(p) && isExec(p));
+let vscodeExecutablePath = candidates.find((p) => p && existsSync(p) && isExec(p));
+let vscodeSource = vscodeExecutablePath ? `local:${vscodeExecutablePath}` : undefined;
 if (vscodeExecutablePath) {
   console.log('[real] using VS Code executable: ' + vscodeExecutablePath);
+}
+
+// T28-B: on darwin a LOCAL install used to win over VSCODE_VERSION, so the job's
+// pin was silently ignored (macOS ran 1.136 while the evidence claimed a floor of
+// 1.95). When a job explicitly asks for the pin, download THAT build and verify
+// its main executable ourselves. A failure falls back to the local app but says
+// so loudly (`HET_REAL_EXPECT_VSCODE` makes it fatal in CI).
+if (process.env.HET_VSCODE_HONOR_PIN === '1' && process.env.VSCODE_VERSION && platform() === 'darwin') {
+  try {
+    const { downloadAndUnzipVSCode } = await import('@vscode/test-electron');
+    const downloaded = await downloadAndUnzipVSCode(process.env.VSCODE_VERSION);
+    const exe = darwinExecutableFromDownloadedPath(downloaded);
+    if (exe) {
+      vscodeExecutablePath = exe;
+      vscodeSource = `download@${process.env.VSCODE_VERSION}`;
+      console.log('[real] pinned VS Code resolved: ' + exe);
+    } else {
+      console.log(
+        '[real] WARN: downloaded VS Code ' + process.env.VSCODE_VERSION + ' but found no main executable near ' + downloaded +
+          ' — falling back to ' + (vscodeExecutablePath ?? 'auto'),
+      );
+    }
+  } catch (err) {
+    console.log(
+      '[real] WARN: pinned VS Code download failed (' + (err?.message ?? err) + ') — falling back to ' +
+        (vscodeExecutablePath ?? 'auto'),
+    );
+  }
 }
 
 async function main() {
@@ -177,14 +217,10 @@ async function main() {
   // in test hosts and the rejection used to kill the command).
   process.env.HET_NO_UI = '1';
   // T28: tell the extension host WHERE this build came from, so `vscode=<ver> +
-  // vscodeSource=<local|download@x|path>` lands in out/real-evidence.txt.
-  process.env.HET_VSCODE_SOURCE = vscodeExecutablePath
-    ? `local:${vscodeExecutablePath}`
-    : `download@${process.env.VSCODE_VERSION}`;
-  console.log(
-    '[real] VS Code: ' +
-      (vscodeExecutablePath ? `local ${vscodeExecutablePath}` : `download @ ${process.env.VSCODE_VERSION}`),
-  );
+  // vscodeSource=<local:…|download@x>` lands in out/real-evidence.txt.
+  vscodeSource = vscodeSource ?? `download@${process.env.VSCODE_VERSION}`;
+  process.env.HET_VSCODE_SOURCE = vscodeSource;
+  console.log('[real] VS Code: ' + vscodeSource);
   console.log('[real] automation markers: HET_NO_UI=1' + (process.env.HET_VERIFY_PHASE ? ' HET_VERIFY_PHASE=' + process.env.HET_VERIFY_PHASE : ''));
   await runTests(opts);
   console.log('[real] host exited cleanly');

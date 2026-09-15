@@ -120,6 +120,7 @@ jobs:
       - name: "MAIN: 真实扩展宿主 —— MSVC + 宿主 conan 构建"
         env:
           VSCODE_VERSION: "1.95.0"
+          HET_REAL_EXPECT_VSCODE: "1.95.0"
           HET_REAL_TOOLCHAIN: system
           HET_REAL_FRESH: "1"
         run: |
@@ -224,6 +225,7 @@ jobs:
       - name: "MAIN: 真实扩展宿主 —— 被拒绝 → 一键切换 → 重构建"
         env:
           VSCODE_VERSION: "1.95.0"
+          HET_REAL_EXPECT_VSCODE: "1.95.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT: blocked
           HET_REAL_EXPECT_AFTER_SWITCH: ok
