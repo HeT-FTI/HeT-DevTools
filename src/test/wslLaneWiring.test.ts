@@ -3,13 +3,23 @@ import { chooseDistroForLane, isOurDistroName } from '../core/wslDistro';
 import { resolveProviderDecision, type HostCapabilities } from '../core/provisionPlan';
 
 describe('T17c 接线：车道的发行版选择 + 计划层"自建"提议', () => {
-  it('发行版选择：我们自建的优先，其次旧托管名，最后才轮到用户的', () => {
+  it('发行版选择：只有**双标记确认的**才是我们的；占着我们名字的绝不接管', () => {
     // 用户只有自己的发行版 → 复用第一个（既有语义不变）
     assert.strictEqual(chooseDistroForLane(['Ubuntu-24.04', 'Debian']), 'Ubuntu-24.04');
-    // 我们自建的 → 优先（即使排在后面）
-    assert.strictEqual(chooseDistroForLane(['Ubuntu-24.04', 'het-lane-2404']), 'het-lane-2404');
-    assert.strictEqual(chooseDistroForLane(['het-lane-2404-2']), 'het-lane-2404-2');
-    // 历史托管名在"没有自建"时仍被认
+    // 我们自建的（调用方用双标记算出的 ourDistros）→ 优先（即使排在后面）
+    assert.strictEqual(
+      chooseDistroForLane(['Ubuntu-24.04', 'het-lane-2404'], { ourDistros: ['het-lane-2404'] }),
+      'het-lane-2404',
+    );
+    assert.strictEqual(chooseDistroForLane(['het-lane-2404-2'], { ourDistros: ['het-lane-2404-2'] }), 'het-lane-2404-2');
+    // 2026-09-15 CI 实测（run 34944081639）：夹具放了一个同名但**没有双标记**的
+    // `het-lane-2404`，旧实现按名字把它选成车道 → 仪表盘显示它的空状态、车道被装进
+    // 它里面（而导入层同一时刻把它当外人）。现在：名字再像也不认，改用别处的发行版；
+    // 一个都没有时返回 undefined（调用方据此走"换名自建"）。
+    assert.strictEqual(chooseDistroForLane(['Ubuntu-24.04', 'het-lane-2404']), 'Ubuntu-24.04');
+    assert.strictEqual(chooseDistroForLane(['het-lane-2404']), undefined);
+    assert.strictEqual(chooseDistroForLane(['het-lane-2404', 'het-lane-2404-2']), undefined);
+    // 历史托管名（het-fcpp）不属于当前命名空间 → 仍是候选（老版本用户的迁移路径）
     assert.strictEqual(chooseDistroForLane(['Ubuntu-24.04', 'het-fcpp']), 'het-fcpp');
     // 空列表 → undefined（调用方据此判"无发行版"）
     assert.strictEqual(chooseDistroForLane([]), undefined);

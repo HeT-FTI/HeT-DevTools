@@ -9,6 +9,7 @@
 import { run } from '../../utils/exec';
 import { MANAGED_DISTRO, WslToolSnapshot, decodeWslOutput, parseWslList, parseWslToolReport, wslExePath } from '../../core/wslHost';
 import { chooseDistroForLane, isOurDistroName } from '../../core/wslDistro';
+import { laneLocalAppData, ourDistroNames } from './wslImport';
 import { LaneFacts, baselineNote, laneFactsScript, parseLaneFacts, unsupportedArchMessage } from '../../core/laneProfile';
 import { runWslScript } from './wslLane';
 
@@ -18,6 +19,8 @@ export interface WslLaneStatus {
   ready: boolean;
   tools: WslToolSnapshot;
   note?: string;
+  /** T17d：选中的发行版确实是我们的（双标记）吗 —— 复用了别人的发行版时为 false。 */
+  owned?: boolean;
   /** T02: facts the status derives from (compiler baseline / conan arch). */
   baseline?: 'ci' | 'compatible' | 'native';
   arch?: string;
@@ -85,6 +88,23 @@ export async function probeLaneTools(distro: string): Promise<{ conan?: string; 
   }
 }
 
+/** 车道宿主的选择结果（T17d：选谁 + 谁真的是我们的 + 哪些是"占着我们的名字但不是我们的"）。 */
+export interface LaneHostChoice {
+  chosen?: string;
+  ours: string[];
+  /** 命名空间是我们的、但没有双标记 → 绝不碰（导入层会换名绕开）。 */
+  foreignReserved: string[];
+}
+
+/** 一次算清"车道该用谁"：双标记判据（I1）与名字判据合并成**一个**入口。 */
+export async function resolveLaneHost(distros: readonly string[]): Promise<LaneHostChoice> {
+  const list = [...distros];
+  const ours = await ourDistroNames(list, laneLocalAppData());
+  const chosen = chooseDistroForLane(list, { ourDistros: ours, legacyManaged: MANAGED_DISTRO });
+  const foreignReserved = list.filter((d) => isOurDistroName(d) && !ours.includes(d));
+  return { chosen, ours, foreignReserved };
+}
+
 /**
  * Overall lane status: prefer the managed distro, else the first available.
  * `tools.conan`/`tools.cmake` reflect the MANAGED LANE venv (used toolchain);
@@ -102,15 +122,23 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
     cache = { at: Date.now(), status };
     return status;
   }
-  const chosen = chooseDistroForLane(distros, MANAGED_DISTRO);
-  if (chosen === undefined) {
+  // T17d（2026-09-15 CI 实测 run 34944081639）：选发行版**必须用双标记判据**，不能只按名字。
+  // 旧实现 `find(isOurDistroName)` 会把"同名但没标记"的发行版当车道 → 仪表盘显示它的空状态，
+  // 而且车道会被装进它里面（导入层同一时刻却把它当外人）。两条路现在用同一个判据。
+  const host = await resolveLaneHost(distros);
+  if (host.chosen === undefined) {
     status.available = false;
+    status.note =
+      host.foreignReserved.length > 0
+        ? `检测到 ${host.foreignReserved.join('、')}：名字在我们的命名空间里但**没有我们的双标记** → 不接管、不往里写任何东西；「一键准备环境」会换名自建一个（如 ${host.foreignReserved[0]}-2）。`
+        : status.note;
     cache = { at: Date.now(), status };
     return status;
   }
-  status.distro = chosen;
+  status.distro = host.chosen;
+  status.owned = host.ours.includes(host.chosen);
   // T02: compiler/arch/lcov from the SAME ladder the build uses.
-  const facts = await probeDistroFacts(chosen);
+  const facts = await probeDistroFacts(host.chosen);
   if (facts.compiler) {
     status.tools.gcc = `${facts.compiler.name} (${facts.compiler.version})`;
     status.baseline = facts.compiler.baseline;
@@ -119,7 +147,7 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
     status.tools.lcov = facts.lcov;
   }
   status.arch = facts.arch || undefined;
-  const lane = await probeLaneTools(chosen);
+  const lane = await probeLaneTools(host.chosen);
   if (lane.conan) {
     status.tools.conan = lane.conan;
   }
@@ -130,11 +158,11 @@ export async function getWslLaneStatus(force = false): Promise<WslLaneStatus> {
     status.tools.ninja = lane.ninja;
   }
   status.ready = !!facts.compiler && !!facts.arch;
-  status.note = isOurDistroName(chosen)
-    ? `托管 distro（自建 · ${chosen}）`
-    : chosen === MANAGED_DISTRO
+  status.note = status.owned
+    ? `托管 distro（自建 · ${host.chosen}）`
+    : host.chosen === MANAGED_DISTRO
       ? `托管 distro（${MANAGED_DISTRO}）`
-      : `复用现有发行版 ${chosen}（gcc 系统级）`;
+      : `复用你已有的发行版 ${host.chosen}（gcc 系统级；车道只在自己名下 ~/.het-fti 里放东西）`;
   if (!facts.compiler) {
     status.note += ' · 编译器未就绪（首次「构建并测试」将按阶梯自动准备）';
   } else if (!facts.arch) {

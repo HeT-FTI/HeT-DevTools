@@ -59,7 +59,7 @@ import { isManagedLaneProvider, providerLabel, ProvisionPrefs } from './core/pro
 import { currentManagedStatus, managedGc, managedRemove } from './features/env/managedProvisioner';
 import { getWslLaneStatus } from './features/env/wslProbe';
 import { runWslConanCreate, runWslDocs, probeLaneDocsTools, LaneDocsTools, ensureWslLane } from './features/env/wslLane';
-import { importLaneDistro, teardownLaneDistro } from './features/env/wslImport';
+import { importLaneDistro, laneLocalAppData, teardownLaneDistro } from './features/env/wslImport';
 import { laneFailureHint } from './core/wslDistro';
 import { collectEnvSample, envConanFact } from './features/env/envSample';
 import { buildEnvDump, dumpFileName, redactRoots } from './core/envDump';
@@ -3981,9 +3981,9 @@ async function switchToSystemToolchain(): Promise<{ ok: boolean; message: string
  * (linux-managed / win-wsl2); macOS keeps the native path until its own lane
  * lands (T07 remainder). Consent still happens exactly once.
  */
-/** T17：`%LOCALAPPDATA%`（Windows 上托管发行版的落点，I3）。 */
+/** T17：`%LOCALAPPDATA%`（Windows 上托管发行版的落点，I3）—— 与探针/导入层共用一处。 */
 function localAppDataDir(): string {
-  return process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local');
+  return laneLocalAppData();
 }
 
 /** T17：rootfs 覆盖（内网/镜像/离线）；校验规则在 core/wslDistro（覆盖必须同时给 sha256）。 */

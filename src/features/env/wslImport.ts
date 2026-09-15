@@ -13,6 +13,8 @@
  */
 
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { run } from '../../utils/exec';
 import { decodeWslOutput, parseWslList, wslExePath, wslRunArgs } from '../../core/wslHost';
 import { ensureRootfs, type RootfsProgress } from '../../core/wslRootfs';
@@ -62,7 +64,15 @@ export interface ImportOutcome {
   reason?: string;
 }
 
-/** `wsl.exe` 可用吗（不存在时 `run` 会抛 ENOENT，这里当作 false）。 */
+/**
+ * `%LOCALAPPDATA%`（托管发行版的落点，I3）。集中在这里，避免扩展/探针各自拼一遍
+ * （拼错一次就会去错的地方找标记 → 把别人的发行版当成自己的）。
+ */
+export function laneLocalAppData(): string {
+  return process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local');
+}
+
+
 export async function wslExeAvailable(): Promise<boolean> {
   try {
     const r = await run(wslExePath(), ['--status'], { timeoutMs: 20_000 });

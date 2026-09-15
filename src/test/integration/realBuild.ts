@@ -345,8 +345,16 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
     console.log(`[real][W5/6] 自建成功：${ours}（双标记回读已通过）—— 车道真的起来了`);
     // 车道自证（一行一事实）：IDE 输出面板里现在也有同一组 `[lane] lane_*` 行；
     // 这里再通过命令把它拿回来打给 CI 日志。
-    const laneFacts = await vscode.commands.executeCommand('het.getWslLane', true);
+    const laneFacts = (await vscode.commands.executeCommand('het.getWslLane', true)) as
+      | { distro?: string; ready?: boolean; owned?: boolean; note?: string }
+      | null;
     console.log('[real] lane facts: ' + JSON.stringify(laneFacts));
+    // 2026-09-15 实测（run 34944081639）：旧实现按**名字**选发行版，于是仪表盘/构建看到的是
+    // 夹具放的"同名但没标记"那个（ready=false、tools 空），而真正准备好的 `-2` 被无视 →
+    // 车道还被装进了别人的发行版里。这三条断言把它钉死。
+    assert.strictEqual(laneFacts?.distro, ours, `车道状态必须指向我们自己的发行版（期望 ${ours}，实际 ${laneFacts?.distro}）`);
+    assert.strictEqual(laneFacts?.owned, true, '选中的发行版必须经双标记确认是我们的');
+    assert.strictEqual(laneFacts?.ready, true, `刚准备好的车道必须显示就绪（实际 ${JSON.stringify(laneFacts)}）`);
     // "准备完就能构建"：**不 force** 地再问一次计划 —— 必须已经翻到 win-wsl2。
     // 各层探测缓存是 30/60 秒；准备完不刷新的话，用户紧接着点构建会被判"车道不可用"。
     const planAfter = (await vscode.commands.executeCommand('het.getProvisionPlan')) as ProviderPlan | null;

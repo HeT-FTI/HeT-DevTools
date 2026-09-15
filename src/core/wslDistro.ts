@@ -52,15 +52,34 @@ export function isOurDistroName(name: string): boolean {
 }
 
 /**
- * 车道该用哪个发行版（纯函数，便于单测）：
- *   ① **我们自建的**（`het-lane-*`）优先 —— T17 之后它是 managed 的正牌宿主；
- *   ② 其次旧的托管名（`het-fcpp`，历史兼容）；
- *   ③ 再到用户已有发行版的第一个（gcc 系统级，维持既有语义）。
- * 默认发行版是用户的，我们从不改 `wsl --set-default`（I2）。
+ * 车道该用哪个发行版（纯函数，便于单测）。
+ *
+ * 优先级（**T17d 修正**，2026-09-15 CI 实测 run 34944081639）：
+ *   ① **我们自己的**（调用方用双标记判据算出的 `ourDistros`）—— 唯一可信的来源；
+ *   ② 名字落在**我们的命名空间**但**没有双标记**的（如别人手建的 `het-lane-2404`）→
+ *      **一律不用**：它们是"保留名但不是我们的"，导入层会绕开它们换名（`-2`），
+ *      把它们当车道就等于往别人的发行版里写我们的东西；
+ *   ③ 其余（用户自己的 Ubuntu/Debian…，或历史托管名 `het-fcpp`）→ 复用第一个 ——
+ *      "用你已有的官方发行版当车道宿主"是既有且有意保留的语义。
+ *
+ * 旧实现是 `list.find(isOurDistroName)`：**只按名字**，于是同名无标记的发行版会抢先被选中
+ * （仪表盘显示它的空状态、车道被装进它里面），而导入层同一时刻正确地把它当外人 ——
+ * 两条路必须用同一个判据。
  */
-export function chooseDistroForLane(distros: readonly string[], legacyManaged = 'het-fcpp'): string | undefined {
+export function chooseDistroForLane(
+  distros: readonly string[],
+  opts: { ourDistros?: readonly string[]; legacyManaged?: string } = {},
+): string | undefined {
+  const legacy = opts.legacyManaged ?? 'het-fcpp';
   const list = [...distros].map((d) => d.trim()).filter(Boolean);
-  return list.find((d) => isOurDistroName(d)) ?? (list.includes(legacyManaged) ? legacyManaged : list[0]);
+  const ours = new Set((opts.ourDistros ?? []).map((d) => d.trim()).filter(Boolean));
+  const owned = list.filter((d) => ours.has(d));
+  if (owned.length > 0) {
+    return owned.find((d) => d === legacy) ?? owned[0];
+  }
+  // 命名空间内但没双标记 → 不是我们的：绝不使用（导入层会换名绕开）。
+  const candidates = list.filter((d) => !isOurDistroName(d));
+  return candidates.find((d) => d === legacy) ?? candidates[0];
 }
 
 export interface DistroNameChoice {
