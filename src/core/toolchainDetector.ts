@@ -1,5 +1,7 @@
 import { ToolStatus } from '../types';
 import { run, which } from '../utils/exec';
+import { CMAKE_MIN_DEFAULT } from './laneProfile';
+import { PYTHON_DOCS_FLOOR } from './lanePython';
 
 /**
  * External toolchain probe (development-plan T-1.2).
@@ -15,8 +17,9 @@ export interface ToolSpec {
 
 export const STANDARD_TOOLS: ToolSpec[] = [
   { name: 'conan', versionArgs: ['--version'], required: '>= 2' },
-  { name: 'cmake', versionArgs: ['--version'], required: '>= 3.28' },
-  { name: 'python', versionArgs: ['--version'], required: '>= 3.10' },
+  // 下限从**归属模块**派生（T22 门禁：不允许把 CI 事实抄成第二份字面量）
+  { name: 'cmake', versionArgs: ['--version'], required: `>= ${CMAKE_MIN_DEFAULT}` },
+  { name: 'python', versionArgs: ['--version'], required: `>= ${PYTHON_DOCS_FLOOR}` },
   { name: 'doxygen', versionArgs: ['--version'] },
   { name: 'dot', versionArgs: ['-V'] },
   { name: 'make', versionArgs: ['--version'] },

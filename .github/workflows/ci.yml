@@ -43,6 +43,9 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Audit (no CI facts leaked into product code)
+        run: npm run audit:pins
+
       - name: Package .vsix (dry-run artifact)
         run: npm run package
 

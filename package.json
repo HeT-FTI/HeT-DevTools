@@ -320,7 +320,8 @@
     "test:c6": "npm run compile && node esbuild.mjs --c6 && node scripts/run-c6.mjs",
     "test:c7": "npm run compile && node esbuild.mjs --c7 && node scripts/run-c7.mjs",
     "asset": "node scripts/build-template-asset.mjs",
-    "test:real": "npm run compile && node esbuild.mjs --real && node scripts/run-real.mjs"
+    "test:real": "npm run compile && node esbuild.mjs --real && node scripts/run-real.mjs",
+    "audit:pins": "npm run compile && npm run compile:tests && mocha out/test/auditPins.test.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
