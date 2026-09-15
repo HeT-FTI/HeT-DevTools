@@ -228,3 +228,95 @@ export function unsupportedArchMessage(archRaw: string): string {
     '请改用 metadata.json 的 "toolchain": "system" 走本机工具链，或换用受支持的机器。',
   ].join('\n');
 }
+
+/* -------------------------------------------------------------------------- *
+ * CMake: which binary may the NATIVE (toolchain=system) build use?
+ *
+ * Mirrors the template's `cmake_minimum_required` default (see
+ * assets/template/CMakeLists.txt); the template already understands
+ * `-DHET_CMAKE_MIN=<ver>` to lower it, so this is a POLICY floor, not a
+ * technical one. The lane passes `HET_CMAKE_BUILD_REQUIRE=none` and uses its
+ * own venv cmake; before this the NATIVE path always let the template pull
+ * `cmake/<metadata.cmake_version>` from ConanCenter — i.e. "use your own
+ * toolchain" still downloaded a ~40 MB CMake and failed on intranets.
+ * -------------------------------------------------------------------------- */
+
+/** Template `cmake_minimum_required` default (policy floor, see U1/ADR-1). */
+export const CMAKE_MIN_DEFAULT = '3.28';
+
+const VERSION_IN_TEXT = /\d+(?:\.\d+){0,3}/;
+
+/** First dotted version found in a version line ('cmake version 3.31.6' → [3,31,6]). */
+export function parseVersion(text: string | undefined | null): number[] | undefined {
+  const m = text ? VERSION_IN_TEXT.exec(text) : null;
+  return m ? m[0].split('.').map((n) => Number.parseInt(n, 10)) : undefined;
+}
+
+/**
+ * Compare two dotted versions. Missing components count as 0.
+ * Returns -1 (a<b) / 0 (equal or unknown) / 1 (a>b) — "unknown" never blocks.
+ */
+export function compareVersions(a: string | undefined | null, b: string | undefined | null): number {
+  const va = parseVersion(a);
+  const vb = parseVersion(b);
+  if (!va || !vb) {
+    return 0;
+  }
+  for (let i = 0; i < Math.max(va.length, vb.length); i += 1) {
+    const x = va[i] ?? 0;
+    const y = vb[i] ?? 0;
+    if (x !== y) {
+      return x > y ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+/** Effective CMake floor: `HET_CMAKE_MIN` (template contract) wins over the default. */
+export function effectiveCmakeFloor(envValue?: string | null): string {
+  const v = (envValue ?? '').trim();
+  return v.length > 0 ? v : CMAKE_MIN_DEFAULT;
+}
+
+export interface NativeCmakePlan {
+  /** true → the native build may use the host cmake (no ConanCenter download). */
+  useHost: boolean;
+  /** Value to export as `HET_CMAKE_BUILD_REQUIRE`. */
+  buildRequire: string;
+  /** One-line reason for the build log. */
+  reason: string;
+  /** Actionable paths when the host cmake cannot be used ('' when useHost). */
+  guide: string;
+}
+
+/**
+ * Decide which CMake a NATIVE build uses.
+ *  - host cmake ≥ floor → `HET_CMAKE_BUILD_REQUIRE=none` (主机工具，一份 CMake)
+ *  - otherwise          → keep the template's pinned ConanCenter cmake, said
+ *                         out loud with the three exact ways out (never a silent
+ *                         download).
+ */
+export function nativeCmakePlan(hostVersion: string | undefined | null, floor = CMAKE_MIN_DEFAULT, pinned = ''): NativeCmakePlan {
+  const meets = compareVersions(hostVersion, floor) >= 0 && !!parseVersion(hostVersion);
+  if (meets) {
+    return {
+      useHost: true,
+      buildRequire: 'none',
+      reason: `宿主 cmake ${parseVersion(hostVersion)!.join('.')} ≥ 下限 ${floor} → 使用宿主 cmake（不再从 ConanCenter 拉取）`,
+      guide: '',
+    };
+  }
+  const shown = hostVersion ? parseVersion(hostVersion)?.join('.') ?? hostVersion.trim() : '未找到';
+  const pin = pinned.trim().length > 0 ? pinned.trim() : 'metadata.cmake_version';
+  return {
+    useHost: false,
+    buildRequire: '',
+    reason: `宿主 cmake ${shown} 不满足模板下限 ${floor} → 本次改用模板钉死的 cmake/${pin}（ConanCenter，需联网）`,
+    guide: [
+      `宿主 CMake 不满足模板下限 ${floor}（当前：${shown}）。本次构建将从 ConanCenter 拉取模板钉死的 cmake/${pin}，需要联网。三条出路：`,
+      `  ① 安装 cmake ≥ ${floor}：Linux sudo apt-get install -y cmake ｜ macOS brew install cmake ｜ Windows winget install Kitware.CMake`,
+      `  ② 若工程不需要 ${floor} 的新特性：自降底线 -DHET_CMAKE_MIN=${shown === '未找到' ? '3.22' : shown}（或在环境变量里设 HET_CMAKE_MIN）`,
+      '  ③ 改回 "toolchain": "managed"：托管车道自带 cmake（无需联网拉取）',
+    ].join('\n'),
+  };
+}

@@ -94,4 +94,25 @@ describe('T06 envContract (single source of truth)', () => {
     assert.ok(html.includes('data-page-action="env:prepare"'), 'prepare action wired');
     assert.strictEqual(envCardHtml(null), '', 'no contract → no card (legacy blocks take over)');
   });
+
+  // F2 (2026-09-15): the cmake row is not a bare presence tick — a host cmake
+  // below the template floor means the build will fetch the pinned CMake from
+  // ConanCenter (network!), and that must be visible with the ways out.
+  it('flags a host cmake below the template floor with the ConanCenter caveat and 3 ways out', () => {
+    const c = buildEnvContract({ ...base, conan: 'Conan version 2.32.0', cmake: 'cmake version 3.22.1', cmakeFloor: '3.28' });
+    const row = c.rows.find((r) => r.id === 'cmake')!;
+    assert.strictEqual(row.disposition, 'present', 'the tool IS present — do not fake a failure');
+    assert.match(row.note ?? '', /3\.22\.1 < 模板下限 3\.28/u);
+    assert.match(row.note ?? '', /ConanCenter/u);
+    assert.match(row.altFix?.copy ?? '', /apt-get install -y cmake/u);
+    assert.match(row.altFix?.copy ?? '', /HET_CMAKE_MIN=3\.22\.1/u);
+    assert.match(row.altFix?.copy ?? '', /"toolchain": "managed"/u);
+  });
+
+  it('says nothing extra when the host cmake meets the floor (3.31.x vs 3.28)', () => {
+    const c = buildEnvContract({ ...base, conan: 'Conan version 2.32.0', cmake: 'cmake version 3.31.8', cmakeFloor: '3.28' });
+    const row = c.rows.find((r) => r.id === 'cmake')!;
+    assert.strictEqual(row.note, undefined);
+    assert.strictEqual(row.altFix, undefined);
+  });
 });

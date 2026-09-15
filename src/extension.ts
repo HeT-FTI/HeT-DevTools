@@ -69,7 +69,7 @@ import { getLinuxLaneStatus, runLinuxConanCreate, runLinuxDocs, probeLinuxLaneFa
 import { ContractFacts, EnvContract, buildEnvContract } from './core/envContract';
 import { docsFailureHint } from './core/docsHints';
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
-import { laneCompilerGuide, unsupportedArchMessage } from './core/laneProfile';
+import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArchMessage } from './core/laneProfile';
 import { openHudPanel } from './features/hud/panel';
 import { HudEnvRow, HudModel, defaultHudActions, hudEnabled } from './features/hud/hudModel';
 import { TEMPLATE_REPO } from './core/templateDefaults';
@@ -3719,12 +3719,19 @@ async function collectEnvContract(): Promise<EnvContract> {
     graphviz: has('graphviz') ? '已安装' : undefined,
     make: has('make') ? '已安装' : undefined,
   };
+  // F2: name the CMake that will ACTUALLY build. Managed semantics → the lane's
+  // cmake; system semantics → the HOST cmake (F1 uses it when it meets the
+  // template floor). The floor decides whether a ConanCenter download is ahead.
+  facts.cmakeFloor = effectiveCmakeFloor(process.env.HET_CMAKE_MIN);
+  const systemMode = currentProject?.metadata?.toolchain === TOOLCHAIN_SYSTEM;
+  const hostCmake = await hostCmakeVersion().catch(() => undefined);
+  const pickCmake = (laneCmake?: string): string | undefined => (systemMode ? hostCmake ?? laneCmake : laneCmake ?? hostCmake);
   if (process.platform === 'win32') {
     facts.compiler = sample?.wsl?.tools.gcc;
     facts.compilerBaseline = sample?.wsl?.baseline;
     facts.arch = sample?.wsl?.arch;
     facts.conan = sample?.wsl?.tools.conan;
-    facts.cmake = sample?.wsl?.tools.cmake;
+    facts.cmake = pickCmake(sample?.wsl?.tools.cmake);
     facts.ninja = sample?.wsl?.tools.ninja;
     facts.lcov = sample?.wsl?.tools.lcov;
     facts.laneHealable = true;
@@ -3733,7 +3740,7 @@ async function collectEnvContract(): Promise<EnvContract> {
     facts.compilerBaseline = sample?.linux?.baseline;
     facts.arch = sample?.linux?.arch;
     facts.conan = sample?.linux?.tools.conan;
-    facts.cmake = sample?.linux?.tools.cmake;
+    facts.cmake = pickCmake(sample?.linux?.tools.cmake);
     facts.ninja = sample?.linux?.tools.ninja;
     facts.lcov = sample?.linux?.tools.lcov;
     facts.laneHealable = plan?.provider === 'linux-managed';
@@ -3745,7 +3752,7 @@ async function collectEnvContract(): Promise<EnvContract> {
     facts.compilerBaseline = facts.compiler ? 'native' : undefined;
     facts.arch = mac?.arch;
     facts.conan = mac?.tools.conan;
-    facts.cmake = mac?.tools.cmake;
+    facts.cmake = pickCmake(mac?.tools.cmake);
     facts.ninja = mac?.tools.ninja;
     // macOS = limited support: no GNU gcov/lcov (llvm-cov adapter is T20).
     facts.lcovSupported = false;
@@ -4096,6 +4103,54 @@ function winLaneBlockedMessage(provider: string, distro?: string): string {
 }
 
 /** Run `conan create` in the project and stream everything to the output channel. */
+/** Memoized host `cmake --version` line (contract row + native cmake decision). */
+let hostCmakeCache: { at: number; version?: string } | null = null;
+async function hostCmakeVersion(): Promise<string | undefined> {
+  if (hostCmakeCache && Date.now() - hostCmakeCache.at < 30_000) {
+    return hostCmakeCache.version;
+  }
+  let version: string | undefined;
+  const exe = await which('cmake').catch(() => null);
+  if (exe) {
+    const r = await run(exe, ['--version'], { timeoutMs: 8000 }).catch(() => null);
+    version = r?.stdout.split(/\r?\n/u).find((l) => l.trim().length > 0)?.trim();
+  }
+  hostCmakeCache = { at: Date.now(), version };
+  return version;
+}
+
+/**
+ * F1: which CMake may the NATIVE (toolchain=system) build use?
+ *
+ * Probes the host cmake and turns the pure decision (`nativeCmakePlan`) into the
+ * child env for `conan create`: `HET_CMAKE_BUILD_REQUIRE=none` when the host
+ * cmake meets the template floor (→ the host tool is used, no ConanCenter
+ * download), otherwise the template's pinned cmake stays — with the reason and
+ * the three ways out surfaced in the output channel.
+ */
+async function planNativeCmake(pinnedCmake?: string, conanExe?: string): Promise<{ reason: string; guide: string; env: NodeJS.ProcessEnv }> {
+  const floor = effectiveCmakeFloor(process.env.HET_CMAKE_MIN);
+  const version = await hostCmakeVersion().catch(() => undefined);
+  const plan = nativeCmakePlan(version, floor, pinnedCmake ?? '');
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (plan.useHost) {
+    env.HET_CMAKE_BUILD_REQUIRE = plan.buildRequire;
+  }
+  // Recipes shell out to bare `conan` (the template's coverage step does:
+  // `subprocess.run(["conan","list", …])`) and to other tools next to it. Conan
+  // may have been found by sniffing (conda envs) rather than on PATH, which made
+  // the native build die with `FileNotFoundError: 'conan'`. Guarantee that its
+  // own directory is on PATH for the child process.
+  if (conanExe) {
+    const dir = dirname(conanExe);
+    const path = env.PATH ?? '';
+    if (dir && !path.split(delimiter).includes(dir)) {
+      env.PATH = `${dir}${delimiter}${path}`;
+    }
+  }
+  return { reason: plan.reason, guide: plan.guide, env };
+}
+
 async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout: string; stderr: string }> {  // V5-1: managed semantics on a WSL2-ready Windows host → build INSIDE the
   // WSL2 managed lane (Linux-identical gcc/gcov semantics, isolated from the
   // distro's conda base / FEniCS envs via its own venv + CONAN_HOME + profile).
@@ -4259,6 +4314,19 @@ async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout
   }
 
   log(`[conan] ${conanExe} create . (${buildType}) in ${project.root}${profiles.length ? ` profiles=${profiles.join(',')}` : ''}`);
+
+  // F1: "toolchain=system" must mean *the host's* tools. Until now the template
+  // always pulled `cmake/<metadata.cmake_version>` from ConanCenter, so even a
+  // perfectly good host cmake was ignored (and intranets paid a ~40 MB download).
+  // Now: host cmake ≥ floor → HET_CMAKE_BUILD_REQUIRE=none (host cmake is used);
+  // otherwise keep the pinned cmake but SAY SO with the three ways out.
+  const cmakePlan = await planNativeCmake(project.metadata?.cmake_version, conanExe);
+  log(`[cmake] ${cmakePlan.reason}`);
+  if (cmakePlan.guide) {
+    channel?.appendLine(cmakePlan.guide);
+    log('[cmake] 提示：宿主 CMake 低于模板下限，本次将联网拉取模板钉死的版本');
+  }
+
   emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · ${project.metadata?.name ?? project.root}` });
   const summary = await runConanCreate(
     conanExe,
@@ -4274,6 +4342,7 @@ async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout
         emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
       },
       timeoutMs: 0,
+      env: cmakePlan.env,
     },
   );
   lastConanOutput = `${summary.stdout}\n${summary.stderr}`;

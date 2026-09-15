@@ -1,14 +1,19 @@
 import * as assert from 'node:assert';
 import {
+  CMAKE_MIN_DEFAULT,
   COMPILER_LADDER,
   GCC_APT_ATTEMPTS,
   LaneCompiler,
   baselineNote,
+  compareVersions,
+  effectiveCmakeFloor,
   laneCompilerGuide,
   laneFactsScript,
   laneProfileFor,
   mapLaneArch,
+  nativeCmakePlan,
   parseLaneFacts,
+  parseVersion,
   unsupportedArchMessage,
 } from '../core/laneProfile';
 
@@ -116,5 +121,47 @@ describe('T01/T02 laneProfile (compiler & arch ladder — the ONLY place CI fact
     const u = unsupportedArchMessage('riscv64');
     assert.ok(u.includes('riscv64') && u.includes('x86_64'));
     assert.ok(u.includes('"toolchain": "system"'));
+  });
+
+  // F1 (2026-09-15): "toolchain=system" must mean the HOST tools — the native
+  // path used to let the template pull cmake/<pinned> from ConanCenter even when
+  // the host cmake was perfectly good (intranets paid a ~40 MB download).
+  it('version parsing/comparison never blocks on unknown, and ignores patch noise in policy terms', () => {
+    assert.deepStrictEqual(parseVersion('cmake version 3.31.6'), [3, 31, 6]);
+    assert.strictEqual(parseVersion('(none)'), undefined);
+    assert.strictEqual(compareVersions('cmake version 3.31.8', '3.28'), 1, '3.31.8 meets a 3.28 floor');
+    assert.strictEqual(compareVersions('3.31.8', '3.31.6'), 1);
+    assert.strictEqual(compareVersions('3.22.1', '3.28'), -1, '22.04 cmake is below the floor');
+    assert.strictEqual(compareVersions(undefined, '3.28'), 0, 'unknown never blocks');
+    assert.strictEqual(effectiveCmakeFloor(''), CMAKE_MIN_DEFAULT);
+    assert.strictEqual(effectiveCmakeFloor('3.22'), '3.22', 'HET_CMAKE_MIN wins');
+  });
+
+  it('native cmake plan: host cmake ≥ floor → use it (no ConanCenter download)', () => {
+    const plan = nativeCmakePlan('cmake version 3.31.6', '3.28', '4.0.1');
+    assert.strictEqual(plan.useHost, true);
+    assert.strictEqual(plan.buildRequire, 'none');
+    assert.strictEqual(plan.guide, '', 'no guidance needed when the host tool is usable');
+    assert.ok(plan.reason.includes('3.31.6') && plan.reason.includes('3.28'));
+    // patch-level differences must not change the decision (the user's example)
+    assert.strictEqual(nativeCmakePlan('cmake version 3.31.8', '3.28').useHost, true);
+  });
+
+  it('native cmake plan: below floor → pinned ConanCenter cmake, said out loud with three ways out', () => {
+    const plan = nativeCmakePlan('cmake version 3.22.1', '3.28', '4.0.1');
+    assert.strictEqual(plan.useHost, false);
+    assert.ok(plan.reason.includes('3.22.1'), 'states the host version');
+    assert.ok(plan.reason.includes('cmake/4.0.1'), 'states what will actually be fetched');
+    assert.ok(plan.reason.includes('需联网'), 'states the network dependency');
+    assert.ok(plan.guide.includes('apt-get install -y cmake'), 'option ① install a newer cmake');
+    assert.ok(plan.guide.includes('HET_CMAKE_MIN=3.22.1'), 'option ② lower the floor');
+    assert.ok(plan.guide.includes('"toolchain": "managed"'), 'option ③ use the lane');
+  });
+
+  it('native cmake plan: no cmake at all is also below the floor (never silently fine)', () => {
+    const plan = nativeCmakePlan(undefined, '3.28', '');
+    assert.strictEqual(plan.useHost, false);
+    assert.ok(plan.reason.includes('未找到'));
+    assert.ok(plan.guide.includes('metadata.cmake_version'), 'names the pinned fallback');
   });
 });

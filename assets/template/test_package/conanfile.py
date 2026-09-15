@@ -56,7 +56,16 @@ class PackageTestConan(ConanFile):
         self.metadata = yaml.safe_load(metadata_path.read_text())
 
     def build_requirements(self):
-        self.build_requires(f"cmake/{self.metadata.get('cmake_version')}")
+        # Downstream contract (HeT DevTools): same opt-out as the main recipe —
+        # WITHOUT this the test package always fetched the ConanCenter cmake
+        # (45 MB) even when a perfectly good cmake was already available, so the
+        # "one CMake instead of two" promise only held for the library build.
+        #   HET_CMAKE_BUILD_REQUIRE=none      → use the cmake already on PATH
+        #   HET_CMAKE_BUILD_REQUIRE=3.30.5    → pin another version
+        _override = (os.environ.get('HET_CMAKE_BUILD_REQUIRE') or '').strip()
+        if _override.lower() == 'none':
+            return
+        self.build_requires(f"cmake/{_override or self.metadata.get('cmake_version')}")
 
     def requirements(self):
         self.requires(self.tested_reference_str)

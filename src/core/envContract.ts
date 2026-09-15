@@ -12,6 +12,8 @@
  * Pure (no vscode/fs): the impure collection stays in the command layer.
  */
 
+import { CMAKE_MIN_DEFAULT, compareVersions, parseVersion } from './laneProfile';
+
 export type RequirementId = 'git' | 'python' | 'compiler' | 'conan' | 'cmake' | 'ninja' | 'lcov' | 'doxygen' | 'graphviz' | 'make';
 
 /** Every requirement must resolve to exactly one of these (parity-tested). */
@@ -88,6 +90,8 @@ export interface ContractFacts {
   compilerBaseline?: EnvBaseline;
   conan?: string;
   cmake?: string;
+  /** Effective CMake floor (`HET_CMAKE_MIN` or the template default). */
+  cmakeFloor?: string;
   ninja?: string;
   lcov?: string;
   git?: string;
@@ -126,7 +130,27 @@ export function buildEnvContract(f: ContractFacts): EnvContract {
     ...(f.compiler ? {} : f.laneGuide ? { fix: laneFix, altFix: FIX_USE_SYSTEM, note: '车道要求' } : { fix: errFix }),
   });
   rows.push({ id: 'conan', label: ROW_LABELS.conan, required: true, ...present(f.conan), ...(f.conan ? {} : { fix: errFix }) });
-  rows.push({ id: 'cmake', label: ROW_LABELS.cmake, required: true, ...present(f.cmake), ...(f.cmake ? {} : { fix: errFix }) });
+  // F2 (2026-09-15): the cmake row used to be presence-only, while a host cmake
+  // BELOW the template floor silently made the build pull `cmake/<pinned>` from
+  // ConanCenter. Say which cmake will actually be used (and how to avoid the
+  // download) instead of a green tick that hides a network dependency.
+  const cmakeFloor = f.cmakeFloor ?? CMAKE_MIN_DEFAULT;
+  const cmakeNative = parseVersion(f.cmake);
+  const cmakeBelowFloor = !!cmakeNative && compareVersions(f.cmake, cmakeFloor) < 0;
+  rows.push({
+    id: 'cmake',
+    label: ROW_LABELS.cmake,
+    required: true,
+    ...present(f.cmake),
+    ...(f.cmake
+      ? cmakeBelowFloor
+        ? {
+            note: `宿主 cmake ${cmakeNative.join('.')} < 模板下限 ${cmakeFloor}：本次构建会从 ConanCenter 拉取模板钉死的 cmake（需联网）`,
+            altFix: { kind: 'cmd' as const, text: `装 cmake ≥ ${cmakeFloor}，或自降底线`, copy: `# 三选一：\n# ① 装新 cmake：sudo apt-get install -y cmake   (macOS: brew install cmake)\n# ② 自降模板底线：cmake -DHET_CMAKE_MIN=${cmakeNative.join('.')} ..   （或设环境变量 HET_CMAKE_MIN）\n# ③ 改回 "toolchain": "managed"（车道自带 cmake）` },
+          }
+        : {}
+      : { fix: errFix }),
+  });
   rows.push({ id: 'ninja', label: ROW_LABELS.ninja, required: true, ...present(f.ninja), ...(f.ninja ? {} : { fix: errFix }) });
 
   if (f.lcovSupported === false) {
