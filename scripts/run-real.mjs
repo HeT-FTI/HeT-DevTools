@@ -176,6 +176,11 @@ async function main() {
   // argv sniffing, so modals/toasts are never attempted (vscode refuses dialogs
   // in test hosts and the rejection used to kill the command).
   process.env.HET_NO_UI = '1';
+  // T28: tell the extension host WHERE this build came from, so `vscode=<ver> +
+  // vscodeSource=<local|download@x|path>` lands in out/real-evidence.txt.
+  process.env.HET_VSCODE_SOURCE = vscodeExecutablePath
+    ? `local:${vscodeExecutablePath}`
+    : `download@${process.env.VSCODE_VERSION}`;
   console.log(
     '[real] VS Code: ' +
       (vscodeExecutablePath ? `local ${vscodeExecutablePath}` : `download @ ${process.env.VSCODE_VERSION}`),

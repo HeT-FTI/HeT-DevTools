@@ -131,6 +131,11 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— macOS 车道构建 + 测试 + 文档"
         env:
+          # T28：本作业**不用**这个版本 —— harness 优先用本地安装（brew cask 装的
+          # /Applications/Visual Studio Code.app = 最新版），因此这里写 1.95.0 只是
+          # “意图”，harness 会打印 WARN 并在证据里写 vscode=<真实版本>。
+          # “1.95 是承诺下限 → 必须绿”在 Linux/Windows 两个平台已被真实验证；
+          # macOS 上要同样验证需显式下载钉住版（T28-B）。保留变量是为了 T28-B 后直接生效。
           VSCODE_VERSION: "1.95.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: macos-native
@@ -145,6 +150,9 @@ jobs:
                             → conan create --build=missing → GTest 全绿
                 → 覆盖率步骤跳过（macOS unsupported，不计失败）
                 → het.docsRun：doxygen（docs.html）+ sphinx（index.html）必须存在
+
+          注意（T28）：宿主版本会被打印并写进证据（vscode=<版本> vscodeSource=local|download@x）。
+          本作业目前跑的是 brew cask 装的本地 VS Code（即“最新版”），**不**验证 1.95 下限。
           EOF
           npm run test:real
           echo "::endgroup::"

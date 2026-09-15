@@ -128,6 +128,28 @@ function findCovReportIndex(root: string, extraRoots: string[] = [], depth = 0):
 export async function run(): Promise<void> {
   console.log('[real][STEP 1/6] provider decision — capability-first, must match this host');
   console.log('[real] starting on ' + process.platform);
+  // T28: the RUNNING host version, read from inside the extension host. It used
+  // to be unknowable from the artifact (macOS silently ran the local/brew build
+  // while the job asked for the pinned 1.95.0), so it is now a first-class fact:
+  // the CI claim "we verify the promised VS Code floor" is checkable here.
+  console.log(`[real] host VS Code: ${vscode.version} (source: ${process.env.HET_VSCODE_SOURCE ?? '(unset)'})`);
+  // T28: `VSCODE_VERSION` is the promised floor, but a LOCAL install wins over the
+  // download — so asking for a version is not the same as running it (macOS).
+  // Make that mismatch LOUD instead of silent; `HET_REAL_EXPECT_VSCODE` turns it
+  // into a hard assertion once a job has confirmed the value it gets.
+  const pinnedVscode = process.env.VSCODE_VERSION ?? '';
+  const expectVscode = process.env.HET_REAL_EXPECT_VSCODE ?? '';
+  if (expectVscode) {
+    assert.ok(
+      vscode.version.startsWith(expectVscode),
+      `job requires VS Code ${expectVscode}, but this host is ${vscode.version} (source: ${process.env.HET_VSCODE_SOURCE ?? '?'})`,
+    );
+  } else if (pinnedVscode && !vscode.version.startsWith(pinnedVscode)) {
+    console.log(
+      `[real] WARN: job asked for VS Code ${pinnedVscode} but ran ${vscode.version} (source: ${process.env.HET_VSCODE_SOURCE ?? '?'}) ` +
+        '— the promised floor is NOT what this run verified (set HET_REAL_EXPECT_VSCODE to make it fatal, see T28)',
+    );
+  }
   const ext = hetExtension();
   assert.ok(ext, `extension must be discovered — expected id "${EXTENSION_ID}"; discovered: ${discoveredIds()}`);
   console.log('[real] extension id: ' + ext!.id);
@@ -210,7 +232,7 @@ export async function run(): Promise<void> {
       await vscode.commands.executeCommand('het.test');
       assert.strictEqual(await vscode.commands.executeCommand<boolean | null>('het.getBuildOk'), true, 'system build after the switch must succeed');
     }
-    const blockedEvidence = `platform=${process.platform} provider=${plan!.provider} mode=blocked switched=system\n`;
+    const blockedEvidence = `platform=${process.platform} provider=${plan!.provider} mode=blocked switched=system vscode=${vscode.version} vscodeSource=${process.env.HET_VSCODE_SOURCE ?? '?'}\n`;
     writeFileSync(join(__dirname, '..', 'real-evidence.txt'), blockedEvidence, 'utf8');
     console.log('[real] PASS (blocked-guidance) ' + blockedEvidence.trim());
     return;
@@ -298,7 +320,7 @@ export async function run(): Promise<void> {
     docsEvidence = 'unsupported-honest';
   }
 
-  const evidence = `platform=${process.platform} provider=${plan!.provider} mode=${MODE_SYSTEM ? 'system' : 'managed'} docs=${docsEvidence} buildOk=${buildOk} passed=${summary.passed} failed=${summary.failed} skipped=${summary.skipped}\n`;
+  const evidence = `platform=${process.platform} provider=${plan!.provider} mode=${MODE_SYSTEM ? 'system' : 'managed'} docs=${docsEvidence} buildOk=${buildOk} passed=${summary.passed} failed=${summary.failed} skipped=${summary.skipped} vscode=${vscode.version} vscodeSource=${process.env.HET_VSCODE_SOURCE ?? '?'}\n`;
   writeFileSync(join(__dirname, '..', 'real-evidence.txt'), evidence, 'utf8');
   console.log('[real][STEP 6/6] evidence written');
   console.log('[real] PASS ' + evidence.trim());
