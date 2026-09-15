@@ -3915,6 +3915,7 @@ async function runEnvRemove(): Promise<{ ok: boolean; message: string }> {
     }
   }
   void clearEnvPhaseRecord(ctx.globalState);
+  await refreshEnvironmentFacts();
   const message = removed.length
     ? `已清理托管环境：\n· ${removed.join('\n· ')}${unregisterHint}`
     : `未发现可清理的托管环境。${unregisterHint}`;
@@ -3994,6 +3995,23 @@ function wslRootfsOverride(): { url?: string; sha256?: string } {
   };
 }
 
+/**
+ * 准备/移除**改变了机器事实**之后，把各层探测缓存清掉。
+ *
+ * 为什么必须做：能力探测缓存 30 秒、车道状态缓存 60 秒。用户点完「一键准备环境」立刻点
+ * 「构建并测试」时，构建路径会读**未过期**的旧事实（`wslDefaultReady=false` / 车道
+ * `available=false`）→ 判"车道不可用"并拒绝构建 —— 刚刚才准备好的东西却说没准备好。
+ * （CI 的 `windows-wsl-import-full` 场景会先导入再构建，正好会踩到这个坑。）
+ */
+async function refreshEnvironmentFacts(): Promise<void> {
+  envSummaryCache = null;
+  await getHostCapabilities(true).catch(() => null);
+  await getWslLaneStatus(true).catch(() => null);
+  await getLinuxLaneStatus(true).catch(() => null);
+  await getMacLaneStatus(true).catch(() => null);
+  await refreshChip();
+}
+
 /** T19: an in-flight prepare (drives the 准备中 phase without a probe). */
 let envRun: 'idle' | 'provisioning' = 'idle';
 
@@ -4041,6 +4059,10 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
       reason: result.ok ? undefined : result.message,
     }),
   );
+  if (result.ok) {
+    // 机器事实变了 → 旧缓存作废，否则"刚准备好"的下一步动作仍会看到旧事实。
+    await refreshEnvironmentFacts();
+  }
   return result;
 }
 

@@ -9,6 +9,7 @@
  * Windows for the diagnostics parser.
  */
 import { run } from '../../utils/exec';
+import { log } from '../../constants';
 import { decodeWslOutput, toWslPath, wslExePath, wslRunArgs } from '../../core/wslHost';
 import { settingsCompilerKey } from '../../core/laneSettings';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,7 @@ import {
   wslLaneBuildCommand,
   wslLaneDocsEnsureCommand,
   wslLaneDocsRunCommand,
+  laneReportLines,
   wslLaneEnsureCommand,
   wslLaneLayout,
   wslOutToWin,
@@ -236,6 +238,10 @@ export async function ensureWslLane(distro: string, opts: { mirror?: LaneMirror 
     throw new Error(`WSL 托管工具链准备失败（exit=${r.code}）：\n${tail}`);
   }
   cache = { at: Date.now(), home, note: baselineNote(facts.compiler), mirrorKey };
+  // 自证行进日志（一行一事实）：否则"车道真的备好了什么"只能靠"没抛异常"反推。
+  for (const line of laneReportLines(r.stdout)) {
+    log(`[lane] ${line}`);
+  }
   return { home, note: cache.note, facts };
 }
 

@@ -59,11 +59,19 @@ console.log(
 // （真下载 + 真校验），并用平台自己的工具放一个同名诱饵。这里只解释一下为什么没有夹具。
 if (process.env.HET_REAL_WSL_IMPORT === '1') {
   console.log('[real] wsl-import fixture: 无（rootfs 用产品钉死的官方源；诱饵由 harness 用真 wsl.exe 注册）');
+  if (process.env.HET_REAL_WSL_IMPORT_FULL === '1') {
+    console.log(
+      `[real] wsl-import-full：夹具保持 coverage=${meta.activate_code_coverage ? 'on' : 'off'}（车道是 Linux 语义 → lcov/genhtml 可用）；` +
+        '工作区在 /mnt/<drive>（9p），构建比 ext4 慢，作业超时已放宽。',
+    );
+  }
 }
 
 // Explicit scenario banner (T23): the job log must state WHAT is verified.
 const scenario =
-  process.env.HET_REAL_WSL_IMPORT === '1'
+  process.env.HET_REAL_WSL_IMPORT_FULL === '1'
+    ? 'windows self-provision + mechanical DoD (import → lane → conan create → coverage → docs)'
+    : process.env.HET_REAL_WSL_IMPORT === '1'
     ? 'windows self-provision (plan → import → 0 intrusion → teardown)'
     : process.env.HET_REAL_EXPECT === 'blocked'
       ? 'blocked-guidance → explicit system switch'
@@ -81,12 +89,15 @@ console.log(
       HET_REAL_EXPECT_PROVIDER: process.env.HET_REAL_EXPECT_PROVIDER ?? '(unset)',
       HET_REAL_EXPECT_AFTER_SWITCH: process.env.HET_REAL_EXPECT_AFTER_SWITCH ?? '(unset)',
       HET_REAL_WSL_IMPORT: process.env.HET_REAL_WSL_IMPORT ?? '(unset)',
+      HET_REAL_WSL_IMPORT_FULL: process.env.HET_REAL_WSL_IMPORT_FULL ?? '(unset)',
     }),
 );
 console.log('[real] platform : ' + platform() + ' · node ' + process.version);
 console.log(
   '[real] asserting: ' +
-    (process.env.HET_REAL_WSL_IMPORT === '1'
+    (process.env.HET_REAL_WSL_IMPORT_FULL === '1'
+      ? '自建提议与代价 → rootfs 校验 → import → 启动 → 车道自举 → 幂等自愈 → conan create + GTest → 覆盖率 → docs → 撤销'
+      : process.env.HET_REAL_WSL_IMPORT === '1'
       ? '自建提议与代价 → rootfs 校验/缓存 → wsl --import → 0 侵入快照 → 撤销回到跑前'
       : 'provider decision → conan create → GTest' +
         (modeSystem ? ' → docs artifacts' : ' → coverage report (linux lane) → docs artifacts')),

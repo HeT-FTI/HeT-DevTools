@@ -18,7 +18,7 @@ import { writeFileSync, readFileSync, readdirSync, accessSync, existsSync, mkdir
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { EXTENSION_ID, discoveredIds, hetExtension } from '../hostExtension';
-import { decodeWslOutput, parseWslList } from '../../core/wslHost';
+import { decodeWslOutput, parseWslList, wslRunArgs } from '../../core/wslHost';
 import { LANE_ROOTFS, laneDistroBaseName, laneOwnerMarkerPath, laneRootfsCachePath, wslImportArgs } from '../../core/wslDistro';
 import { ensureRootfs } from '../../core/wslRootfs';
 import { run as execRun } from '../../utils/exec';
@@ -44,6 +44,8 @@ interface ProviderPlan {
 const MODE_SYSTEM = process.env.HET_REAL_TOOLCHAIN === 'system';
 const EXPECT_BLOCKED = process.env.HET_REAL_EXPECT === 'blocked';
 const WSL_IMPORT = process.env.HET_REAL_WSL_IMPORT === '1';
+/** `wsl-import-full`：在自建发行版里**跑完整 DoD**（conan create + GTest + 覆盖率 + docs）。 */
+const WSL_IMPORT_FULL = process.env.HET_REAL_WSL_IMPORT_FULL === '1';
 const EXPECT_PROVIDER = (process.env.HET_REAL_EXPECT_PROVIDER ?? '').trim();
 const EXPECT_AFTER_SWITCH = process.env.HET_REAL_EXPECT_AFTER_SWITCH === 'ok';
 
@@ -152,6 +154,91 @@ function realWslList(): string[] {
 const OUR_DISTRO_RE = /^het-lane-\d{4}(?:-\d+)?$/u;
 
 /**
+ * 车道级幂等：这才是 T17d 要证的"幂等"（不是"没新建第二个发行版"）。
+ *
+ * `ensureWslLane` 有 **60 秒进程内缓存** —— 同一进程里连调两次根本不会进发行版，
+ * 所以早先那版"幂等复跑"其实只证明了**决策级复用**（不新建、不重下）。这里改成：
+ *   ① 等过缓存窗口（65 s）；
+ *   ② 在发行版里制造一处缺失（删掉生成式 profile）；
+ *   ③ 再跑一次 `het.envPrepare` —— 必须成功、不得新建发行版，**而且缺失必须被补回来**。
+ * 只有"补回来了"才能证明 ensure 脚本真的重跑了（否则又是缓存）。
+ */
+async function assertLaneIdempotent(distro: string): Promise<void> {
+  console.log('[real] 车道级幂等：等过 60 秒进程内缓存窗口（这一步只在车道就绪时做）…');
+  await new Promise((r) => setTimeout(r, 65_000));
+  const home = decodeWslOutput(
+    String((await execRun('wsl.exe', wslRunArgs(distro, 'bash', ['-lc', 'printf %s "$HOME"']))).stdout),
+  ).trim();
+  assert.ok(home.startsWith('/'), `必须能读到发行版内的 $HOME（拿到 ${JSON.stringify(home)}）`);
+  const profile = `${home}/.het-fti/managed-env/.conan2/profiles/default`;
+  const rm = await execRun('wsl.exe', wslRunArgs(distro, 'rm', ['-f', profile]), { timeoutMs: 60_000 }).catch(
+    (err: Error) => ({ code: -1, stdout: '', stderr: err.message }),
+  );
+  assert.strictEqual(rm.code, 0, `必须能在发行版里制造缺失：${decodeWslOutput(String(rm.stderr))}`);
+  const gone = await execRun('wsl.exe', wslRunArgs(distro, 'cat', [profile])).catch(() => ({ code: 1, stdout: '' }));
+  assert.notStrictEqual(gone.code, 0, 'profile 必须真的被删掉（否则下面的自愈断言没意义）');
+  console.log(`[real] 已制造缺失：${profile}（rm 成功、cat 失败）`);
+
+  const before = realWslList();
+  const t0 = Date.now();
+  const again = (await vscode.commands.executeCommand('het.envPrepare')) as { ok?: boolean; state?: string } | undefined;
+  console.log(`[real] 第二次 prepare 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s → ${JSON.stringify(again)}`);
+  assert.deepStrictEqual(realWslList(), before, '第二次准备不得新建发行版');
+  const back = await execRun('wsl.exe', wslRunArgs(distro, 'cat', [profile])).catch((err: Error) => ({ code: -1, stdout: err.message }));
+  assert.strictEqual(back.code, 0, '生成式 profile 必须被补回来');
+  assert.match(String(back.stdout), /compiler\.version=/u, '补回来的 profile 必须仍是生成式内容');
+  console.log('✔ 车道级幂等：ensure 脚本真的重跑了，并把被删掉的生成式 profile 补了回来');
+}
+
+/**
+ * `wsl-import-full`：在**自建发行版里**跑完整 DoD（conan create + GTest + 覆盖率 + 文档）。
+ * 这是把"只能在真机验"的机械部分搬进 CI 的那一半（真机仍保留 升级/共存/内网 三项抽样）。
+ * 唯一显著风险：工作区在 `/mnt/<drive>`（9p），构建比 ext4 慢 —— 作业超时已放宽到 120 分钟。
+ */
+async function runLaneDod(projRoot: string, provider: string): Promise<{ passed: number; coverage: string }> {
+  console.log('[real][F1/4] 车道内真实构建 + 测试（conan create + GTest，工作区在 /mnt/<drive>）…');
+  await vscode.commands.executeCommand('het.test');
+  const buildOk = await vscode.commands.executeCommand<boolean | null>('het.getBuildOk');
+  if (buildOk !== true) {
+    console.log('[real] het.getLastBuildError:\n' + ((await vscode.commands.executeCommand<string>('het.getLastBuildError')) ?? ''));
+    const tail = (await vscode.commands.executeCommand<string>('het.getLastConanOutput')) ?? '';
+    console.log('[real] conan output tail:\n' + tail.slice(-6000));
+  }
+  assert.strictEqual(buildOk, true, '车道内 conan create 必须成功');
+  const summary = (await vscode.commands.executeCommand('het.getTestSummary')) as
+    | { passed: number; failed: number; skipped: number }
+    | null;
+  assert.ok(summary, 'gtest summary 必须存在');
+  assert.ok(summary.passed > 0 && summary.failed === 0, `GTest 必须全绿，实际 ${JSON.stringify(summary)}`);
+  console.log(`[real][F2/4] 构建+测试：passed=${summary.passed} failed=${summary.failed} skipped=${summary.skipped}`);
+
+  console.log('[real][F3/4] 覆盖率：模板在 conan create 内跑 lcov/genhtml（车道 = Linux 语义）');
+  const covIndex = findCovReportIndex(projRoot);
+  if (!covIndex) {
+    const tail = (await vscode.commands.executeCommand<string>('het.getLastConanOutput')) ?? '';
+    console.log('[real] 覆盖率缺失 —— conan output tail:\n' + tail.slice(-8000));
+  }
+  assert.ok(covIndex, '覆盖率报告 coverage_report/index.html 必须存在');
+  const pct = readCoveragePct(join(covIndex, '..'));
+  console.log(`[real] 覆盖率报告：${covIndex}（lines≈${pct}%）`);
+
+  console.log('[real][F4/4] 文档：车道内 apt 自愈 doxygen/graphviz + venv sphinx');
+  const docs = (await vscode.commands.executeCommand('het.docsRun')) as { ok?: boolean; message?: string } | undefined;
+  if (docs?.ok !== true) {
+    const tail = await vscode.commands.executeCommand<string>('het.getLastDocsOutput').then((v) => v ?? '', () => '');
+    console.log('[real] docs output tail:\n' + tail.slice(-4000));
+  }
+  assert.ok(docs && docs.ok === true, '车道内文档构建必须成功');
+  const makeFind = (p: string): boolean => !!findUnder(p, 'index.html', true);
+  const dox = findUnder(join(projRoot, 'docs', 'doxygen'), 'docs.html', true) ?? findUnder(join(projRoot, 'docs', 'doxygen'), 'index.html', true);
+  const sph = makeFind(join(projRoot, 'docs', 'sphinx'));
+  assert.ok(dox, 'doxygen 产物必须存在');
+  assert.ok(sph, 'sphinx 产物必须存在');
+  console.log(`[real] 机械 DoD 全绿：provider=${provider} buildOk=true passed=${summary.passed} coverage=${pct}% docs=ok`);
+  return { passed: summary.passed, coverage: pct };
+}
+
+/**
  * T17d（CI 部分）：Windows 自建私有发行版的端到端契约。
  *
  * 2026-09-15 首跑教训（run 34940348222）：托管 runner 的 WSL **能注册发行版**（`wsl --import`
@@ -250,13 +337,25 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
   const ours = claimed[0];
   const imported = !!ours;
   const laneStarted = res?.ok === true && imported;
+  /** `wsl-import-full` 下机械 DoD 的实测事实（证据行要用）。 */
+  let laneDod: { passed: number; coverage: string } | null = null;
   let branch: string;
   if (imported && laneStarted) {
     branch = 'imported';
     console.log(`[real][W5/6] 自建成功：${ours}（双标记回读已通过）—— 车道真的起来了`);
-    console.log('[real] 幂等复跑（"避免重复"的用户可见承诺）…');
-    await vscode.commands.executeCommand('het.envPrepare');
-    assert.deepStrictEqual(realWslList(), after, '第二次准备必须复用已就绪的发行版（不新建）');
+    // 车道自证（一行一事实）：IDE 输出面板里现在也有同一组 `[lane] lane_*` 行；
+    // 这里再通过命令把它拿回来打给 CI 日志。
+    const laneFacts = await vscode.commands.executeCommand('het.getWslLane', true);
+    console.log('[real] lane facts: ' + JSON.stringify(laneFacts));
+    // "准备完就能构建"：**不 force** 地再问一次计划 —— 必须已经翻到 win-wsl2。
+    // 各层探测缓存是 30/60 秒；准备完不刷新的话，用户紧接着点构建会被判"车道不可用"。
+    const planAfter = (await vscode.commands.executeCommand('het.getProvisionPlan')) as ProviderPlan | null;
+    console.log('[real] plan after prepare（不 force）: ' + JSON.stringify(planAfter));
+    assert.strictEqual(planAfter?.provider, 'win-wsl2', '自建成功后计划必须立刻翻到 win-wsl2（探测缓存必须已刷新）');
+    await assertLaneIdempotent(ours);
+    if (WSL_IMPORT_FULL) {
+      laneDod = await runLaneDod(projRoot, plan.provider ?? 'win-wsl2');
+    }
   } else if (imported) {
     branch = 'imported-no-lane';
     console.log('[real][W5/6] 发行版已建但车道不可用（本 runner 的预期：无硬件虚拟化）：\n' + msg.split('\n').slice(0, 5).join('\n'));
@@ -308,8 +407,10 @@ async function runWslImportScenario(plan: ProviderPlan, ext: vscode.Extension<un
   }
 
   const evidence =
-    `platform=${process.platform} provider=${plan.provider} mode=wsl-import branch=${branch} planCost=ok intrude=none` +
-    ` rootfs=pinned-sha256-verified distro=${ours ?? '(none)'} renamed=${decoyCreated && imported ? 'yes' : 'n/a'}` +
+    `platform=${process.platform} provider=${plan.provider} mode=wsl-import${WSL_IMPORT_FULL ? '-full' : ''} branch=${branch}` +
+    ` planCost=ok intrude=none rootfs=pinned-sha256-verified idempotent=${imported ? 'self-heal-verified' : 'n/a'}` +
+    (laneDod ? ` buildOk=true passed=${laneDod.passed} failed=0 coverage=${laneDod.coverage} docs=ok` : '') +
+    ` distro=${ours ?? '(none)'} renamed=${decoyCreated && imported ? 'yes' : 'n/a'}` +
     ` vscode=${vscode.version} vscodeSource=${process.env.HET_VSCODE_SOURCE ?? '?'}\n`;
   writeFileSync(join(__dirname, '..', 'real-evidence.txt'), evidence, 'utf8');
   console.log('[real] PASS ' + evidence.trim());

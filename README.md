@@ -133,7 +133,7 @@ fcpp 模板用 Conan / CMake / CI / Doxygen / semantic-release 把工程保障�
 - **车道优先（lane-first）**：`managed` 语义一律先走隔离车道（Windows = WSL2 lane、Linux = linux-managed）；只有 `toolchain: system` 才走本机原生——构建/覆盖率/docs 均不 touch 系统或 conda 环境。
 - **CI（`CubicZebra/HeT-DevTools`，branch main）**：
   - **自动门禁**：`ci.yml › verify`（ubuntu/macos/windows：tsc / lint / 单测 / `audit:pins` / vsix 打包，push 与 PR 触发）。`audit:pins` 拦的是"把 CI 事实写进产品代码"（绝对路径、基线编译器字面量、被抄写一遍的版本下限）。
-  - **手动真机验证（按平台拆三个 workflow，一个平台 = 一个失败面）**：`env-fresh · linux`（`linux-managed` 含覆盖率 + `linux-system` + 金丝雀）/ `env-fresh · windows`（`windows-system`、`windows-blocked`：无车道时拒绝并给一键切换、`windows-wsl-import`：自建私有发行版走完「计划/代价 → 官方 rootfs 真校验 → 导入 → 启动 → 车道自举 → 幂等复用 → 撤销」，并断言 0 侵入）/ `env-fresh · macos`（`macos-lane`，覆盖率按平台跳过）。日志按 `SCENARIO → GATE → PREFLIGHT → MAIN → ASSERT → CLEANUP → EVIDENCE` 分区，证据上传为 `out/real-evidence.txt`。
+  - **手动真机验证（按平台拆三个 workflow，一个平台 = 一个失败面）**：`env-fresh · linux`（`linux-managed` 含覆盖率 + `linux-system` + 金丝雀）/ `env-fresh · windows`（`windows-system`、`windows-blocked`：无车道时拒绝并给一键切换、`windows-wsl-import`：自建私有发行版走完「计划/代价 → 官方 rootfs 真校验 → 导入 → 启动 → 车道自举 → 车道级幂等（删掉生成式 profile 必须自愈）→ 撤销」，并断言 0 侵入；`-f scenario=wsl-import-full` 再在自建发行版里跑完整 DoD（conan create + GTest + 覆盖率 + 文档））/ `env-fresh · macos`（`macos-lane`，覆盖率按平台跳过）。日志按 `SCENARIO → GATE → PREFLIGHT → MAIN → ASSERT → CLEANUP → EVIDENCE` 分区，证据上传为 `out/real-evidence.txt`。
   - **证据里能查版本**：`vscode=` / `vscodeSource=` 记录本次跑的宿主 —— 回归作业一律跑**钉住版**（= 承诺下限 1.134.0），另有金丝雀作业跑最新版做信号；两者在证据里一眼可分。
   - 逐条证据与 run 号汇总在 `workspace/develope/platform-verification-report.md`（开发文档，不入包）。
 

@@ -182,6 +182,21 @@ export function wslLaneBuildCommand(cwdWsl: string, home: string, buildType = 'D
   return lines.join('\n');
 }
 
+/**
+ * 车道 ensure 脚本打印的 `lane_*` 自证行（一行一事实：解释器/venv/conan/cmake/
+ * settings/gcov shim/编译器/架构/lcov）。它们此前只存在于脚本的 stdout 里，
+ * 成功了就丢掉 —— 于是"车道真的备好了什么"在 IDE 日志和 CI 日志里都看不见，
+ * 只能靠"没抛异常"反推。上层（三个车道执行层）现在会把它们逐行打进日志。
+ *
+ * 纯函数 → 可单测。
+ */
+export function laneReportLines(stdout: string): string[] {
+  return (stdout ?? '')
+    .split(/\r?\n/u)
+    .map((l) => l.trim())
+    .filter((l) => /^lane_[a-z0-9_]+:/u.test(l));
+}
+
 /** V5-4: pip packages for the docs stack (loose pins, per the manifest). */
 export const WSL_DOCS_PIP = ['"numpy>=1.26"', '"sphinx>=8,<9"', 'sphinx-intl', '"sphinx-rtd-theme>=2,<4"'];
 

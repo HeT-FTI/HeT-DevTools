@@ -23,11 +23,13 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, writeFileSync } from 'node:fs';
 import { run } from '../../utils/exec';
+import { log } from '../../constants';
 import type { BuildSummary } from '../../core/conanService';
 import {
   managedLaneBuildCommand,
   managedLaneDocsEnsureCommand,
   managedLaneDocsRunCommand,
+  laneReportLines,
   managedLaneEnsureCommand,
   managedLaneLayout,
   managedLaneProfile,
@@ -202,6 +204,10 @@ export async function ensureLinuxLane(opts: { mirror?: LaneMirror } = {}): Promi
     throw new Error(`Linux 托管工具链准备失败（exit=${r.code}）：\n${tail}`);
   }
   cache = { at: Date.now(), home, note: baselineNote(facts.compiler), mirrorKey };
+  // 自证行进日志（一行一事实）：与 WSL 车道同口径。
+  for (const line of laneReportLines(r.stdout)) {
+    log(`[lane] ${line}`);
+  }
   return { home, note: cache.note, facts };
 }
 

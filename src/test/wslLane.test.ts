@@ -1,5 +1,6 @@
 import * as assert from 'node:assert';
 import {
+  laneReportLines,
   managedLaneBuildCommand,
   managedLaneDocsEnsureCommand,
   managedLaneDocsRunCommand,
@@ -167,6 +168,27 @@ describe('V5-1 wslLane (WSL2 managed build lane pure helpers)', () => {
     assert.ok(c.includes('docs_dot'));
     assert.ok(!c.includes('conda activate'), 'never touches conda envs');
     assert.ok(!c.includes('pip install --user'));
+  });
+
+  it('T17d: lane_* 自证行可被抽出（一行一事实，进 IDE 日志与 CI 日志）', () => {
+    const raw = [
+      'mkdir: /home/x/.het-fti/managed-env',
+      'lane_venv:new(3.12)',
+      'lane_python_chosen:/usr/bin/python3.12 3.12',
+      'lane_conan:Conan version 2.32.0',
+      'lane_cc_selected:/usr/bin/gcc-13',
+      'conan create 的输出不该被当成事实',
+      '',
+    ].join('\n');
+    assert.deepStrictEqual(laneReportLines(raw), [
+      'lane_venv:new(3.12)',
+      'lane_python_chosen:/usr/bin/python3.12 3.12',
+      'lane_conan:Conan version 2.32.0',
+      'lane_cc_selected:/usr/bin/gcc-13',
+    ]);
+    assert.deepStrictEqual(laneReportLines(''), [], '空输入 → 空数组');
+    // wsl.exe 往返会带 CRLF 与空白 —— 必须吃掉，否则日志里会出现"看起来空"的行。
+    assert.deepStrictEqual(laneReportLines('  lane_conan:x  \r\nnoise\r\n'), ['lane_conan:x']);
   });
 
   it('V5-4 docs run executes python docs/build.py inside the lane', () => {

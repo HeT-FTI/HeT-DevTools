@@ -15,12 +15,13 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync, writeFileSync } from 'node:fs';
 import { run } from '../../utils/exec';
+import { log } from '../../constants';
 import type { BuildSummary } from '../../core/conanService';
 import { laneProfileWith } from '../../core/laneProfile';
 import { settingsCompilerKey } from '../../core/laneSettings';
 import { LaneMirror, mirrorCacheKey } from '../../core/laneMirror';
 import { macCompiler, macFactsScript, macDocsGuide, macGuide, macLaneDocsEnsureCommand, parseMacFacts, MacFacts } from '../../core/macLane';
-import { WSL_DOCS_PIP, managedLaneBuildCommand, managedLaneDocsRunCommand, managedLaneEnsureCommand } from '../../core/wslLane';
+import { WSL_DOCS_PIP, laneReportLines, managedLaneBuildCommand, managedLaneDocsRunCommand, managedLaneEnsureCommand } from '../../core/wslLane';
 
 export interface MacLaneStatus {
   available: boolean;
@@ -127,6 +128,10 @@ export async function ensureMacLane(opts: { mirror?: LaneMirror } = {}): Promise
   if (r.code !== 0) {
     const tail = `${r.stdout}\n${r.stderr}`.split(/\r?\n/u).filter((s) => s.trim().length > 0).slice(-8).join('\n');
     throw new Error(`macOS 托管工具链准备失败（exit=${r.code}）：\n${tail}`);
+  }
+  // 自证行进日志（一行一事实）：与 Linux/WSL 车道同口径。
+  for (const line of laneReportLines(r.stdout)) {
+    log(`[lane] ${line}`);
   }
   const note = `${compiler.name} ${compiler.version}（系统原生）`;
   cache = { at: Date.now(), home, note, mirrorKey };
