@@ -8,7 +8,7 @@
 
 A plain-language engineering cockpit for fcpp-based C/C++ libraries: build, test, dependencies, docs, quality gates, release & board benchmarks — one click each.
 
-![VS Code >= 1.95](https://img.shields.io/badge/VS%20Code-%3E%3D1.95-blue) ![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green) ![CI](https://github.com/CubicZebra/HeT-DevTools/actions/workflows/ci.yml/badge.svg)
+![VS Code >= 1.134](https://img.shields.io/badge/VS%20Code-%3E%3D1.134-blue) ![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green) ![CI](https://github.com/CubicZebra/HeT-DevTools/actions/workflows/ci.yml/badge.svg)
 
 </div>
 
@@ -28,7 +28,7 @@ fcpp 模板用 Conan / CMake / CI / Doxygen / semantic-release 把工程保障�
 
 ## 5 分钟快速开始
 
-1. 安装 VS Code ≥ 1.95，并准备 fcpp 开发环境：`python`、`conan`、C/C++ 编译器（conda 或手动均可）。
+1. 安装 VS Code ≥ 1.134，并准备 fcpp 开发环境：`python`、`conan`、C/C++ 编译器（conda 或手动均可）。
 2. 打开一个含 `metadata.json` 的 fcpp 项目（模板生成或自建均可）——扩展自动激活。
 3. 命令面板（`Ctrl+Shift+P`）→ `HeT DevTools: 打开仪表盘`。
 4. 依次点：`构建并测试` → `覆盖率视图` → `文档中心`。

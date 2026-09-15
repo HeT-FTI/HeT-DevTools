@@ -108,19 +108,19 @@ function isExec(p) {
   }
 }
 
-// macOS: locate the app's MAIN executable without hardcoding its name (the
-// cask layout has varied: Electron / Visual Studio Code / …). Prefer the known
-// names, else the first executable that is not a Helper.
+// macOS: the app's main executable is `Code` for every supported host
+// (`engines.vscode` >= 1.134; the rename to `product.nameShort` shipped in 1.110
+// and the legacy `Electron` symlink was dropped in 1.131 — see plan T29).
+// The generic scan stays as cheap robustness for a DEV machine running an older
+// local build; it is not a compatibility path we maintain for users.
+const MAC_MAIN_EXECUTABLE = 'Code';
 function macAppExecutable(macosDir) {
   if (!macosDir || !existsSync(macosDir)) {
     return undefined;
   }
-  const known = ['Electron', 'Visual Studio Code', 'Code'];
-  for (const name of known) {
-    const p = join(macosDir, name);
-    if (isExec(p)) {
-      return p;
-    }
+  const preferred = join(macosDir, MAC_MAIN_EXECUTABLE);
+  if (isExec(preferred)) {
+    return preferred;
   }
   let entries = [];
   try {
@@ -140,11 +140,10 @@ function macAppExecutable(macosDir) {
   return undefined;
 }
 
-// T28-B: `@vscode/test-electron`'s own darwin resolution is hardcoded to
-// `Visual Studio Code.app/Contents/MacOS/Electron` (see its util.js), a name that
-// no longer exists in modern builds → `spawn … ENOENT`. That is WHY this harness
-// used the brew cask app and silently ignored VSCODE_VERSION. Given the path it
-// would have produced, derive the .app bundle and find the real main binary.
+// T28-B: `@vscode/test-electron` resolves the darwin executable itself by
+// concatenating a hardcoded name (see its util.js) — which is exactly the kind of
+// version-dependent guess we refuse to maintain. Given the path it would have
+// produced, derive the .app bundle and locate the real main binary ourselves.
 function darwinExecutableFromDownloadedPath(downloaded) {
   if (!downloaded) {
     return undefined;
@@ -158,7 +157,6 @@ const candidates = [
   ...(platform() === 'darwin' ? [macAppExecutable('/Applications/Visual Studio Code.app/Contents/MacOS')] : []),
   'C:/Users/Chen/AppData/Local/Programs/Microsoft VS Code/Code.exe',
   '/usr/bin/code',
-  '/Applications/Visual Studio Code.app/Contents/MacOS/Electron',
 ].filter(Boolean);
 let vscodeExecutablePath = candidates.find((p) => p && existsSync(p) && isExec(p));
 let vscodeSource = vscodeExecutablePath ? `local:${vscodeExecutablePath}` : undefined;

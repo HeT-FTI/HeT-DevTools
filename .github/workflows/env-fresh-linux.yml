@@ -17,7 +17,7 @@ name: env-fresh · linux
 #   ASSERT     事后事实（车道是否真的被使用）
 #   EVIDENCE   打印 out/real-evidence.txt（同时作为 Artifact 上传）
 #
-# 角色分工（T27）：功能回归作业一律跑**钉住版** 1.95.0（= engines.vscode 下限 = 对用户的
+# 角色分工（T27）：功能回归作业一律跑**钉住版** 1.134.0（= engines.vscode 下限 = 对用户的
 # 承诺，硬断言 `HET_REAL_EXPECT_VSCODE`）；**最新版**只由 canary 作业负责，它的作用不是
 # 回归而是**信号**：新版宿主/UI/API 变了在这里先发现，而不是在用户机器上。
 #
@@ -100,10 +100,10 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— 从零自举托管车道并构建"
         env:
-          VSCODE_VERSION: "1.95.0"
-          # T28：1.95.0 是 engines.vscode 下限 = 对用户的承诺 → 必须是真的在跑它
-          # （证据里 vscode=1.95.0 / vscodeSource=download@1.95.0 已核实），谁漂了谁红。
-          HET_REAL_EXPECT_VSCODE: "1.95.0"
+          VSCODE_VERSION: "1.134.0"
+          # T28：1.134.0 是 engines.vscode 下限 = 对用户的承诺 → 必须是真的在跑它。
+          # （下限已从 1.95.0 抬到 1.134.0：见 env-onboarding-plan T29；改签后必须重跑核实。）
+          HET_REAL_EXPECT_VSCODE: "1.134.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: linux-managed
         run: |
@@ -220,8 +220,8 @@ jobs:
 
       - name: "MAIN: 真实扩展宿主 —— system 工具链构建"
         env:
-          VSCODE_VERSION: "1.95.0"
-          HET_REAL_EXPECT_VSCODE: "1.95.0"
+          VSCODE_VERSION: "1.134.0"
+          HET_REAL_EXPECT_VSCODE: "1.134.0"
           HET_REAL_TOOLCHAIN: system
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: linux-managed
@@ -279,17 +279,17 @@ jobs:
         run: |
           echo "::group::SCENARIO — latest VS Code canary"
           cat <<'EOF'
-          模拟场景：用户装的是**最新版** VS Code（不是承诺下限 1.95.0）→ 扩展还能不能正常干活。
+          模拟场景：用户装的是**最新版** VS Code（不是承诺下限 1.134.0）→ 扩展还能不能正常干活。
 
           本作业要证明（/ 观察）：
             1) 宿主版本：证据里的 vscode=<版本> **就是** runner 下载到的最新版（没有断言，因为它会漂）；
             2) 在最新宿主上：扩展能被发现、能激活、provider 决策仍然正确；
             3) 构建 + 测试仍然全绿（Linux 托管车道）；
             4) 失败时的读法：这是**信号**，不是回归门槛 —— 说明新版宿主有行为变化，
-               要么修扩展，要么把 1.95 下限往上提（两者都要有意识地决定）。
+               要么修扩展，要么有意识地抬高承诺下限（engines.vscode + @types/vscode + 本作业的钉住版一变）。
 
-          与回归作业的区别（T27）：回归作业一律跑钉住版 1.95.0，且用
-          HET_REAL_EXPECT_VSCODE=1.95.0 硬断言；本作业故意不设该断言。
+          与回归作业的区别（T27）：回归作业一律跑钉住版 1.134.0，且用
+          HET_REAL_EXPECT_VSCODE=1.134.0 硬断言；本作业故意不设该断言。
           EOF
           echo "::endgroup::"
 

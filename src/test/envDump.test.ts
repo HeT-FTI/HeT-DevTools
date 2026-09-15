@@ -28,7 +28,7 @@ describe('T05 envDump (redacted remote-diagnosis export)', () => {
   it('buildEnvDump stamps schema+ts and redacts the whole document', () => {
     const doc = buildEnvDump(
       {
-        extension: { version: '0.4.0', vscode: '1.95.0' },
+        extension: { version: '0.4.0', vscode: '1.134.0' },
         host: { platform: 'linux' },
         provider: { id: 'linux-managed' },
         lane: { root: '/home/zhang/.het-fti/managed-env' },

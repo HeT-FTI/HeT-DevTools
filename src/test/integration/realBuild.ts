@@ -130,7 +130,7 @@ export async function run(): Promise<void> {
   console.log('[real] starting on ' + process.platform);
   // T28: the RUNNING host version, read from inside the extension host. It used
   // to be unknowable from the artifact (macOS silently ran the local/brew build
-  // while the job asked for the pinned 1.95.0), so it is now a first-class fact:
+  // while the job asked for a pinned floor), so it is now a first-class fact:
   // the CI claim "we verify the promised VS Code floor" is checkable here.
   console.log(`[real] host VS Code: ${vscode.version} (source: ${process.env.HET_VSCODE_SOURCE ?? '(unset)'})`);
   // T28: `VSCODE_VERSION` is the promised floor, but a LOCAL install wins over the

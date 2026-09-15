@@ -117,21 +117,21 @@ jobs:
           echo "::endgroup::"
 
       # 不再预装 VS Code（教训）：brew cask 装的是**最新版**，而 run-real.mjs 当时优先用
-      # 本地安装 → 作业里写的 VSCODE_VERSION=1.95.0 被**静默忽略**（实测跑 1.136.1），
-      # “1.95 是承诺下限”在 macOS 上根本没被验证；同时也把 test-electron 的 darwin 主程序
-      # 名 bug 掩盖掉了。现在由 harness 自己下载钉住版并自己定位主程序：
-      #   1.95.0 → …/Visual Studio Code.app/Contents/MacOS/Electron
-      #   1.136.1 → …/Visual Studio Code.app/Contents/MacOS/Code
-      # （名字逐版本可能不同，所以绝不能硬编码 —— 这正是 @vscode/test-electron@2.5.2
-      #  util.js:155 的问题所在。）
+      # 本地安装 → 作业里写的 VSCODE_VERSION 被**静默忽略**（实测跑 1.136.1），
+      # “承诺下限”在 macOS 上根本没被验证；同时也把 test-electron 的 darwin 主程序
+      # 名 bug 掩盖掉了。现在由 harness 自己下载钉住版并自己定位主程序。
+      # T29：下限抬到 1.134.0 后，macOS 主程序名**不再随版本变**——恒为
+      #   …/Visual Studio Code.app/Contents/MacOS/Code
+      # （1.110 起 product.nameShort 生效、1.131 起 Electron 兼容软链已删；只有 1.95 那种
+      #  旧布局才叫 Electron，已不在支持范围。详见 env-onboarding-plan T29。）
       - name: "MAIN: 真实扩展宿主 —— macOS 车道构建 + 测试 + 文档"
         env:
-          # T28：macOS 现在也**真在跑钉住的 1.95.0**（证据：vscode=1.95.0
-          # vscodeSource=download@1.95.0，run 34930943299），所以和 Linux/Windows 一样
-          # 打开硬断言：宿主版本漂了就红，而不是继续绿着说假话。
-          VSCODE_VERSION: "1.95.0"
+          # T28：macOS 与 Linux/Windows 一样跑**钉住版**并硬断言（曾以 1.95.0 核实：
+          # vscode=1.95.0 / vscodeSource=download@1.95.0，run 34930943299）；T29 抬到
+          # 1.134.0 后需重跑核实一次。宿主版本漂了就红，而不是继续绿着说假话。
+          VSCODE_VERSION: "1.134.0"
           HET_VSCODE_HONOR_PIN: "1"
-          HET_REAL_EXPECT_VSCODE: "1.95.0"
+          HET_REAL_EXPECT_VSCODE: "1.134.0"
           HET_REAL_FRESH: "1"
           HET_REAL_EXPECT_PROVIDER: macos-native
         run: |
@@ -147,7 +147,7 @@ jobs:
                 → het.docsRun：doxygen（docs.html）+ sphinx（index.html）必须存在
 
           注意（T28）：宿主版本会被打印并写进证据（vscode=<版本> vscodeSource=local:…|download@x）。
-          本作业下载并运行**钉住的 1.95.0**（harness 自己定位 .app 主程序），版本不符即断言失败。
+          本作业下载并运行**钉住的 1.134.0**（harness 自己定位 .app 主程序），版本不符即断言失败。
           EOF
           npm run test:real
           echo "::endgroup::"

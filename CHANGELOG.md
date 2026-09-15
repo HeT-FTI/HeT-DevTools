@@ -2,6 +2,13 @@
 
 All notable changes follow [Conventional Commits](https://www.conventionalcommits.org/) + fcpp emoji superset.
 
+## [Unreleased]
+
+### Changed
+
+- **VS Code 下限从 `1.95.0` 抬到 `1.134.0`（`engines.vscode`）**：1.95 是 2024-10 的宿主，为它养 macOS 兼容分支不划算。实证：macOS 的 app 主程序名逐版本不同 —— `microsoft/vscode#291948`（2026-02，里程碑 1.110）把它从写死的 `Electron` 改成 `product.nameShort`（`Code`），`#326502`（2026-07，1.131）删掉了 `Electron` 兼容软链；我直接读了官方 `darwin-arm64` 包的中央目录确认：1.109.5 只有 `Electron`、1.110.0 两者都有、1.131.0 起只有 `Code`。**1.134.0 是"环境里不存在 Electron + 三条线（`engines.vscode` / `@types/vscode` / CI 钉住版）零错位"的唯一点**（`@types/vscode` 只发布离散版本：…1.125.0 → 1.134.0 → 1.136.0，**没有 1.131.0**）。
+- `@types/vscode` 由 `^1.95.0`（锁文件实际解析到 1.134.0）改为 `~1.134.0`：让**编译期** API 面与对用户的承诺一致 —— 之前承诺 1.95、却按 1.134 的类型写代码，属于"声明 ≠ 实际"（本次修正后 `tsc` 仍干净，说明我们本来就没用到更新的 API）。
+
 ## [0.4.0] - 2026-09-08
 
 ### Added
