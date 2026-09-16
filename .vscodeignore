@@ -16,3 +16,6 @@ workspace/**
 **/tsconfig*.json
 **/node_modules/**
 *.vsix
+# python 缓存产物：本地跑过就出现，不该进包（与 assets 归一同一类问题）
+**/__pycache__/**
+**/*.pyc
