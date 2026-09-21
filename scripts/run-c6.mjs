@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
+import { ISOLATED_LAUNCH_ARGS, killTestWindows } from './lib/testWindows.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const emptyWs = join(root, 'out', 'c6-ws');
@@ -40,7 +41,7 @@ async function runPhase(name, ws) {
     vscodeExecutablePath,
     extensionDevelopmentPath: root,
     extensionTestsPath: join(root, 'out', 'test-integration', 'c6.js'),
-    launchArgs: [ws],
+    launchArgs: [ws, ...ISOLATED_LAUNCH_ARGS],
   });
   const done = await Promise.race([
     p.then(() => true),
