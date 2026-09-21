@@ -91,6 +91,7 @@ const INTERNAL_COMMANDS: Readonly<Record<string, string>> = {
   'het.getCurrentProject': '集成测试读当前项目根',
   'het.hasProject': '集成测试判断是否已识别项目',
   'het.getCockpitState': '集成测试/安装后校验读驾驶舱状态',
+  'het.getCockpitView': 'c6/安装后校验读单页视图状态（深链定位到哪一段、该段可见吗）',
   'het.getChipState': '集成测试读 chip 状态',
   'het.getSlotState': 'c8 集成测试读"当前页内 Slot + 页签数"（页签恒为 1 的运行时证据）',
   'het.getTasks': 'B 块集成测试/现场排查读任务状态（在跑什么、最近成不成、能否取消）',

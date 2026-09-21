@@ -109,8 +109,15 @@ export async function run(): Promise<void> {
     assert.ok(chip.tooltip.includes('command:het.healthCheck'), 'health rescore link');
     await vscode.commands.executeCommand('het.dashboard', ['deps']);
     await hold();
-    const st = (await vscode.commands.executeCommand('het.getCockpitState')) as { page: string };
-    assert.strictEqual(st.page, 'deps', 'dashboard deps section focused');
+    // 新 UI 没有“当前页”（旧 `state.page` 已归档）→ 验收点改成“深链定位到的那一段是展开可见的”。
+    const view = (await vscode.commands.executeCommand('het.getCockpitView')) as {
+      focus: string | null;
+      folded: string[];
+      opened: string[];
+    };
+    assert.ok(view.focus, '旧 tab id `deps` 必须解析成一个真实存在的段');
+    assert.ok(view.opened.includes(view.focus), `深链目标段必须已加载：${JSON.stringify(view)}`);
+    assert.ok(!view.folded.includes(view.focus), `深链目标段必须展开可见：${JSON.stringify(view)}`);
     const all = (await vscode.commands.getCommands(true)) as string[];
     for (const c of ['het.envCheck', 'het.openDocsArtifact', 'het.openBuildOutput', 'het.healthReport']) {
       assert.ok(all.includes(c), `${c} must be registered`);

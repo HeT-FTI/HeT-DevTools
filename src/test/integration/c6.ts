@@ -15,6 +15,7 @@ import * as assert from 'node:assert';
 import * as vscode from 'vscode';
 
 import { EXTENSION_ID } from '../hostExtension';
+import { assertHostIsTrustworthy, logProvenance, writeEvidence } from './support/hostProvenance';
 const phase = process.env.HET_C6_PHASE ?? 'empty';
 
 interface ChipShape {
@@ -23,8 +24,33 @@ interface ChipShape {
   command?: string;
 }
 
+/** 单页视图状态（`het.getCockpitView`）：深链定位到哪一段、哪些段已加载/已折叠。 */
+interface CockpitViewShape {
+  focus: string | null;
+  folded: string[];
+  opened: string[];
+}
+
+/**
+ * 等深链落地。面板首帧是异步的（打开面板 → 解析段 → 展开 → 推送），
+ * 所以轮询而不是"睡固定毫秒" —— 睡固定值在慢机器上就是随机红。
+ */
+async function waitForDeepLink(): Promise<CockpitViewShape> {
+  const deadline = Date.now() + 15_000;
+  let view = (await vscode.commands.executeCommand('het.getCockpitView')) as CockpitViewShape;
+  while (!view.focus && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    view = (await vscode.commands.executeCommand('het.getCockpitView')) as CockpitViewShape;
+  }
+  return view;
+}
+
 export async function run(): Promise<void> {
   console.log(`[c6] phase=${phase} starting`);
+  // 宿主自证（与 c8 同一套）：结论必须自带上下文 —— 远端宿主 / web 宿主 / 市场装置的那份
+  // 扩展都会让结果失去意义。两个阶段的工作区不同：空目录 `out/c6-ws` 与夹具 `mini-fcpp`。
+  const provenance = assertHostIsTrustworthy({ tag: `c6:${phase}`, workspaceContains: ['c6-ws', 'mini-fcpp'] });
+  logProvenance(`c6:${phase}`, provenance);
   const ext = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(ext, 'extension must be discovered');
   await ext.activate();
@@ -53,13 +79,26 @@ export async function run(): Promise<void> {
     assert.ok(chip.tooltip.includes('command:het.envCheck'), 'env action link present');
     assert.ok(chip.tooltip.includes('command:het.healthCheck'), 'health rescore link present');
 
-    // open dashboard at the deps section (anchor semantics)
+    // 深链 `deps`（旧 tab id）现在要落在**单页里的某一段**上，而不是切“页”：新 UI 没有
+    // “当前页”这个概念（旧 `state.page` 已归档）。用户能感知的验收点只有一个 ——
+    // “点完这条链接，那一段真的展开在我眼前了吗”。
     await vscode.commands.executeCommand('het.dashboard', ['deps']);
-    await new Promise((r) => setTimeout(r, 1200));
-    const state = (await vscode.commands.executeCommand('het.getCockpitState')) as { page: string; top: { projectName: string } };
+    const view = await waitForDeepLink();
+    const focus = view.focus ?? '';
+    assert.ok(focus, '旧 tab id `deps` 必须还能解析成一个真实存在的段（否则就是“点了没反应”）');
+    assert.ok(
+      view.opened.includes(focus),
+      `深链目标段必须被加载（否则定位到一个空段）：${JSON.stringify(view)}`,
+    );
+    assert.ok(
+      !view.folded.includes(focus),
+      `深链目标段必须是展开可见的（不能深链到一个折叠着的段）：${JSON.stringify(view)}`,
+    );
+    const state = (await vscode.commands.executeCommand('het.getCockpitState')) as { top: { projectName: string } };
     assert.ok(state, 'cockpit state must be queryable');
-    assert.strictEqual(state.top.projectName, 'mini-fcpp');
-    assert.strictEqual(state.page, 'deps', 'dashboard should focus the deps section');
+    assert.strictEqual(state.top.projectName, 'mini-fcpp', '驾驶舱 L1 必须认到当前项目');
+    const slot = (await vscode.commands.executeCommand('het.getSlotState')) as { open: unknown };
+    assert.strictEqual(slot.open, null, '深链是页内锚点：不该顺手开一个页内 Slot（那不是用户点的东西）');
 
     // deps commands are registered
     const cmds = await vscode.commands.getCommands(true);
@@ -72,5 +111,7 @@ export async function run(): Promise<void> {
     assert.ok(cmds.includes('het.healthReport'), 'het.healthReport must be registered');
     console.log('[c6] project-phase OK — chip hover console + dashboard deps focus + deps commands registered');
   }
+  // 证据落盘（`out/c6-<phase>-evidence.txt`）：驱动脚本据此判定“用例真跑过 + 跑在哪”。
+  writeEvidence(`c6-${phase}`, [`phase=${phase}`, 'ok=1'], provenance);
   console.log('[c6] OK');
 }

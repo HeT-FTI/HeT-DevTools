@@ -15,11 +15,10 @@
  * Run with:  npm run test:c8
  */
 import * as assert from 'node:assert';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as vscode from 'vscode';
 
 import { EXTENSION_ID } from '../hostExtension';
+import { assertHostIsTrustworthy, logProvenance, writeEvidence } from './support/hostProvenance';
 
 interface SlotState {
   open: { id: string; title: string } | null;
@@ -71,46 +70,6 @@ async function slotState(): Promise<SlotState> {
 }
 
 /**
- * **宿主自证**（重要）：本次运行到底跑在什么上下文里 —— 结论必须自带上下文。
- *
- * 背景：开发用的"本机"其实是一台 **SSH 服务器**（用户的 VS Code 客户端通过 Remote-SSH 进来）。
- * 所以我们不能用"我说是本地就是本地"来交结论，而要：
- *   · 断言 `remoteName` 为空（这是**本地桌面**宿主，不是远端扩展宿主）；
- *   · 断言`uiKind` 是桌面（不是 web）；
- *   · 断言被测扩展确实来自我们这份**开发目录**（而不是市场装的那份）；
- *   · 断言工作区就是我们传进去的夹具目录。
- * 任何一条不成立，本次结论就不能用来代表"用户那边的行为"。
- */
-function hostProvenance(): Record<string, string> {
-  const ext = vscode.extensions.getExtension(EXTENSION_ID);
-  return {
-    vscode: vscode.version,
-    appName: vscode.env.appName,
-    appHost: vscode.env.appHost,
-    uiKind: vscode.env.uiKind === vscode.UIKind.Desktop ? 'Desktop' : 'Web',
-    remoteName: vscode.env.remoteName ?? '(none)',
-    machineId: vscode.env.machineId.slice(0, 8),
-    extensionPath: ext?.extensionPath ?? '(missing)',
-    workspace: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath).join(',') || '(none)',
-  };
-}
-
-/** 宿主自证的四条硬断言（不成立就不该拿这次结论去交差）。 */
-function assertHostIsTrustworthy(): Record<string, string> {
-  const p = hostProvenance();
-  assert.strictEqual(p.remoteName, '(none)', `本次跑在远端宿主上（remoteName=${p.remoteName}）—— 结论不能代表本地行为`);
-  assert.strictEqual(p.uiKind, 'Desktop', '集成测试必须在桌面宿主里跑（web 宿主的页签/命令语义不同）');
-  assert.match(p.appHost, /desktop|electron/u, `意外的 appHost：${p.appHost}`);
-  assert.ok(p.extensionPath !== '(missing)', '被测扩展必须被加载');
-  assert.ok(
-    p.extensionPath.includes('HeT-DevTools'),
-    `被测扩展不是我们这份开发目录：${p.extensionPath}（可能是市场装的那份）`,
-  );
-  assert.ok(p.workspace.includes('c8'), `工作区不是 c8 夹具：${p.workspace}`);
-  return p;
-}
-
-/**
  * 依次打开这些视图，每次都断言"页签恒为 1 + 当前 Slot 正确"。
  *
  * **为什么不带 `het.showTestResults`**：它要求先有测试结果（`lastTestSummary`），没有就只
@@ -129,10 +88,9 @@ const VIEWS: readonly { command: string; slot: string }[] = [
 
 export async function run(): Promise<void> {
   console.log('[c8] starting — 页签恒为 1 + 页内 Slot 互斥');
-  const provenance = assertHostIsTrustworthy();
-  console.log(`[c8] 宿主自证：VS Code ${provenance.vscode} · ${provenance.appHost} · uiKind=${provenance.uiKind} · remote=${provenance.remoteName}`);
-  console.log(`[c8] 被测扩展：${provenance.extensionPath}`);
-  console.log(`[c8] 工作区：${provenance.workspace}`);
+  // 宿主自证：远端宿主 / web 宿主 / 别的扩展目录 → 结论无意义，直接红。
+  const provenance = assertHostIsTrustworthy({ tag: 'c8', workspaceContains: ['c8'] });
+  logProvenance('c8', provenance);
   const seen: string[] = [];
   const ext = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(ext, 'extension must be discovered');
@@ -195,17 +153,7 @@ export async function run(): Promise<void> {
   assert.strictEqual(hetTabs().length, 1, '关掉 Slot 不许连带关掉驾驶舱');
   console.log(`[c8] 关闭 OK — 页签 = 1 · 丢弃消息数 ${closed.dropped}`);
   // 证据落盘：驱动脚本据此判定"用例真的跑过"——否则 VS Code CLI 忽略参数、退出码 0
-  // 也会被当成通过（假绿）。
-  writeFileSync(
-    join(__dirname, '..', 'c8-evidence.txt'),
-    [
-      `tabs=1`,
-      ...seen,
-      `dropped=${closed.dropped}`,
-      `end=${new Date().toISOString()}`,
-      ...Object.entries(provenance).map(([k, v]) => `host.${k}=${v}`),
-    ].join('\n') + '\n',
-    'utf8',
-  );
+  // 也会被当成通过（假绿）。宿主上下文一并写入，供驱动回验版本。
+  writeEvidence('c8', [`tabs=1`, ...seen, `dropped=${closed.dropped}`], provenance);
   console.log('[c8] OK');
 }

@@ -24,7 +24,7 @@ import { CommitRequest, CommitState, showCommitPanel } from './features/commit/p
 import { ReleaseState, showReleasePanel } from './features/release/panel';
 import { PreflightState, PreflightItem, showPreflightPanel } from './features/preflight/panel';
 import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './features/slots/host';
-import { openCockpitPanel, emitCockpitEvent, getCockpitState, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
+import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
 import { showSettingsPanel } from './features/settings/panel';
@@ -530,6 +530,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('het.hasProject', () => currentProject !== undefined),
     vscode.commands.registerCommand('het.cockpit', () => openCockpitPanel(context)),
     vscode.commands.registerCommand('het.getCockpitState', () => getCockpitState()),
+    vscode.commands.registerCommand('het.getCockpitView', () => getCockpitView()),
     vscode.commands.registerCommand('het.getChipState', () => lastChip),
     // B 块：任务状态（集成测试/现场排查：在跑什么、最近成不成、能不能取消）
     vscode.commands.registerCommand('het.getTasks', () => ({
