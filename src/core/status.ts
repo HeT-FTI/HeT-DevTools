@@ -30,6 +30,8 @@ const STATUS_TEXT: Readonly<Record<string, string>> = {
   docsCopilot: '补文档注释',
   testgenCopilot: '生成测试',
   setupCopilot: '环境答疑',
+  cacheClean: '清理缓存',
+  targetSwitch: '切换目标',
 };
 
 /** 忙语义落在哪个**域**：悬停卡用它把"上一次结果"换成"进行中"（表意准确）。 */

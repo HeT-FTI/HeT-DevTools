@@ -76,6 +76,7 @@ import { getCurrentProvisionPlan, getHostCapabilities } from './features/env/pro
 import type { ProviderDecision } from './core/provisionPlan';
 import { providerLabel, ProvisionPrefs } from './core/provisionPlan';
 import { currentManagedStatus, managedGc, managedRemove } from './features/env/managedProvisioner';
+import { managedLayout, readMarker } from './core/managedEnv';
 import { getWslLaneStatus } from './features/env/wslProbe';
 import { runWslConanCreate, runWslDocs, probeLaneDocsTools, LaneDocsTools, ensureWslLane } from './features/env/wslLane';
 import { importLaneDistro, laneLocalAppData, teardownLaneDistro } from './features/env/wslImport';
@@ -102,6 +103,28 @@ import {
 } from './core/envPhase';
 import { docsFailureHint } from './core/docsHints';
 import { DEADLINE_SETTING, withDeadline, type DeadlineOverrides } from './core/deadlines';
+import {
+  BUILD_MATRIX_REL,
+  enabledTargets,
+  parseBuildMatrix,
+  pickTarget,
+  profileFileName,
+  profileHash,
+  toolchainVersionFor,
+  crossProfileFor,
+  type BuildMatrix,
+} from './core/buildMatrix';
+import { checkTargetSwitch, ledgerPath, parseLedger, recordBuild } from './core/buildLedger';
+import { cacheReportText, cacheVerdict, scanCache, type CacheReport } from './core/cacheUsage';
+import {
+  CLEAN_SCOPES,
+  assertCleanConfirmed,
+  cleanResultText,
+  cleanScopeLabel,
+  planClean,
+  type CleanPlan,
+} from './core/cacheClean';
+
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
 import { NetPlan, mirrorLabel, netDecisionLine, netPlanFor, netSummaryLine, rootfsCandidatesFor } from './core/netProfile';
 import type { AptMirrorRef } from './core/laneAptMirror';
@@ -405,6 +428,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   activationLine = `activated — ${context.extension.id} v${context.extension.packageJSON.version}`;
   log(activationLine);
   contextRef = context;
+  cacheContextRef = context;
   track('activation');
 
   // G16/G22：把"这次用哪套源"记在输出面板一行（**绝不弹窗**，§10 第二轮第 3 条）。
@@ -535,6 +559,182 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage(
         ok ? `已取消：${target.label}（子进程会被杀掉）` : `${target.label} 已经结束了，无需取消。`,
       );
+    }),
+    // ── K.1 缓存治理 / 目标切换（§3.4.4）──────────────────────────────────
+    vscode.commands.registerCommand('het.getCacheReport', () => cacheReportNow()),
+    vscode.commands.registerCommand('het.getBuildMatrix', async () => {
+      const root = currentProject?.root;
+      if (!root) {
+        return { error: '未检测到工程' };
+      }
+      try {
+        const matrix = parseBuildMatrix(await readText(join(root, BUILD_MATRIX_REL)), BUILD_MATRIX_REL);
+        return {
+          packageRef: matrix.packageRef,
+          defaultToolchain: matrix.defaultToolchain,
+          targets: enabledTargets(matrix).map((t) => ({
+            id: t.id,
+            arch: t.arch,
+            toolchain: toolchainVersionFor(matrix, t),
+            isDefault: t.isDefault,
+          })),
+        };
+      } catch (err) {
+        // 解析失败必须可见（目标下拉静默变空是最难查的一类）
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    }),
+    vscode.commands.registerCommand('het.cacheUsage', async () => {
+      const report = cacheReportNow();
+      channel?.appendLine(cacheReportText(report));
+      channel?.show?.(true);
+      void vscode.window.showInformationMessage(cacheVerdict(report));
+      return report;
+    }),
+    vscode.commands.registerCommand('het.cacheClean', async () => {
+      const projectRoot = currentProject?.root;
+      const targets = await enabledTargetIds().catch(() => [] as string[]);
+      const picks = CLEAN_SCOPES.map((scope) => {
+        let effect = '';
+        try {
+          effect = planClean(scope, { projectRoot, targets, pattern: 'placeholder/<版本>:*' }).effect;
+        } catch (err) {
+          effect = err instanceof Error ? err.message : String(err);
+        }
+        return { label: cleanScopeLabel(scope), description: effect, scope };
+      });
+      const picked = await vscode.window.showQuickPick(picks, {
+        title: '清理哪一部分？（从上到下风险递增）',
+        placeHolder: cleanScopeLabel(CLEAN_SCOPES[0]),
+      });
+      if (!picked) {
+        return;
+      }
+      let pattern: string | undefined;
+      if (picked.scope === 'conan-pkgs') {
+        pattern = await vscode.window.showInputBox({
+          title: '要删除的包（危险：会被真的删掉）',
+          prompt: 'conan 2 需要 <ref>:* 形状，例如 fmt/<版本>:*',
+          validateInput: (v) => (v.trim().includes(':*') ? undefined : '需要 <ref>:* 形状（例如 fmt/<版本>:*）'),
+        });
+        if (!pattern) {
+          return;
+        }
+      }
+      let plan: CleanPlan;
+      try {
+        plan = planClean(picked.scope, { projectRoot, targets, pattern });
+      } catch (err) {
+        void vscode.window.showWarningMessage(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      const before = cacheReportNow().totalBytes;
+      if (plan.danger) {
+        // 危险档的"影响面预览"用 conan 自己的 --dry-run（不是我们猜的），确认后才执行
+        const preview = await previewDanger(plan);
+        const confirm = await vscode.window.showWarningMessage(
+          `${plan.effect}\n\n影响面预览（conan --dry-run）：\n${preview}\n\n确定继续？`,
+          { modal: true },
+          '删除',
+        );
+        if (confirm !== '删除') {
+          return;
+        }
+        try {
+          assertCleanConfirmed(plan, true);
+        } catch (err) {
+          void vscode.window.showWarningMessage(err instanceof Error ? err.message : String(err));
+          return;
+        }
+      }
+      const busy = await runWithBusy(
+        busyHost(),
+        'cacheClean',
+        plan.label,
+        async (ctx) => {
+          channel?.appendLine(`[cache] ${plan.effect}`);
+          if (plan.dirs?.length && projectRoot) {
+            for (const dir of plan.dirs) {
+              const abs = join(projectRoot, dir);
+              rmSync(abs, { recursive: true, force: true });
+              channel?.appendLine(`[cache] 已删 ${abs}`);
+            }
+          }
+          for (const command of plan.commands) {
+            channel?.appendLine(`[cache] $ ${[command.cmd, ...command.args].join(' ')}`);
+            await run(command.cmd, command.args, { cwd: projectRoot, timeoutMs: 30 * 60_000, signal: ctx.signal });
+          }
+          return true;
+        },
+      );
+      if (busy.status !== 'done') {
+        void vscode.window.showWarningMessage(busy.message);
+        return;
+      }
+      const after = cacheReportNow().totalBytes;
+      const freed = cleanResultText(before, after);
+      channel?.appendLine(`[cache] ${freed}`);
+      void vscode.window.showInformationMessage(`清理完成：${freed}`);
+      void refreshStatus();
+    }),
+    vscode.commands.registerCommand('het.targetSwitch', async () => {
+      const root = currentProject?.root;
+      if (!root) {
+        void vscode.window.showWarningMessage('未检测到工程（先打开一个 fcpp 工程再切换目标）。');
+        return;
+      }
+      let matrix: BuildMatrix;
+      try {
+        matrix = parseBuildMatrix(await readText(join(root, BUILD_MATRIX_REL)), BUILD_MATRIX_REL);
+      } catch (err) {
+        void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        enabledTargets(matrix).map((t) => ({
+          label: t.id,
+          description: `arch=${t.arch ?? '?'} · 工具链 ${toolchainVersionFor(matrix, t) ?? '?'}`,
+        })),
+        { title: '切到哪个目标？（只生成 profile 与账本，不构建）' },
+      );
+      if (!picked) {
+        return;
+      }
+      const target = pickTarget(matrix, picked.label);
+      const profile = crossProfileFor(matrix, target);
+      const hash = profileHash(profile);
+      const profileFile = join(context.globalStorageUri.fsPath, 'conan-profiles', profileFileName(target, matrix));
+      await writeText(profileFile, profile);
+      const ledgerFile = ledgerPath(context.globalStorageUri.fsPath, root);
+      const { ledger, issue } = parseLedger(await readText(ledgerFile).catch(() => ''), root);
+      const builds = cacheReportNow().localBuilds;
+      const previousBytes = ledger.lastTarget
+        ? builds.find((b) => b.target === ledger.lastTarget)?.bytes
+        : undefined;
+      const check = checkTargetSwitch(
+        ledger,
+        { target: target.id, arch: target.arch, toolchain: toolchainVersionFor(matrix, target), profileHash: hash },
+        previousBytes,
+      );
+      const next = recordBuild(ledger, {
+        target: target.id,
+        arch: target.arch,
+        toolchain: toolchainVersionFor(matrix, target),
+        profileHash: hash,
+        at: Date.now(),
+        buildDir: join('build', target.id),
+      });
+      await writeText(ledgerFile, `${JSON.stringify(next, null, 2)}\n`);
+      const busy = await runWithBusy(busyHost(), 'targetSwitch', '切换目标', async () => {
+        channel?.appendLine(`[target] ${check.text}`);
+        channel?.appendLine(`[target] profile: ${profileFile}（hash ${hash}）`);
+        return check.text;
+      });
+      const text = busy.status === 'done' ? check.text : busy.message;
+      if (issue) {
+        channel?.appendLine(`[target] 账本提示：${issue}`);
+      }
+      void vscode.window.showInformationMessage(text);
     }),
     // A 块探针：当前页内 Slot + 丢弃消息数（集成测试用，也便于现场排查"消息没人接"）
     vscode.commands.registerCommand('het.getSlotState', () => ({
@@ -5052,6 +5252,72 @@ function mapIssues(issues: ParsedIssue[], projectRoot: string): void {
   }
   for (const [uriKey, diagnosticsList] of byFile) {
     buildDiagnostics.set(vscode.Uri.parse(uriKey), diagnosticsList);
+  }
+}
+
+/**
+ * 缓存目录（K.1）：托管环境的 CONAN_HOME 优先，否则 `CONAN_HOME` 环境变量，最后 `~/.conan2`。
+ * **只有一份缓存**（D15）—— 不做 per-arch 缓存（那才是存储浪费）。
+ */
+function conanHomeDir(context: vscode.ExtensionContext): string {
+  if (process.env.CONAN_HOME) {
+    return process.env.CONAN_HOME;
+  }
+  try {
+    const layout = managedLayout(context.globalStorageUri.fsPath);
+    if (readMarker(layout)?.state === 'ready') {
+      return layout.conanHome;
+    }
+  } catch {
+    /* 托管环境不可用：退回默认家目录 */
+  }
+  return join(homedir(), '.conan2');
+}
+
+/** 本工程构建目录（按目标分区；见 G24）。 */
+function projectBuildRoot(): string | undefined {
+  const root = currentProject?.root;
+  return root ? join(root, 'build') : undefined;
+}
+
+let cacheContextRef: vscode.ExtensionContext | undefined;
+
+/** 当前缓存报表（命令与探针共用同一份实现）。 */
+function cacheReportNow(): CacheReport {
+  const storage = cacheContextRef?.globalStorageUri.fsPath ?? join(homedir(), '.het-devtools');
+  return scanCache(conanHomeDir({ globalStorageUri: vscode.Uri.file(storage) } as vscode.ExtensionContext), projectBuildRoot());
+}
+
+/** 矩阵里的启用目标 id（读不到就给空数组：清理命令不该因为矩阵缺失而失败）。 */
+async function enabledTargetIds(): Promise<string[]> {
+  const root = currentProject?.root;
+  if (!root) {
+    return [];
+  }
+  try {
+    const matrix = parseBuildMatrix(await readText(join(root, BUILD_MATRIX_REL)), BUILD_MATRIX_REL);
+    return enabledTargets(matrix).map((t) => t.id);
+  } catch {
+    return [];
+  }
+}
+
+/** 危险档的影响面预览：跑 conan 自己的 `--dry-run`，把它打印的清单原样给用户看。 */
+async function previewDanger(plan: CleanPlan): Promise<string> {
+  if (!plan.previewCommand) {
+    return '（该档没有预览命令）';
+  }
+  try {
+    const conanExe = (await resolveConanRuntime())?.exe ?? (await locateConan()) ?? 'conan';
+    const res = await run(
+      conanExe,
+      plan.previewCommand.args,
+      { cwd: currentProject?.root, timeoutMs: 60_000 },
+    );
+    const text = `${res.stdout}\n${res.stderr}`.trim();
+    return text || '（conan 未列出任何可删项 —— 可能本来就没有匹配的包）';
+  } catch (err) {
+    return `预览失败：${err instanceof Error ? err.message : String(err)}（为避免误删，已停止）`;
   }
 }
 

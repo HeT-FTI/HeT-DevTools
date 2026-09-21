@@ -35,6 +35,8 @@ export const BUSY_ACTIONS = [
   'moduleCopilot',
   'setupCopilot',
   'board',
+  'cacheClean',
+  'targetSwitch',
 ] as const;
 
 export type BusyAction = (typeof BUSY_ACTIONS)[number];
@@ -55,6 +57,8 @@ export const CHANNELS: Readonly<Record<BusyAction, ChannelDef>> = {
   moduleCopilot: { kind: 'chat', channel: 'HeT DevTools · Copilot', label: '新增模块' },
   setupCopilot: { kind: 'chat', channel: 'HeT DevTools · Copilot', label: '环境答疑' },
   board: { kind: 'output', channel: 'HeT DevTools · 上板', label: '采集并解析' },
+  cacheClean: { kind: 'output', channel: 'HeT DevTools · 环境', label: '清理缓存' },
+  targetSwitch: { kind: 'output', channel: 'HeT DevTools · 环境', label: '切换目标' },
 };
 
 export function isBusyAction(value: string): value is BusyAction {

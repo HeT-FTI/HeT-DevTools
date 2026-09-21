@@ -310,6 +310,18 @@
         "title": "%cmd.taskCancel%"
       },
       {
+        "command": "het.targetSwitch",
+        "title": "%cmd.targetSwitch%"
+      },
+      {
+        "command": "het.cacheClean",
+        "title": "%cmd.cacheClean%"
+      },
+      {
+        "command": "het.cacheUsage",
+        "title": "%cmd.cacheUsage%"
+      },
+      {
         "command": "het.envCheck",
         "title": "%cmd.envCheck%"
       },
