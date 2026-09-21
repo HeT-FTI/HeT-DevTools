@@ -1,15 +1,14 @@
 /**
- * HeT status-bar chip (GUI rework — V5-2 "hover console").
+ * HeT status-bar chip (GUI rework — V5-2 "hover console"；C 块收敛)。
  *
- * PURE module (no VS Code imports). The chip appears ONLY while an fcpp
- * project is open. V5-2 turns the hover into an interactive "small console":
- * a 项目/状态 table whose rows carry `command:` links (Copilot-style: hover
- * persists, click executes, the host refreshes the model afterwards).
- * Clicking the chip itself still opens the Level-2 HUD.
+ * PURE module (no VS Code imports). 芯片只在打开 fcpp 工程时出现。
  *
- * Row order & labels are locked by the V5 plan (all four chars, health last):
- *   🔧 开发环境 · 🏗️ 构建结果 · 🍺 测试中心 · 📚 技术文档 · 📊 代码覆盖
- *   · 📖 模板同步 · 💚 工程健康 (total row, LAST)
+ * **C 块的变化**（依据 §3.6 / D2 / G18）：悬停不再是"7 行表格 + 6 个动作"，而是
+ * **5 条域行（与 rail 同名）+ ≤3 动作 + ≤2 导航**；健康分与"可提升"进徽章行/提示行。
+ * 三档（芯片文字 / 悬停 / 页内卡片）全部由 `core/statusItem.ts` 的 StatusItem 投影，
+ * 谁都不许自己再拼一套文案 —— 这是"chip 说成功、卡片说失败"这类观感的根治。
+ *
+ * 行名与 §5.1 的 rail 定稿名一致（环境车道 / 构建验证 / 模块文档 / 质量安全 / 交付发布）。
  */
 
 export interface ChipTest {
@@ -19,6 +18,16 @@ export interface ChipTest {
 }
 
 export type DocsRowState = 'none' | 'running' | 'ok' | 'fail';
+
+/** 缓存事实（K.1）：环境车道那一行的补充数字（动作在快捷操作区，状态行只放结论）。 */
+export interface ChipCacheFacts {
+  /** 人类可读的总体积（如 `12.4 GB`）。 */
+  sizeText: string;
+  /** 缓存里并存几个架构（>1 说明"今天 armv7、明天 v8"确实在吃盘）。 */
+  archs: number;
+  /** 最近一次清理（如 `3 分钟前`）；没有就不显示。 */
+  lastCleanAgo?: string;
+}
 
 export interface ChipModel {
   /** '' when no fcpp project is open. */
@@ -51,6 +60,8 @@ export interface ChipModel {
   /** V5-2: 💚 工程健康 row (score + verdict + ≤3 short gaps). */
   healthVerdict?: string | null;
   healthGaps?: string[] | null;
+  /** K.1: 构建缓存事实（体积/架构数/上次清理）。 */
+  cache?: ChipCacheFacts | null;
 }
 
 export interface ChipSpec {
@@ -61,31 +72,22 @@ export interface ChipSpec {
   color?: string;
 }
 
-import { busyDomainOf, chipStatusText } from '../core/status';
-
-/** Visual glyphs (pure-visual never collide with fcpp trigger semantics). */
-const G_BUILD = '🏗️';
-const G_TEST = '🍺';
-const G_DOCS = '📚';
-const G_COV = '📊';
-const G_TPL = '📖';
-const G_ENV = '🔧';
-const G_HEALTH = '💚';
+import { busyDomainOf } from '../core/status';
+import {
+  chipTextOf,
+  hoverMarkdown,
+  hoverProjection,
+  linkify,
+  runningItem,
+  type HoverAction,
+  type StatusItem,
+} from '../core/statusItem';
 
 /** Markdown `command:` link (optional URL-encoded JSON arg). */
 export function cmdLink(label: string, command: string, arg?: string): string {
-  const target = arg === undefined ? `command:${command}` : `command:${command}?${encodeURIComponent(JSON.stringify(arg))}`;
-  return `[${label}](${target})`;
+  return linkify(label, command, arg);
 }
 
-/**
- * V5-6 closed-loop layout (issue-4 feedback):
- *  - the "状态" column shows ONLY the outcome (result) of the last run, plus
- *    entry links that OPEN that result (输出 / 测试结果 / Doxygen / Sphinx /
- *    报告 / 明细) — never a button that STARTS an action;
- *  - every action that executes something lives in the "快捷操作" row below
- *    the table (检查环境 / 构建并测试 / 构建文档 / 生成覆盖率 / 重新体检).
- */
 function envCell(m: ChipModel): string {
   const summary = (m.envSummary ?? '').trim();
   return summary.length > 0 ? summary : '未检测';
@@ -110,13 +112,11 @@ function testCell(m: ChipModel): string {
   }
   const ok = t.failed === 0;
   const line = `${ok ? '✅' : '❌'} 通过 ${t.passed} · 失败 ${t.failed} · 跳过 ${t.skipped}`;
-  // 失败时给「测试结果」入口（查看明细），动作统一在快捷操作区。
   return ok ? line : `${line} · ${cmdLink('测试结果', 'het.showTestResults')}`;
 }
 
 function docsCell(m: ChipModel): string {
   const state = m.docs ?? 'none';
-  // §F.35：构建中 → 显示"进行中"，别让上一次的 `✗ 失败` 当结论（观感上等于咒它失败）。
   if (state === 'running' || busyDomainOf(m.runningAction ?? null) === 'docs') {
     return '$(sync~spin) 构建中';
   }
@@ -142,9 +142,10 @@ function coverageCell(m: ChipModel): string {
   }
   const found = m.coverageFound === true;
   if (found) {
-    const pct = m.coverageLine !== null && m.coverageLine !== undefined
-      ? `行 ${m.coverageLine}%${m.coverageFunc !== null && m.coverageFunc !== undefined ? ` · 函数 ${m.coverageFunc}%` : ''} · `
-      : '';
+    const pct =
+      m.coverageLine !== null && m.coverageLine !== undefined
+        ? `行 ${m.coverageLine}%${m.coverageFunc !== null && m.coverageFunc !== undefined ? ` · 函数 ${m.coverageFunc}%` : ''} · `
+        : '';
     return `✅ ${pct}${cmdLink('报告', 'het.openCoverageReport')}`;
   }
   return '未生成';
@@ -154,21 +155,85 @@ function templateCell(m: ChipModel): string {
   return m.templateBehind > 0 ? `可更新 ${m.templateBehind} 个提交` : '与参考一致';
 }
 
-function healthCell(m: ChipModel): string {
-  const base = m.health === null ? '未体检' : `${m.health}/100 · ${m.healthVerdict ?? '—'}`;
-  const count = (m.healthGaps ?? []).length;
-  // 极简：长文案（可提升项标签）走表格下方 hint，不进单元格以免撑破列宽；
-  // 「重新体检」是动作 → 只留在快捷操作区，这里保留「明细」入口。
-  return count === 0 ? base : `${base} · ${count}项 · ${cmdLink('明细', 'het.healthReport')}`;
+/**
+ * ChipModel → **StatusItem 列表**（§3.6 的"同一对象"）。三档都从这里取。
+ * 健康分不是"域行"而是徽章 + 提示（它没有对应的 rail），所以不进 items。
+ */
+export function chipStatusItems(m: ChipModel): StatusItem[] {
+  const busyDom = busyDomainOf(m.runningAction ?? null);
+  /** 忙时该域只表达"进行中"（不变题 4：不与上一次失败并列）。 */
+  const busyText = busyDom ? '进行中' : '';
+  const cacheBits: string[] = [];
+  if (m.cache) {
+    cacheBits.push(`缓存 ${m.cache.sizeText}`);
+    if (m.cache.archs > 1) {
+      cacheBits.push(`${m.cache.archs} 个架构并存`);
+    }
+    if (m.cache.lastCleanAgo) {
+      cacheBits.push(`上次清理 ${m.cache.lastCleanAgo}`);
+    }
+  }
+  return [
+    {
+      id: 'envCheck',
+      domain: 'env',
+      state: busyDom === 'env' ? 'running' : m.envSummary ? 'ok' : 'unknown',
+      text: busyDom === 'env' ? busyText : envCell(m),
+      detail: cacheBits.length ? cacheBits.join(' · ') : undefined,
+    },
+    {
+      id: 'build',
+      domain: 'build',
+      state: busyDom === 'build' ? 'running' : m.lastBuildOk === null ? 'unknown' : m.lastBuildOk ? 'ok' : 'fail',
+      text: busyDom === 'build' ? busyText : buildCell(m),
+    },
+    {
+      id: 'test',
+      domain: 'test',
+      state: busyDom === 'test' ? 'running' : !m.test ? 'unknown' : m.test.failed > 0 ? 'fail' : 'ok',
+      text: busyDom === 'test' ? busyText : testCell(m),
+    },
+    {
+      id: 'docsBuild',
+      domain: 'docs',
+      state:
+        (m.docs ?? 'none') === 'running' || busyDom === 'docs'
+          ? 'running'
+          : (m.docs ?? 'none') === 'ok'
+            ? 'ok'
+            : (m.docs ?? 'none') === 'fail'
+              ? 'fail'
+              : 'unknown',
+      text: busyDom === 'docs' || (m.docs ?? 'none') === 'running' ? '构建中' : docsCell(m),
+    },
+    {
+      id: 'coverage',
+      domain: 'quality',
+      state: m.coverageEnabled === false ? 'unknown' : m.coverageFound ? 'ok' : 'unknown',
+      text: coverageCell(m),
+    },
+    {
+      id: 'release',
+      domain: 'release',
+      state: m.templateBehind > 0 ? 'idle' : 'ok',
+      text: templateCell(m),
+    },
+  ];
 }
 
-/** 可提升项提示（独立段落，避免破坏表格格式）。 */
-function healthHint(m: ChipModel): string {
-  const gaps = (m.healthGaps ?? []).slice(0, 3);
-  if (!gaps.length) {
-    return '';
-  }
-  return `\n\n> 可提升：${gaps.join(' · ')} — 点「明细」查看完整体检`;
+/** 悬停的快捷操作（≤3）与导航（≤2）—— 预算由 `hoverProjection` 强制。 */
+export function chipHoverActions(): { actions: HoverAction[]; nav: HoverAction[] } {
+  return {
+    actions: [
+      { id: 'envCheck', label: '🔧 检查环境', command: 'het.envCheck', kind: 'primary' },
+      { id: 'test', label: '🚀 构建并测试', command: 'het.test', kind: 'primary' },
+      { id: 'cacheClean', label: '🧹 清理缓存', command: 'het.cacheClean', kind: 'primary' },
+    ],
+    nav: [
+      { id: 'dashboard', label: '🖥️ 仪表盘', command: 'het.dashboard', kind: 'nav' },
+      { id: 'monitor', label: '📊 完整监控卡', command: 'het.chipOverview', kind: 'nav' },
+    ],
+  };
 }
 
 /** Render the chip only while a project is open — monitoring only. */
@@ -176,71 +241,29 @@ export function chipSpec(m: ChipModel): ChipSpec | null {
   if (!m.projectName) {
     return null;
   }
-  // §F.35：忙 = 图标 + **进行中文字**（`⟳ HeT 构建中`）。绝不在忙的时候显示上次的
-  // 分数或上次的失败 —— "正在跑"和"结果"是两件事，chip 只答前者。
-  const busyText = m.running && m.running !== 'env' ? m.running : null;
-  const run = busyText ? '$(sync~spin)' : '$(pulse)';
-  const text = `${run} HeT ${busyText ?? chipStatusText(null, m.health)}`;
-  const busyDom = busyDomainOf(m.runningAction ?? null);
-  const busyTxt = '进行中';
+  const items = chipStatusItems(m);
+  const busyItem = runningItem(items);
+  const text = chipTextOf(items, m.health);
 
-  const healthIcon = m.health === null ? '$(question)' : m.health >= 80 ? '$(smi​ley)' : m.health >= 50 ? '$(warning)' : '$(error)';
-  const healthTxt = m.health === null ? '未体检' : `${m.health}/100`;
-  const buildBusy = busyDom === 'build';
-  const buildIcon = buildBusy
-    ? '$(sync~spin)'
-    : m.lastBuildOk === null
-      ? '$(circle-outline)'
-      : m.lastBuildOk
-        ? '$(pass)'
-        : '$(error)';
-  const buildTxt = buildBusy ? busyTxt : m.lastBuildOk === null ? '未运行' : m.lastBuildOk ? '成功' : '失败';
-  const testBusy = busyDom === 'test';
-  const testIcon = testBusy ? '$(sync~spin)' : m.test ? (m.test.failed > 0 ? '$(error)' : '$(pass)') : '$(circle-outline)';
-  const testTxt = testBusy ? busyTxt : m.test ? `${m.test.passed}/${m.test.passed + m.test.failed + m.test.skipped}` : '—';
+  const { actions, nav } = chipHoverActions();
+  const projection = hoverProjection(items, { actions, nav });
+  const body = hoverMarkdown(m.projectName, projection);
 
-  const badges = [`${healthIcon} 健康 ${healthTxt}`, `${buildIcon} 构建 ${buildTxt}`, `${testIcon} 测试 ${testTxt}`].join('   ');
+  // 健康分与"可提升"：它是**没有 rail 的横切指标**，所以放徽章行 + 提示行，
+  // 而不是硬塞成一条域行（塞进去就会让人以为它属于某个域）。
+  const healthIcon = m.health === null ? '$(question)' : m.health >= 80 ? '$(smiley)' : m.health >= 50 ? '$(warning)' : '$(error)';
+  const badges = [
+    `${healthIcon} 工程健康 ${m.health === null ? '未体检' : `${m.health}/100${m.healthVerdict ? ` · ${m.healthVerdict}` : ''}`}`,
+    busyItem ? `$(sync~spin) 进行中：${busyItem.text}` : '',
+  ]
+    .filter(Boolean)
+    .join('   ');
+  const gaps = (m.healthGaps ?? []).slice(0, 3);
+  const hint = gaps.length
+    ? `\n\n> 可提升：${gaps.join(' · ')} — ${cmdLink('重新体检', 'het.healthCheck')}`
+    : '';
 
-  const rows: Array<[string, string]> = [
-    [`${G_ENV} 开发环境`, envCell(m)],
-    [`${G_BUILD} 构建结果`, buildCell(m)],
-    [`${G_TEST} 测试中心`, testCell(m)],
-    [`${G_DOCS} 技术文档`, docsCell(m)],
-    [`${G_COV} 代码覆盖`, coverageCell(m)],
-    [`${G_TPL} 模板同步`, templateCell(m)],
-    [`${G_HEALTH} 工程健康`, healthCell(m)],
-  ];
-
-  const table = ['| 项目 | 状态 |', '| --- | --- |', ...rows.map(([k, v]) => `| ${k} | ${v} |`)].join('\n');
-  const runningLine = m.running && m.running !== 'env' ? `\n\n$(sync~spin) 运行中：${m.running}` : '';
-
-  // V5-6 (issue-4): every EXECUTE action lives here — the status cells above
-  // only show results + entry links. V5-7: bullet per action so the hover card
-  // never squeezes 6 links into one wrapping line (issue-2 feedback).
-  const quick = [
-    '━━━ 快捷操作（点按即执行）━━━',
-    '',
-    `- ${cmdLink('🔧 检查环境', 'het.envCheck')}`,
-    `- ${cmdLink('🚀 构建并测试', 'het.test')}`,
-    `- ${cmdLink('📚 构建文档', 'het.docs')}`,
-    `- ${cmdLink('📊 生成覆盖率', 'het.coverage')}`,
-    `- ${cmdLink('💚 重新体检', 'het.healthCheck')}`,
-    `- ${cmdLink('🖥️ 完整监控卡', 'het.chipOverview')}`,
-  ].join('\n');
-
-  const tooltip = [
-    `**$(package) HeT DevTools · ${m.projectName}**`,
-    '',
-    badges,
-    '',
-    table,
-    runningLine,
-    healthHint(m),
-    '',
-    quick,
-    '',
-    '$(keyboard) Enter 打开完整监控卡 · 悬停链接点击即执行 · $(eye) 可隐藏监控 chip',
-  ].join('\n');
+  const tooltip = `${body}\n\n> ${badges}${hint}\n\n$(keyboard) 悬停链接点击即执行`;
 
   return {
     text,
@@ -248,6 +271,6 @@ export function chipSpec(m: ChipModel): ChipSpec | null {
     command: 'het.chipOverview',
     // §F.35：**忙的时候绝不红**。红色只表达"跑完了、失败了"这个结论；
     // 把"正在构建"染成红底，是实测反馈里最刺眼的一处误读（"看着像已经炸了"）。
-    color: !busyText && m.lastBuildOk === false ? 'statusBarItem.errorBackground' : undefined,
+    color: !busyItem && m.lastBuildOk === false ? 'statusBarItem.errorBackground' : undefined,
   };
 }

@@ -115,7 +115,7 @@ import {
   type BuildMatrix,
 } from './core/buildMatrix';
 import { checkTargetSwitch, ledgerPath, parseLedger, recordBuild } from './core/buildLedger';
-import { cacheReportText, cacheVerdict, scanCache, type CacheReport } from './core/cacheUsage';
+import { cacheReportText, cacheVerdict, formatBytes, scanCache, type CacheReport } from './core/cacheUsage';
 import {
   CLEAN_SCOPES,
   assertCleanConfirmed,
@@ -673,6 +673,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const after = cacheReportNow().totalBytes;
       const freed = cleanResultText(before, after);
+      lastCacheCleanAt = Date.now();
+      cacheFactsMemo = undefined; // 清完立刻让下一次刷新重新算
       channel?.appendLine(`[cache] ${freed}`);
       void vscode.window.showInformationMessage(`清理完成：${freed}`);
       void refreshStatus();
@@ -3864,6 +3866,7 @@ async function refreshChip(): Promise<void> {
     coverageFunc: cov.func,
     healthVerdict: lastHealth?.verdict ? verdictZh(lastHealth.verdict) : null,
     healthGaps: lastHealth?.gaps ?? null,
+    cache: chipCacheFacts(),
   });
   if (!spec) {
     statusItem.hide();
@@ -5281,6 +5284,48 @@ function projectBuildRoot(): string | undefined {
 }
 
 let cacheContextRef: vscode.ExtensionContext | undefined;
+
+/**
+ * 缓存事实的记忆（K.1）：`scanCache` 要遍历整个缓存目录（可能几 GB / 上万文件），
+ * 而芯片刷新比这频繁得多 —— 所以缓存 60 秒，宁可数字最多旧一分钟，也不能拖慢界面。
+ */
+let cacheFactsMemo: { at: number; facts: { sizeText: string; archs: number; lastCleanAgo?: string } | null } | undefined;
+let lastCacheCleanAt: number | undefined;
+
+function agoTextOf(at: number, now: number): string {
+  const min = Math.max(0, Math.round((now - at) / 60_000));
+  if (min < 1) {
+    return '刚刚';
+  }
+  if (min < 60) {
+    return `${min} 分钟前`;
+  }
+  const hour = Math.round(min / 60);
+  return hour < 24 ? `${hour} 小时前` : `${Math.round(hour / 24)} 天前`;
+}
+
+/** 芯片用的缓存事实（失败就返回 null：拿不到数字时不许编，界面自然就不显示）。 */
+function chipCacheFacts(): { sizeText: string; archs: number; lastCleanAgo?: string } | null {
+  const now = Date.now();
+  if (!cacheFactsMemo || now - cacheFactsMemo.at > 60_000) {
+    try {
+      const report = cacheReportNow();
+      cacheFactsMemo = {
+        at: now,
+        facts: report.exists
+          ? {
+              sizeText: formatBytes(report.totalBytes),
+              archs: Math.max(1, report.byArch.length),
+              lastCleanAgo: lastCacheCleanAt ? agoTextOf(lastCacheCleanAt, now) : undefined,
+            }
+          : null,
+      };
+    } catch {
+      cacheFactsMemo = { at: now, facts: null };
+    }
+  }
+  return cacheFactsMemo.facts;
+}
 
 /** 当前缓存报表（命令与探针共用同一份实现）。 */
 function cacheReportNow(): CacheReport {
