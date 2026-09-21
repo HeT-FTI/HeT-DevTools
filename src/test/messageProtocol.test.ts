@@ -17,7 +17,7 @@ import { join, sep } from 'node:path';
  *   ③ 宿主回发的**字段名**必须真的被页面读（`m.x` / `m["x"]`）。
  *
  * 覆盖范围自动发现：任何带 `onDidReceiveMessage(` 的宿主文件 + 同目录/一层子目录里的
- * 页面文件（`shell.ts` / `*Html.ts` / `html.ts` / `hudModel.ts` …）。新面板一落地就自动纳入。
+ * 页面文件（`shell.ts` / `*Html.ts` / `html.ts` …）。新面板一落地就自动纳入。
  */
 
 const SRC = join('src');

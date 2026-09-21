@@ -53,7 +53,7 @@ export const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
 export const HEARTBEAT_STALE_MS = 10_000;
 
 /** 谁发起的这次执行（问责用：出问题要能说清是哪条入口点出来的）。 */
-export type TaskOwner = 'card' | 'hover' | 'palette' | 'hud' | 'reconciler' | 'recovery' | string;
+export type TaskOwner = 'card' | 'hover' | 'palette' | 'reconciler' | 'recovery' | string;
 
 export interface TaskArtifact {
   label: string;

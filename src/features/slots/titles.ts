@@ -8,7 +8,6 @@
 export const SLOT_TITLES: Readonly<Record<string, string>> = {
   health: '环境车道：环境体检',
   settings: '环境车道：项目设置',
-  hud: '环境车道：快捷面板',
   deps: '构建验证：依赖管理器',
   coverage: '构建验证：覆盖率',
   testResults: '构建验证：测试结果',

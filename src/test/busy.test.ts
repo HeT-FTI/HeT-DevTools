@@ -235,17 +235,17 @@ describe('长耗时动作的统一语义（§7）', () => {
     assert.ok(BUSY_ACTIONS.length >= 14, '动作清单不能退化成空壳');
   });
 
-  it('§F.35 忙语义只有一份：chip/HUD/吸顶都从 busy 注册表推导', () => {
+  it('§F.35 忙语义只有一份：chip / 吸顶 / 单页都从 busy 注册表推导', () => {
     const read = (p: string): string => readFileSync(join('src', p), 'utf8');
     const ext = read('extension.ts');
 
-    // ① chip 与 HUD 的 `running` 必须来自 `currentStatus()`，不许再直接读 log 抽屉的字段
+    // ① 状态行（chip 悬停 / 吸顶）的 `running` 必须来自 `currentStatus()`，不许再直接读 log 抽屉的字段
     //    （直读的后果：纯 runWithBusy 动作永远点不亮状态栏）
     const bare = ext.match(/^\s*running: st\.top\.running,\s*$/gmu) ?? [];
-    assert.deepStrictEqual(bare, [], 'chip/HUD 的 running 必须走 currentStatus()');
+    assert.deepStrictEqual(bare, [], 'running 必须走 currentStatus()');
     assert.ok(
-      (ext.match(/running: currentStatus\(\)\?\.text/gu) ?? []).length >= 2,
-      'chip 与 HUD 都要接同一份状态',
+      (ext.match(/running: currentStatus\(\)\?\.text/gu) ?? []).length >= 1,
+      '状态行要接同一份状态',
     );
 
     // ② 控制器不许自己造状态文案：忙/闲只能由 `currentStatus()` 判定

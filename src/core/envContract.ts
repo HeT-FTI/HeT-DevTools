@@ -7,7 +7,7 @@
  * dashboard showed a "managed env" that no build lane consumed. The contract is
  * the single, platform-neutral shape derived from the SAME lane facts:
  *
- *   facts (lane probe / tool rows) → EnvContract → card + chip + HUD + health
+ *   facts (lane probe / tool rows) → EnvContract → card + chip + health
  *
  * Pure (no vscode/fs): the impure collection stays in the command layer.
  */
@@ -223,7 +223,7 @@ export function buildEnvContract(f: ContractFacts): EnvContract {
   return contract;
 }
 
-/** ≤3 short gaps for the chip/HUD hover (fail-first, stable order). */
+/** ≤3 short gaps for the chip hover (fail-first, stable order). */
 export function contractGaps(c: EnvContract): string[] {
   const rank = (r: EnvRow): number => (r.disposition === 'guide' ? 0 : r.disposition === 'healable' ? 1 : 2);
   return c.rows

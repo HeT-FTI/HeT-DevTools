@@ -115,7 +115,7 @@ fcpp 模板用 Conan / CMake / CI / Doxygen / semantic-release 把工程保障�
 - **CMake 只下一份**：车道自带 cmake，构建时跳过模板从 ConanCenter 拉的那份；`system` 语义下宿主 cmake 已达模板下限（默认 3.28）同样跳过，未达则**如实告诉你**本次会从 ConanCenter 拉取（三条出路：装新 cmake、`HET_CMAKE_MIN` 自降底线、改回 `managed`）。
 - **镜像与代理（内网）**：`het.env.pipIndexUrl` / `het.env.conanRemote` / `het.env.httpProxy` 只作用于车道私有的 venv 与 CONAN_HOME，不改系统配置；自建发行版可用 `het.env.wslRootfsUrl` + `het.env.wslRootfsSha256` 指向内网镜像（覆盖必须同时给出 sha256），`het.env.keepRootfsCache` 控制移除时是否保留缓存。
 - **卸载即清**：`het.env.remove` 移除托管环境（含自建发行版与"已同意"记录）；激活时自动 GC 孤儿目录（无 marker 且无工具产物才清理），也可手动跑 `het.envGc`；扩展卸载后 `globalStorage` 由 VS Code 清除。
-- 常用命令：`het.envStatus` / `het.envPrepare` / `het.envRemove` / `het.envGc` / `het.envDump`（**脱敏**诊断包，路径折叠为 `~`）/ `het.getHostCapabilities` / `het.getProvisionPlan` / `het.getWslLane` / `het.getLinuxLane` / `het.getMacosLane`；监控 `het.hud.fontSize`（10–20）。
+- 常用命令：`het.envStatus` / `het.envPrepare` / `het.envRemove` / `het.envGc` / `het.envDump`（**脱敏**诊断包，路径折叠为 `~`）/ `het.getHostCapabilities` / `het.getProvisionPlan` / `het.getWslLane` / `het.getLinuxLane` / `het.getMacosLane`；监控入口 `het.chipOverview`（点状态栏 chip → 唯一页签的驾驶舱）。
 
 ## 平台支持与验证
 

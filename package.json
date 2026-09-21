@@ -146,18 +146,6 @@
           "default": "",
           "markdownDescription": "%config.netDockerMirror%"
         },
-        "het.hud.fontSize": {
-          "type": "number",
-          "default": 13.5,
-          "minimum": 10,
-          "maximum": 20,
-          "description": "%config.hudFontSize%"
-        },
-        "het.hud.disableHud": {
-          "type": "boolean",
-          "default": false,
-          "description": "%config.hudDisableHud%"
-        },
         "het.task.deadlines": {
           "type": "object",
           "additionalProperties": {
@@ -384,56 +372,6 @@
       {
         "command": "het.healthReport",
         "title": "%cmd.healthReport%"
-      },
-      {
-        "command": "het.hud.d1",
-        "title": "HUD: 执行第 1 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d2",
-        "title": "HUD: 执行第 2 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d3",
-        "title": "HUD: 执行第 3 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d4",
-        "title": "HUD: 执行第 4 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d5",
-        "title": "HUD: 执行第 5 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d6",
-        "title": "HUD: 执行第 6 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d7",
-        "title": "HUD: 执行第 7 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d8",
-        "title": "HUD: 执行第 8 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d9",
-        "title": "HUD: 执行第 9 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.esc",
-        "title": "HUD: 关闭监控卡",
-        "category": "HeT DevTools"
       }
     ],
     "menus": {
@@ -453,58 +391,7 @@
         "isSticky": true
       }
     ],
-    "keybindings": [
-      {
-        "command": "het.hud.d1",
-        "key": "1",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d2",
-        "key": "2",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d3",
-        "key": "3",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d4",
-        "key": "4",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d5",
-        "key": "5",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d6",
-        "key": "6",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d7",
-        "key": "7",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d8",
-        "key": "8",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d9",
-        "key": "9",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.esc",
-        "key": "escape",
-        "when": "activeWebviewPanelId == het.hud"
-      }
-    ]
+    "keybindings": []
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

@@ -13,7 +13,7 @@ export { apiCalls, stripComments };
  * 只要哪天有个片段 HTML 自带脚本、或者脚本顺序一变，页面按钮就会整批失效（质量面板那次）。
  * 规则很简单：**面板只发消息**（用 pageShell 提供的全局 `send()`），不碰 API。
  *
- * 例外是自建完整文档的两处（cockpit / hud），它们不经过 pageShell，各自只有一个脚本，
+ * 例外只有一处：驾驶舱（cockpit）自建完整文档，不经过 pageShell（它自己内置唯一脚本）。
  * 所以列成白名单单独断言"恰好一次"。
  */
 /**
@@ -55,14 +55,6 @@ describe('webview 取 API 的纪律（F.29）', () => {
     const ui = read('features/ui.ts');
     assert.strictEqual(apiCalls(ui), 1, 'ui.ts 里恰好调用一次');
     assert.ok(/function send\(msg\)\s*\{[^}]*vscode\.postMessage\(msg\)/.test(ui), 'pageShell 暴露 send(msg)');
-  });
-
-  it('HUD 已改走 pageShell（决策 6A）：它不再自己取 API', () => {
-    const hud = read('features/hud/hudModel.ts');
-    assert.strictEqual(apiCalls(hud), 0, 'HUD 不许自己取 API —— 与单页共用 pageShell 的 send()/post()');
-    assert.ok(hud.includes('pageShell('), 'HUD 要用 pageShell 生成整页');
-    assert.ok(hud.includes('send({ type:'), 'HUD 用 pageShell 暴露的全局 send()');
-    assert.ok(hud.includes("post(b.getAttribute('data-action'))"), '动作用 pageShell 的 post(cmd) 协议');
   });
 
   it('旧 cockpit 渲染器已归档（src 里不再有自建文档的 webview）', () => {

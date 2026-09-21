@@ -1,7 +1,6 @@
 import * as assert from 'node:assert';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { HUD_CLOSE_COMMAND, HUD_DIGITS, digitCommand } from '../features/hud/keys';
 import { stripCommentsCode } from './support/htmlFacts';
 
 /**
@@ -70,17 +69,15 @@ function literalRegistrations(): Set<string> {
 }
 
 /**
- * **表驱动注册**：命令 id 由数据生成（现在只有 HUD 的 1–9/Esc）。
+ * **表驱动注册**：命令 id 由数据生成。
  *
  * 这类注册没法用字面量正则找出来，所以在这里显式登记"生成器"，并断言生成出来的
  * 每一条命令都在清单里声明（等于把这个特例纳回门禁，而不是放它一马）。
+ *
+ * E 块把 HUD 页签并入悬停档后，唯一一个生成器（HUD 的 1–9/Esc）随之删除 ——
+ * 现在没有生成器了，但**机制留着**：下次再有表驱动注册，必须回到这里登记。
  */
-const GENERATED_REGISTRATIONS: Array<{ why: string; commands: () => string[] }> = [
-  {
-    why: 'HUD 的数字键位（1–9）与 Esc 由 `hudKeyCommands()` 表驱动注册',
-    commands: () => [...HUD_DIGITS.map(digitCommand), HUD_CLOSE_COMMAND],
-  },
-];
+const GENERATED_REGISTRATIONS: Array<{ why: string; commands: () => string[] }> = [];
 
 /**
  * **内部命令**：注册了但**有意不声明**（自动化 / 集成测试入口，不该出现在命令面板）。

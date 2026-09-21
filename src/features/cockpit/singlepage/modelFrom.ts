@@ -23,7 +23,7 @@ import type { CiLastRun } from '../../../core/ciFacts';
 export interface SinglePageFacts {
   health?: { score: number | null; issues?: number };
   /**
-   * **仓库级忙状态**（`core/status.ts`）：吸顶右侧 / chip / HUD 都读它。
+   * **仓库级忙状态**（`core/status.ts`）：吸顶右侧 / chip 都读它。
    * 与 `state.top.running`（log 抽屉的"正在跑"）刻意分开：文档构建会同时有两者，
    * 谁先结束都不该把另一个清掉 —— 模型里取"有值的那一个"。
    */

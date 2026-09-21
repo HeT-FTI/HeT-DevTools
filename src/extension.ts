@@ -130,14 +130,11 @@ import { NetPlan, mirrorLabel, netDecisionLine, netPlanFor, netSummaryLine, root
 import type { AptMirrorRef } from './core/laneAptMirror';
 import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArchMessage } from './core/laneProfile';
 import { prependPath } from './core/envPath';
-import { closeHudPanel, hudPanelOpen, openHudPanel, pressHudKey, type HudDeps } from './features/hud/panel';
-import { HUD_CLOSE_COMMAND, hudKeyCommands } from './features/hud/keys';
 
 /** §3.5 / G2：长动作的阈值只有一处默认值（`core/deadlines.ts`），这里只负责读设置覆盖。 */
 function deadlineOverrides(): DeadlineOverrides {
   return vscode.workspace.getConfiguration().get<Record<string, number>>(DEADLINE_SETTING) ?? {};
 }
-import { HudEnvRow, HudModel, defaultHudActions, hudEnabled } from './features/hud/hudModel';
 import { TEMPLATE_REPO, TEMPLATE_REF, TEMPLATE_SNAPSHOT_VERSION, TEMPLATE_TAG, TEMPLATE_TARBALL_BYTES, TEMPLATE_TARBALL_SHA256 } from './core/templateDefaults';
 import * as os from 'node:os';
 import { snapshotFallbackNotice, tarballPlanFor, templateFetchNextStep, templateTarballCandidates } from './core/templateTarball';
@@ -179,11 +176,9 @@ let envSummaryCache: { at: number; summary: string } | null = null;
 /** V5-6: singleton 体检明细 panel (live-synced with the chip). */
 let onboardingNotified = false;
 let lastChip: { text: string; tooltip: string; command?: string } | null = null;
-/** Timer id for the "hide chip for 5 minutes" snooze. */
-let chipSnoozeTimer: ReturnType<typeof setTimeout> | undefined;
 const isTestHost = process.argv.some((a) => a.includes('--extensionTestsPath'));
 
-/** Record a build/test outcome + timestamp (for the chip/HUD "…前" line). */
+/** Record a build/test outcome + timestamp (for the chip "…前" line). */
 function markBuildOutcome(ok: boolean): void {
   lastBuildOk = ok;
   lastBuildAt = Date.now();
@@ -774,20 +769,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // §F.42（实测反馈第 4 条）：`het.openDeps` 以前深链到驾驶舱，而**依赖面板从未被任何
     // 入口调用**（死代码）——现在它就是我们点开的那个详情页。
     vscode.commands.registerCommand('het.openDeps', () => openDepsPanel(context)),
-    // §F.43（实测反馈）：HUD 写着"按键 1–9 直达 / Esc 关闭"，但页面内 keydown 只在卡片
-    // 有焦点时收得到 —— 这里补一条"焦点在编辑器里也生效"的路径（keybindings 限定面板激活）。
-    ...hudKeyCommands().map(({ key, command }) =>
-      vscode.commands.registerCommand(command, async () => {
-        if (!hudPanelOpen()) {
-          return;
-        }
-        if (command === HUD_CLOSE_COMMAND) {
-          closeHudPanel();
-          return;
-        }
-        await pressHudKey(Number(key), hudDeps());
-      }),
-    ),
     vscode.commands.registerCommand('het.addDependency', () => runDepsAddFlow()),
     vscode.commands.registerCommand('het.refreshConanIndex', () => runConanIndexRefresh()),
     vscode.commands.registerCommand('het.newModule', () => openModuleWizard(context)),
@@ -3584,26 +3565,6 @@ async function isWorkspaceEmpty(): Promise<boolean> {
   return true;
 }
 
-/** Rich one-line runtime description for chip/HUD. */
-function conanRuntimeDetail(): string | null {
-  if (!conanRuntime) {
-    return null;
-  }
-  const ver = conanRuntime.version ? `conan ${conanRuntime.version} · ` : '';
-  if (conanRuntime.overrideUser) {
-    return `${ver}用户自定义`;
-  }
-  if (conanRuntime.envName) {
-    return `${ver}conda env ${conanRuntime.envName}（启发式推断 · 极可能）`;
-  }
-  return `${ver}PATH`;
-}
-
-function hudFontSize(): number {
-  const n = vscode.workspace.getConfiguration('het').get<number>('hud.fontSize', 13.5);
-  return typeof n === 'number' && Number.isFinite(n) ? n : 13.5;
-}
-
 /** V4-3: user prefs for provider selection (reserved; no MinGW toggle). */
 function provisionPrefs(): ProvisionPrefs {
   // ADR-8（2026-09-16）：用户级车道偏好。优先级：项目 metadata.toolchain > 本设置 > auto 判定。
@@ -3613,111 +3574,6 @@ function provisionPrefs(): ProvisionPrefs {
 }
 
 /** V4-6: hide the chip for 5 minutes (Snooze), then it returns. */
-function snoozeChip(minutes = 5): void {
-  if (chipSnoozeTimer) {
-    clearTimeout(chipSnoozeTimer);
-  }
-  statusItem?.hide();
-  lastChip = null;
-  chipSnoozeTimer = setTimeout(() => {
-    chipSnoozeTimer = undefined;
-    void refreshStatus();
-  }, minutes * 60_000);
-}
-
-/** V4-6: chip click falls back to the QuickPick list instead of the HUD card. */
-function disableHud(): void {
-  void vscode.workspace.getConfiguration('het').update('hud.disableHud', true, vscode.ConfigurationTarget.Global);
-  maybeToast('info', '已改用快捷列表（可随时在设置 het.hud.disableHud 恢复 HUD）。');
-}
-
-async function assembleHudModel(): Promise<HudModel> {
-  const st = getCockpitState();
-  const plan = await getCurrentProvisionPlan(true, provisionPrefs()).catch(() => null);
-  const tools = await ensureToolDiscovery().catch(() => []);
-  // V5-6 (issue-1): under the WSL2 lane the rows must reflect the toolchain the
-  // extension ACTUALLY uses (lane venv conan/cmake/ninja/python), never the
-  // Windows-side sniff — a Windows box without local conan would otherwise show
-  // a red ✗ while builds succeed through the lane. A3: the same holds on Linux
-  // under the linux-managed provider (native Linux managed lane).
-  let lane: { conan?: string; cmake?: string; provisioned: boolean } | null = null;
-  let laneKind: 'wsl' | 'linux' | null = null;
-  if (process.platform === 'win32' && plan?.provider === 'win-wsl2') {
-    const wsl = await getWslLaneStatus(false).catch(() => null);
-    if (wsl?.tools.gcc) {
-      lane = { conan: wsl.tools.conan, cmake: wsl.tools.cmake, provisioned: !!wsl.tools.conan };
-      laneKind = 'wsl';
-    }
-  } else if (process.platform === 'linux' && plan?.provider === 'linux-managed') {
-    const laneStatus = await getLinuxLaneStatus(false).catch(() => null);
-    if (laneStatus?.tools.gcc) {
-      lane = { conan: laneStatus.tools.conan, cmake: laneStatus.tools.cmake, provisioned: !!laneStatus.tools.conan };
-      laneKind = 'linux';
-    }
-  }
-  const env: HudEnvRow[] = [];
-  const wanted = new Set(['conan', 'cmake', 'python', 'ninja', 'gtest']);
-  for (const t of tools) {
-    if (!wanted.has(t.key)) {
-      continue;
-    }
-    const missing = t.source === 'missing';
-    // Lane override: the used toolchain has it → ok, whatever Windows says.
-    const laneOk = lane !== null && (t.key === 'conan' || t.key === 'cmake' ? !!lane[t.key as 'conan' | 'cmake'] : lane.provisioned && (t.key === 'python' || t.key === 'ninja'));
-    let tone: HudEnvRow['tone'] = missing ? (t.managed ? 'ok' : t.optional ? 'plain' : 'fail') : 'ok';
-    let value = missing
-      ? t.managed
-        ? 'conan 托管（构建时获取）'
-        : t.optional
-          ? '可选（Linux/WSL 覆盖率）'
-          : '未找到'
-      : (t.sourceDetail || t.exe || t.source).slice(0, 60);
-    // V5-7 dual-line: the second line shows the REAL binding (lane path vs
-    // system path) so users can tell the managed toolchain from local tools.
-    let path = missing ? (t.managed ? 'Conan 缓存中的包（构建时自动获取）' : '本机未找到') : (t.exe || t.sourceDetail || '').slice(0, 96);
-    if (laneOk) {
-      tone = 'ok';
-      const bin =
-        laneKind === 'linux'
-          ? 'Linux 派生 managed lane · ~/.het-fti/managed-env/venv/bin'
-          : 'WSL2 车道 · ~/.het-fti/managed-env/venv/bin';
-      const kindTag = laneKind === 'linux' ? 'Linux lane venv' : 'WSL2 车道 venv';
-      value =
-        t.key === 'conan' && lane?.conan
-          ? `${kindTag} · ${lane.conan}`
-          : t.key === 'cmake' && lane?.cmake
-            ? `${kindTag} · ${lane.cmake}`
-            : t.key === 'python'
-              ? `${kindTag}（托管）`
-              : t.key === 'ninja'
-                ? `${kindTag}（托管）`
-                : value;
-      if (['conan', 'cmake', 'python', 'ninja'].includes(t.key)) {
-        path = `${bin}/${t.key}`;
-      }
-    }
-    env.push({ label: t.label, value, tone, path });
-  }
-  return {
-    title: currentProject?.metadata?.name ?? 'fcpp 项目',
-    health: lastHealth?.score ?? st.top.health,
-    // §F.35：HUD 的"正在跑"与 chip / 吸顶读同一份仓库级状态（单一来源）。
-    running: currentStatus()?.text ?? st.top.running,
-    runningAction: currentStatus()?.action ?? null,
-    lastBuildOk: lastBuildOk ?? null,
-    test: lastTestSummary
-      ? { passed: lastTestSummary.passed, failed: lastTestSummary.failed, skipped: lastTestSummary.skipped }
-      : null,
-    coverage: null,
-    buildAgo: agoText(lastBuildAt || undefined),
-    provider: plan ? { label: providerLabel(plan.provider), coverage: plan.coverage } : null,
-    runtime: conanRuntimeDetail(),
-    env,
-    actions: defaultHudActions(),
-    templateBehind: st.top.templateBehind,
-  };
-}
-
 /** V5-2: do the Sphinx/Doxygen build trees contain an index.html? (disk probe) */
 async function probeDocsArtifacts(root?: string): Promise<{ doxygen: boolean; sphinx: boolean }> {
   const out = { doxygen: false, sphinx: false };
@@ -3888,28 +3744,14 @@ async function refreshChip(): Promise<void> {
   notifyStateChange();
 }
 
-/** HUD 的依赖集合（开卡片与 1–9 按键命令共用同一份，避免两处各配一套）。 */
-function hudDeps(): HudDeps {
-  return {
-    getModel: assembleHudModel,
-    fontSize: hudFontSize,
-    onSnooze: () => snoozeChip(5),
-    onHideHud: disableHud,
-  };
-}
-
-/** V4-6: click the chip → Level-2 HUD card; disabled/automation → QuickPick. */
+/** chip 点击的去处：**唯一页签**（驾驶舱）——监控内容在悬停里看，要看全局就去页面上。
+ *  自动化/静默宿主不开窗（否则会凭空多一个页签，测试的“页签恒为 1”也失去意义）。*/
 async function showChipOverview(): Promise<void> {
-  const disabled = !hudEnabled(vscode.workspace.getConfiguration('het').get('hud.disableHud'));
-  if (disabled || quietHost()) {
+  if (quietHost() || !contextRef) {
     await showChipQuickPick();
     return;
   }
-  if (!contextRef) {
-    await showChipQuickPick();
-    return;
-  }
-  openHudPanel(contextRef, hudDeps());
+  await vscode.commands.executeCommand('het.dashboard');
 }
 
 /** V3-3 fallback / automation: keyboard-reachable QuickPick overview. */

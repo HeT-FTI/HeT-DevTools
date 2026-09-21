@@ -231,7 +231,7 @@ export function detailViewOpen(id: string): boolean {
   return currentSlot?.id === id;
 }
 
-/** 当前 Slot 的上下文键（`when` 子句用，如 `het.hudOpen`）。 */
+/** 当前 Slot 的上下文键（`when` 子句用，如 `het.slotOpen`）。 */
 export function currentDetailContextKey(): string | undefined {
   return currentSlot?.id;
 }

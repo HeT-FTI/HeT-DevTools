@@ -137,7 +137,7 @@ export function getCockpitView(): { focus: SectionId | null; folded: SectionId[]
  */
 export function notifySinglePageBusy(action: string, _on: boolean): void {
   // §F.35：忙语义的**唯一来源**是 `core/busy.ts` 的注册表 —— 这里顺手把它同步成
-  // "仓库级状态"，吸顶右侧 / chip / HUD / 悬停卡都读这同一份（以前 chip 读的是
+  // "仓库级状态"，吸顶右侧 / chip / 悬停卡都读这同一份（以前 chip 读的是
   // 上一次构建结果，于是"正在跑"被显示成"已失败"）。
   const st = currentStatus();
   const had = singlePageFacts.status ?? null;
@@ -148,7 +148,7 @@ export function notifySinglePageBusy(action: string, _on: boolean): void {
     postSinglePage();
   }
   // §F.36：**动作跑完 = 仓库事实变了**，不管用户是从哪个入口点的（单页按钮 / 悬停链接 /
-  // 命令面板 / HUD），都在这里统一补一次取数 —— 否则卡片上的数字要等下一次交互才动，
+  // 命令面板），都在这里统一补一次取数 —— 否则卡片上的数字要等下一次交互才动，
   // 实测反馈里就是"构建/测试/覆盖率不刷新，只有体检刷新"（体检本来就走面板入口）。
   if (had && !st) {
     requestFacts();

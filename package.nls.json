@@ -60,8 +60,6 @@
   "config.envPipIndexUrl": "Corporate mirror for the managed lanes: exported as PIP_INDEX_URL (pip: conan/cmake/ninja and the docs stack). Empty = default PyPI.",
   "config.envWslRootfsSha256": "Expected sha256 of the rootfs above. Required whenever wslRootfsUrl is set (a mirror may differ from the official image).",
   "config.envWslRootfsUrl": "Override the Ubuntu 24.04 WSL rootfs source for the self-provisioned distro (http(s) / file:// / absolute path / UNC share). Intranet mirrors MUST also set wslRootfsSha256 — there is no \"skip verification\" switch.",
-  "config.hudDisableHud": "Disable the hover HUD and use the quick list instead (the chip Snooze/HUD toggle writes this).",
-  "config.hudFontSize": "Hover HUD font size in px (10–20; default 13.5).",
   "config.netDockerMirror": "Docker registry mirror for MegaLinter. Empty (default) = disabled, because the public China mirrors are mostly dead; point this at your intranet registry instead.",
   "config.netMirrors": "Only used when `het.net.profile` is `custom`. Per kind: pip / apt / rootfs / ghAccel — each a string or an array (array = fallback order).",
   "config.netProfile": "Which mirrors to use. `auto` follows the VS Code display language (zh* → China mirrors). The extension never shows a dialog for this — it logs one decision line to the output panel.",

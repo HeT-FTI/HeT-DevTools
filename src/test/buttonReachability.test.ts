@@ -17,14 +17,14 @@
  *   3. 查**动作 id 在 host 那边认不认得**（`COMMAND_FOR_ACTION`）—— 齿轮曾经发 `settings`
  *      而表里只有 `openSettings`，于是"点了没反应"且没有任何报错。
  *
- * 这套规则对**两个壳**都跑：驾驶舱（`data-act` + `data-action="act"`）与 HUD（`data-action=命令 id`）。
+ * 这套规则对**驾驶舱**（`data-act` + `data-action="act"`）跑。（E 块前还有第二个壳 HUD，它的
+ * `'command'` 协议随 HUD 页签一起删了 —— 只对一个壳跑的契约才不容易退化成“两套写法互相打架”。）
  */
 import * as assert from 'node:assert';
 import { initialCockpitState } from '../features/cockpit/state';
-import { cockpitSinglePageHtml, cardRowHtml } from '../features/cockpit/singlepage/shell';
+import { cockpitSinglePageHtml } from '../features/cockpit/singlepage/shell';
 import { EMPTY_FACTS, singlePageModelFrom } from '../features/cockpit/singlepage/modelFrom';
 import { COMMAND_FOR_ACTION, commandForAction } from '../features/cockpit/singlepage/actions';
-import { type HudModel, defaultHudActions, hudHtml } from '../features/hud/hudModel';
 
 /** 剥掉 `<script>…</script>`：脚本里满是属性名字面量，不剥会把"检查"本身当成页面元素。 */
 function stripScripts(html: string): string {
@@ -43,26 +43,6 @@ const attrOf = (tag: string, name: string): string | undefined =>
 
 const hasClass = (tag: string, cls: string): boolean =>
   (attrOf(tag, 'class') ?? '').split(/\s+/).includes(cls);
-
-function hudModel(): HudModel {
-  return {
-    title: 'mylib2',
-    health: 92,
-    running: null,
-    lastBuildOk: true,
-    test: { passed: 7, failed: 0, skipped: 1 },
-    coverage: 87,
-    buildAgo: '3 分钟前',
-    provider: { label: 'Linux · 托管车道', coverage: 'full' },
-    runtime: 'conan 2.32',
-    env: [
-      { label: 'conan', value: '2.32', tone: 'ok', path: '~/x/conan', action: 'het.envPrepare', actionLabel: '准备环境' },
-      { label: 'lcov', value: '可选', tone: 'plain' },
-    ],
-    actions: defaultHudActions(),
-    templateBehind: 0,
-  };
-}
 
 describe('按钮可达性（F.31：发射端 ↔ 处理端契约）', () => {
   const cockpit = cockpitSinglePageHtml(singlePageModelFrom(initialCockpitState(), EMPTY_FACTS));
@@ -119,35 +99,6 @@ describe('按钮可达性（F.31：发射端 ↔ 处理端契约）', () => {
       assert.match(attrOf(t, 'data-copilot')!, /^\/het-[a-z]+$/u, '必须是模板里的 /het-* 斜杠命令');
       assert.strictEqual(attrOf(t, 'data-act'), undefined, 'Copilot 按钮不该再带 data-act（两条分支会打架）');
     }
-  });
-
-  it('HUD 用命令协议：卡片按钮发的是命令 id，不是动作 id、也不该出现 data-act', () => {
-    const hud = hudHtml(hudModel(), 13.5);
-    const tags = clickableTags(hud);
-    assert.ok(tags.length >= 3, `HUD 可点元素太少（${tags.length}）`);
-    assert.deepStrictEqual(
-      tags.filter((t) => attrOf(t, 'data-act') !== undefined),
-      [],
-      'HUD 的脚本把 data-action 的值直接当命令 post → 不许出现 data-action="act" / data-act',
-    );
-    assert.deepStrictEqual(
-      tags.filter((t) => attrOf(t, 'data-copilot') !== undefined),
-      [],
-      'HUD 没有 Copilot 分支（单会话守卫只在驾驶舱）→ 不许在 HUD 里发 Copilot 按钮',
-    );
-    for (const t of tags) {
-      const action = attrOf(t, 'data-action') ?? '';
-      assert.match(action, /^het\.[A-Za-z]+$/u, `HUD 只接受规范命令 id，收到「${action}」`);
-    }
-  });
-
-  it('同一个发射器喂两个壳：协议参数必须显式选（否则 HUD 会把 `act` 当命令跑）', () => {
-    const model = singlePageModelFrom(initialCockpitState(), EMPTY_FACTS);
-    const first = model.cards.find((c) => c.action);
-    assert.ok(first, '模型里至少要有一张带动作的卡');
-    assert.ok(cardRowHtml(first!).includes('data-action="act"'), '默认（驾驶舱协议）');
-    assert.ok(cardRowHtml(first!, 'command').includes('data-action="het.'), 'command 协议要给命令 id');
-    assert.ok(!cardRowHtml(first!, 'command').includes('data-act='), 'command 协议不该再发 data-act');
   });
 
   it('次级按钮同样是活的（`class="secondary"` 不影响可达性）', () => {

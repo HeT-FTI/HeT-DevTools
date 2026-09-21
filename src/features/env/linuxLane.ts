@@ -398,7 +398,7 @@ export interface LinuxLaneStatus {
 let statusCache: { at: number; status: LinuxLaneStatus } | null = null;
 
 /**
- * Overall lane status for the env page / HUD (no provisioning — read only).
+ * Overall lane status for the env page / chip hover (no provisioning — read only).
  * Off-Linux hosts return null (safe to call everywhere). `tools.conan` /
  * `tools.cmake` come from the managed venv (the toolchain actually used);
  * `tools.gcc` / `tools.lcov` come from the system (apt-provisioned).

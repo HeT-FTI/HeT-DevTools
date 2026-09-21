@@ -119,7 +119,7 @@ export function busyEntries(): Array<{ action: string; startedAt: number }> {
 }
 
 /**
- * **当前仓库级状态**：吸顶右侧 / chip / HUD / 悬停卡都读这一份（`core/status.ts` 定义口吻）。
+ * **当前仓库级状态**：吸顶右侧 / chip / 悬停卡都读这一份（`core/status.ts` 定义口吻）。
  * 空闲返回 null —— 调用方负责把"空闲"渲染成历史结果，而不是把它渲染成"正在跑"。
  */
 export function currentStatus(): ActiveStatus | null {

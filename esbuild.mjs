@@ -3,7 +3,7 @@
 //  - --tests : bundles every src/test/**/*.test.ts -> out/test/** (kept relative)
 //  - --watch : rebuild on change
 import * as esbuild from 'esbuild';
-import { readdirSync, statSync, mkdirSync } from 'node:fs';
+import { readdirSync, statSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +64,10 @@ function buildOptions() {
 
   // 2) unit tests (when requested)
   if (tests) {
+    // 先清掉上一次的产物：**被删掉的测试源不许在 out/ 里以"幽灵用例"继续跑**。
+    // （E 块删 HUD 测试时踩过：源码没了，out/test/hud*.test.js 还在，于是 CI 里绿、
+    //   本地红/绿不一致，而且断言的是已经不存在的文件。）
+    rmSync(join(outDir, 'test'), { recursive: true, force: true });
     const testRoot = join(srcDir, 'test');
     if (exists(testRoot)) {
       for (const file of collectTsFiles(testRoot)) {

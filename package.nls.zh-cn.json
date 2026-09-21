@@ -60,8 +60,6 @@
   "config.envPipIndexUrl": "托管车道的企业内网 pip 镜像：导出为 PIP_INDEX_URL（pip 安装 conan/cmake/ninja 与文档链）。留空 = 默认 PyPI。",
   "config.envWslRootfsSha256": "上面 rootfs 的期望 sha256。只要设置了 wslRootfsUrl 就必须给出（镜像内容可能与官方不同）。",
   "config.envWslRootfsUrl": "自建发行版用的 Ubuntu 24.04 WSL rootfs 源覆盖（http(s) / file:// / 本地绝对路径 / UNC 共享）。用内网镜像时**必须**同时设置 wslRootfsSha256 —— 不提供\"跳过校验\"的开关。",
-  "config.hudDisableHud": "停用悬停监控卡，改用快捷列表（chip 的 Snooze/HUD 开关会写这一项）。",
-  "config.hudFontSize": "悬停监控卡字号（px，10–20，默认 13.5）。",
   "config.netDockerMirror": "MegaLinter 用的 Docker registry 镜像。留空（默认）= 关闭 —— 公网 CN 镜像实测基本已死；内网请指向自建 registry。",
   "config.netMirrors": "仅当 `het.net.profile` 为 `custom` 时生效。按类别填：pip / apt / rootfs / ghAccel，可写字符串或数组（数组 = 兜底顺序）。",
   "config.netProfile": "用哪套镜像源：`auto` 跟着 VS Code 界面语言走（zh* → 国内源）。换源**不弹窗**，只在输出面板留一行决策记录。",

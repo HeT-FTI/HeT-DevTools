@@ -11,14 +11,13 @@
  * host → 页面：`{type:'l1'|'section'|'busy'}` 局部替换（§13：页面只生成一次）
  */
 import { pageShell, esc } from '../../ui';
-import { commandForAction } from './actions';
 import { SECTIONS } from './sections';
 import { singlePageCss } from './tokens';
 import { COCKPIT_RESERVED_TYPES } from '../../slots/protocol';
 import { stateIcon, type CardRow, type L1Item, type SectionId, type SinglePageModel } from './model';
 
 /**
- * L1 吸顶条的内容（**共享渲染器**：单页页头与 HUD 顶部都用它 —— 决策 6A“只留一套皮”）。
+ * L1 吸顶条的内容（单页页头用）。
  */
 export function l1Html(items: L1Item[], busy: string | null): string {
   const cells = items
@@ -35,29 +34,23 @@ export function l1Html(items: L1Item[], busy: string | null): string {
 }
 
 /**
- * 一张卡（L2 行）的 HTML。导出供 HUD 复用：它的环境行就是同一串卡片（同一套视觉语言）。
- */
-export type CardActionProtocol = 'act' | 'command';
-
-/**
- * 一张卡（L2 行）的 HTML。导出供 HUD 复用：它的环境行就是同一串卡片（同一套视觉语言）。
+ * 一张卡（L2 行）的 HTML。
  *
- * ⚠️ **两个壳的动作协议不同**（这里被真实 bug 咬过，别再合成一个）：
- *   · `'act'`（驶驶舱）：`data-action="act"` + `data-act="<动作 id>"` → host 用 `COMMAND_FOR_ACTION` 翻译；
- *   · `'command'`（HUD）：`data-action="<命令 id>"` → HUD 脚本直接把值当命令 post。
+ * 动作协议**只有一种**（`data-action="act"` + `data-act="<动作 id>"` → host 用 `COMMAND_FOR_ACTION` 翻译）。
+ * E 块把 HUD 页签并入悬停档后，曾经的第二种协议（`'command'`：直接把值当命令 post）没有使用者了 ——
+ * 留着一个壳都不用的分支，只会让下一个人猜“什么时候该用哪个”。
  *
- * **只发 `data-act` 不发 `data-action`：两个壳的点击都会掉进“没有 data-action 就 return”，
- * 按钮全死**（2026-09-20 同事反馈的"仪表盘除了 Copilot 都点不动"就是这个）；
- * 而在 HUD 里错发 `data-action="act"` 则会把字符串 `act` 当命令执行。
+ * **只发 `data-act` 不发 `data-action`：点击会掉进“没有 data-action 就 return”，按钮全死**
+ * （2026-09-20 用户反馈的“仪表盘除了 Copilot 都点不动”就是这个）。
  * 门禁：`src/test/buttonReachability.test.ts`（渲染出来逐个按钮查可达性）。
  */
-export function cardRowHtml(c: CardRow, protocol: CardActionProtocol = 'act'): string {
+export function cardRowHtml(c: CardRow): string {
   const acts: string[] = [];
   const button = (a: typeof c.action, secondary: boolean): void => {
     if (!a) {
       return;
     }
-    // `jump`：段内导航（去执行段做这件事），不是动作 —— 段 1 只留只读摘要的关键。
+    // `jump`：段内导航（去执行段做这件事），不是动作。
     if (a.kind === 'jump') {
       acts.push(
         `<button class="link" data-action="jump" data-section="${esc(a.id)}" title="跳到「${esc(sectionLabel(a.id))}」执行">${esc(a.label)} →</button>`,
@@ -65,11 +58,7 @@ export function cardRowHtml(c: CardRow, protocol: CardActionProtocol = 'act'): s
       return;
     }
     const attr =
-      a.kind === 'copilot'
-        ? `data-copilot="${esc(a.id)}"`
-        : protocol === 'command'
-          ? `data-action="${esc(commandForAction(a.id) ?? a.id)}"`
-          : `data-action="act" data-act="${esc(a.id)}"`;
+      a.kind === 'copilot' ? `data-copilot="${esc(a.id)}"` : `data-action="act" data-act="${esc(a.id)}"`;
     const cls = secondary ? ' class="secondary"' : '';
     acts.push(`<button${cls} ${attr} data-card="${esc(c.id)}">${esc(a.label)}</button>`);
   };

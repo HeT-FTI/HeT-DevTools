@@ -11,11 +11,12 @@
  *   · V2：**只有驾驶舱一个页签**，细节视图 = 页内互斥折叠 Slot，pin 删除。
  *
  * 盯五件事（错了都会静默变乱）：
- *   1. `createWebviewPanel` 只允许驾驶舱（+ 白名单，逐项写明理由）；
+ *   1. `createWebviewPanel` 只允许驾驶舱（**白名单已清空**：E 块把最后一个例外 HUD 并入悬停档后，
+ *      “还有哪些东西能自己开页签”这个问题只有一个答案）；
  *   2. 细节面板必须走 `slots/host`，且必须**接住**订阅并交回宿主撤销；
  *   3. 切换 Slot 的顺序：先撤销旧接线/旧处理器 → 再注入新片段；
  *   4. 旧模块 `features/detail/host.ts` 必须已删（留着就会被重新 import）；
- *   5. pin 的痕迹清干净（半删最糟：manifest 留着命令但代码没了 = "命令未注册"）。
+ *   5. pin 的痕迹清干净（半删最糟：manifest 留着命令但代码没了 = “命令未注册”）。
  */
 import * as assert from 'node:assert';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -25,7 +26,6 @@ import { stripComments } from './support/htmlFacts';
 const SRC = 'src';
 const SLOT_HOST = join(SRC, 'features', 'slots', 'host.ts');
 const COCKPIT = join(SRC, 'features', 'cockpit', 'controller.ts');
-const HUD = join(SRC, 'features', 'hud', 'panel.ts');
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -43,21 +43,20 @@ describe('§A：只有 1 个页签（细节视图 = 驾驶舱页内 Slot）', ()
   const read = (p: string): string => readFileSync(p, 'utf8');
   const files = walk(SRC);
 
-  it('`createWebviewPanel` 只允许驾驶舱（HUD 是最后一个待并入项，理由写在白名单里）', () => {
+  it('`createWebviewPanel` 只允许驾驶舱（白名单已清空）', () => {
     const allowed: Readonly<Record<string, string>> = {
       [COCKPIT]: '驾驶舱：唯一页签',
-      [HUD]: 'HUD 监控卡：待 C/E 块并入"悬停档"，届时必须从这里删掉',
     };
     const callers = files.filter((f) => stripComments(read(f)).includes('createWebviewPanel('));
     const unexpected = callers.filter((f) => !(f in allowed));
     assert.deepStrictEqual(
       unexpected,
       [],
-      `这些文件自己开页签了（§A 只允许驾驶舱）：${unexpected.join('、')}`,
+      `这些文件自己开页签了（只允许驾驶舱）：${unexpected.join('、')}`,
     );
     assert.ok(callers.includes(COCKPIT), '驾驶舱必须自己开页签（否则白名单逻辑失效）');
     assert.ok(Object.keys(allowed).every((f) => existsSync(f)), '白名单里的文件必须真实存在');
-    assert.ok(callers.length <= 2, `开页签的地方变多了（${callers.join('、')}）—— 页签数不再是 1`);
+    assert.deepStrictEqual(callers, [COCKPIT], `开页签的地方只能有 1 处，实际：${callers.join('、')}`);
   });
 
   it('细节面板全部走 slots/host，且都接住了消息订阅并交回宿主撤销', () => {

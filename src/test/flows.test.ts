@@ -41,7 +41,7 @@ import { preflightInnerHtml, verdictOf } from '../features/preflight/html';
  * 最常见的翻车方式（"点了没反应"、"状态不对"、"数字不更新"）。
  *
  * 所以这里不重复测单个函数，而是把**用户的一次操作**从头走到尾：
- *   点击 → 忙语义 → 状态显示（吸顶/chip/HUD）→ 结果写回 → 卡片与清单更新。
+ *   点击 → 忙语义 → 状态显示（吸顶/chip 悬停）→ 结果写回 → 卡片与清单更新。
  */
 
 const read = (p: string): string => readFileSync(join('src', p), 'utf8');
