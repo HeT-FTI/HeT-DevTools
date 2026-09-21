@@ -49,7 +49,16 @@ import { pathExists, readText, writeText } from './utils/fs';
 import { fcppStyleStringify } from './core/metadataText';
 import { findPython, run, which, type ExecResult } from './utils/exec';
 import { docsOptions, graphvizMismatch } from './core/docsService';
-import { currentStatus, runWithBusy, type BusyHost } from './core/busy';
+import { currentStatus, runWithBusy, type BusyHost, type TaskRunContext } from './core/busy';
+import {
+  activeTasks,
+  busySnapshot,
+  cancelBusy,
+  reconcileBusy,
+  restoreBusy,
+  taskStore,
+} from './core/busy';
+import { writeText as writeTextTolerant } from './utils/fs';
 import { cleanupStaleInjection } from './core/injectedFiles';
 import { baseName } from './utils/paths';
 import { createBusyHost } from './features/busyHost';
@@ -138,7 +147,7 @@ let lastDocs: { ok: boolean; at: number } | null = null;
 /** V5-6: docs build in flight (chip spinner + cockpit log drawer sync). */
 let docsRunning = false;
 /** P2: headless docs-run binding (set when the docs center opens) + output tail. */
-let docsRunImpl: (() => Promise<{ ok: boolean; message: string }>) | null = null;
+let docsRunImpl: ((ctx?: TaskRunContext) => Promise<{ ok: boolean; message: string }>) | null = null;
 let lastDocsOutput = '';
 /** V5-6: parsed coverage % from the located report (cached 30 s). */
 let coverageProbeCache: { at: number; found: boolean; line: number | null; func: number | null } | null = null;
@@ -416,6 +425,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // retryable tree; the real uninstall-clean is VS Code deleting globalStorage).
   void managedGc(context.globalStorageUri.fsPath);
 
+  // ── V2 §3.3 Recovery / Reconciler（B 块）────────────────────────────────
+  // 1) 恢复上次的任务快照：进程随宿主没了，所以 running/queued 一律记为已中止 ——
+  //    **绝不留一个"永久进行中"**（实测反馈：用户以为扩展死了）。
+  const tasksFile = join(context.globalStorageUri.fsPath, 'tasks.json');
+  try {
+    const raw = await readText(tasksFile).catch(() => '');
+    const snapshot = raw ? (JSON.parse(raw) as ReturnType<typeof busySnapshot>) : undefined;
+    const recovered = restoreBusy(snapshot);
+    if (recovered.length > 0) {
+      log(`[task] 上次未完成的任务已中止：${recovered.map((t) => `${t.label}(${t.state})`).join('、')}`);
+    }
+  } catch (err) {
+    log(`[task] 快照恢复失败（忽略，不影响启动）：${err instanceof Error ? err.message : String(err)}`);
+  }
+  // 2) 任何状态变化 → 落盘快照（避免重启后 UI 显示过期状态）
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
+  const persistTasks = (): void => {
+    if (persistTimer) {
+      return;
+    }
+    persistTimer = setTimeout(() => {
+      persistTimer = undefined;
+      void writeTextTolerant(tasksFile, `${JSON.stringify(busySnapshot(), null, 2)}\n`).catch(() => undefined);
+    }, 500);
+  };
+  const offTaskChange = taskStore().onChange(() => persistTasks());
+  context.subscriptions.push({ dispose: offTaskChange });
+  // 3) 对账器：每 15s 把"超 deadline / 心跳断了"的任务收敛成 timedOut（并写日志便于复盘）
+  const reconciler = setInterval(() => {
+    const changed = reconcileBusy();
+    for (const task of changed) {
+      log(`[task] ${task.label} → ${task.state}：${task.message ?? ''}`);
+    }
+    if (changed.length > 0) {
+      persistTasks();
+    }
+  }, 15_000);
+  context.subscriptions.push({ dispose: () => clearInterval(reconciler) });
+
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   context.subscriptions.push(statusItem);
   await refreshStatus();
@@ -459,6 +507,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('het.cockpit', () => openCockpitPanel(context)),
     vscode.commands.registerCommand('het.getCockpitState', () => getCockpitState()),
     vscode.commands.registerCommand('het.getChipState', () => lastChip),
+    // B 块：任务状态（集成测试/现场排查：在跑什么、最近成不成、能不能取消）
+    vscode.commands.registerCommand('het.getTasks', () => ({
+      active: activeTasks(),
+      recent: taskStore().list().slice(0, 10),
+    })),
+    // 取消：只有一个在跑就直接取消；多个则让用户选（**不做静默选择**）
+    vscode.commands.registerCommand('het.task.cancel', async () => {
+      const running = activeTasks();
+      if (running.length === 0) {
+        void vscode.window.showInformationMessage('当前没有正在执行的任务。');
+        return;
+      }
+      let target = running[0];
+      if (running.length > 1) {
+        const picked = await vscode.window.showQuickPick(
+          running.map((t) => ({ label: t.label, description: `${t.state}·${t.owner}`, id: t.id })),
+          { title: '取消哪个任务？' },
+        );
+        if (!picked) {
+          return;
+        }
+        target = running.find((t) => t.id === picked.id) ?? target;
+      }
+      const ok = cancelBusy(target.id, '用户取消');
+      log(`[task] 取消 ${target.label}：${ok ? '已发出取消信号' : '取消失败（可能已结束）'}`);
+      void vscode.window.showInformationMessage(
+        ok ? `已取消：${target.label}（子进程会被杀掉）` : `${target.label} 已经结束了，无需取消。`,
+      );
+    }),
     // A 块探针：当前页内 Slot + 丢弃消息数（集成测试用，也便于现场排查"消息没人接"）
     vscode.commands.registerCommand('het.getSlotState', () => ({
       open: currentDetailView() ?? null,
@@ -530,7 +607,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { ok: false, message: '文档中心未初始化：请先运行 het.docs 再调用 het.docsRun。' };
       }
       // §7 忙语义（F.32）：编译文档是分钟级动作（doxygen + sphinx）→ 统一 helper
-      const busy = await runWithBusy(busyHost(), 'docsBuild', '编译文档', () => impl());
+      const busy = await runWithBusy(busyHost(), 'docsBuild', '编译文档', (ctx) => impl(ctx));
       return busy.status === 'done' ? busy.out : { ok: false, message: busy.message };
     }),
     vscode.commands.registerCommand('het.getLastDocsOutput', () => lastDocsOutput.slice(-3000)),
@@ -1371,7 +1448,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     };
   };
 
-  const runDocs = async () => {
+  const runDocs = async (ctx?: TaskRunContext) => {
     const root = currentProject?.root;
     if (!root) {
       return { ok: false, message: '未检测到 fcpp 项目。' };
@@ -1541,6 +1618,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
           onStdout: stream,
           onStderr: stream,
           timeoutMs,
+          signal: ctx?.signal,
         }),
         deadlineOverrides(),
       );
@@ -4535,7 +4613,7 @@ async function planNativeCmake(pinnedCmake?: string, conanExe?: string): Promise
 }
 
 /** Run `conan create` in the project and stream everything to the output channel. */
-async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout: string; stderr: string }> {  // V5-1: managed semantics on a WSL2-ready Windows host → build INSIDE the
+async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise<{ ok: boolean; stdout: string; stderr: string }> {  // V5-1: managed semantics on a WSL2-ready Windows host → build INSIDE the
   // WSL2 managed lane (Linux-identical gcc/gcov semantics, isolated from the
   // distro's conda base / FEniCS envs via its own venv + CONAN_HOME + profile).
   const isWin = process.platform === 'win32';
@@ -4730,6 +4808,7 @@ async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout
             emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
           },
           timeoutMs,
+          signal: ctx?.signal,
           env: cmakePlan.env,
         },
       ),
@@ -4752,7 +4831,7 @@ async function buildProject(): Promise<void> {
     void vscode.window.showWarningMessage(L('notify.noProject'));
     return;
   }
-  await runWithBusy(busyHost(), 'build', '构建', () => buildProjectInner(), project.metadata.name ?? undefined);
+  await runWithBusy(busyHost(), 'build', '构建', (ctx) => buildProjectInner(ctx), project.metadata.name ?? undefined);
 }
 
 /**
@@ -4780,7 +4859,7 @@ function cleanupInjectedBeforeRun(root: string | undefined): void {
   }
 }
 
-async function buildProjectInner(): Promise<void> {
+async function buildProjectInner(ctx?: TaskRunContext): Promise<void> {
   const project = currentProject;
   if (!project || !project.metadata) {
     void vscode.window.showWarningMessage(L('notify.noProject'));
@@ -4788,6 +4867,7 @@ async function buildProjectInner(): Promise<void> {
   }
   buildDiagnostics.clear();
   cleanupInjectedBeforeRun(project.root);
+  const runOnce = (p: FcppProject): Promise<{ ok: boolean; stdout: string; stderr: string }> => runConanOnce(p, ctx);
 
   // T15 (E14): environment gate — fail fast with the contract card instead of
   // letting an unprepared lane die deep inside CMake/conan.
@@ -4805,7 +4885,7 @@ async function buildProjectInner(): Promise<void> {
 
   let result: { ok: boolean; stdout: string; stderr: string };
   try {
-    result = await runConanOnce(project);
+    result = await runOnce(project);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     lastBuildError = message;
@@ -4842,7 +4922,7 @@ async function buildProjectInner(): Promise<void> {
  * Test Explorer controller: runs conan create, maps diagnostics, records the
  * parsed summary and last output, and returns the raw result.
  */
-async function executeTestRun(): Promise<{ ok: boolean; stdout: string; stderr: string } | undefined> {
+async function executeTestRun(ctx?: TaskRunContext): Promise<{ ok: boolean; stdout: string; stderr: string } | undefined> {
   const project = currentProject;
   if (!project || !project.metadata) {
     void vscode.window.showWarningMessage(L('notify.noProject'));
@@ -4851,7 +4931,7 @@ async function executeTestRun(): Promise<{ ok: boolean; stdout: string; stderr: 
 
   let result: { ok: boolean; stdout: string; stderr: string };
   try {
-    result = await runConanOnce(project);
+    result = await runConanOnce(project, ctx);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     lastConanOutput = message;
@@ -4884,10 +4964,10 @@ async function runTests(): Promise<void> {
     void vscode.window.showWarningMessage(L('notify.noProject'));
     return;
   }
-  await runWithBusy(busyHost(), 'test', '构建并测试', () => runTestsInner(), project.metadata.name ?? undefined);
+  await runWithBusy(busyHost(), 'test', '构建并测试', (ctx) => runTestsInner(ctx), project.metadata.name ?? undefined);
 }
 
-async function runTestsInner(): Promise<void> {
+async function runTestsInner(ctx?: TaskRunContext): Promise<void> {
   const project = currentProject;
   if (!project || !project.metadata) {
     void vscode.window.showWarningMessage(L('notify.noProject'));
@@ -4895,7 +4975,7 @@ async function runTestsInner(): Promise<void> {
   }
 
   cleanupInjectedBeforeRun(project.root);
-  const result = await executeTestRun();
+  const result = await executeTestRun(ctx);
   if (!result) {
     return;
   }

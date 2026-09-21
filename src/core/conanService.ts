@@ -131,13 +131,14 @@ export async function runConanCreate(
   conanExe: string,
   cwd: string,
   options: ConanRunOptions = {},
-  execOptions: { onStdout?: (c: string) => void; onStderr?: (c: string) => void; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+  execOptions: { onStdout?: (c: string) => void; onStderr?: (c: string) => void; timeoutMs?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): Promise<BuildSummary> {
   let result: ExecResult;
   try {
     result = await run(conanExe, conanCreateArgs(options), {
       cwd,
       timeoutMs: execOptions.timeoutMs ?? 0,
+      signal: execOptions.signal,
       onStdout: execOptions.onStdout,
       onStderr: execOptions.onStderr,
       env: execOptions.env,

@@ -72,5 +72,6 @@
   "config.telemetryEnabled": "Opt-in anonymous telemetry (default OFF): counts activations and feature usage locally. No code, no personal data, nothing leaves your machine in this version.",
   "description": "A plain-language engineering cockpit for fcpp-based C/C++ libraries: build, test, dependencies, docs, quality gates, release and board benchmarks — all one click.",
   "displayName": "HeT DevTools",
-  "cmd.detailClose": "HeT DevTools: Close the detail view"
+  "cmd.detailClose": "HeT DevTools: Close the detail view",
+  "cmd.taskCancel": "HeT DevTools: Cancel the running task"
 }
