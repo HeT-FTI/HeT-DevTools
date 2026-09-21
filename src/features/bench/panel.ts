@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { BenchField, BenchPlatform, BenchCase } from '../../core/benchmark';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface BenchState {
   projectName: string;
@@ -33,7 +33,7 @@ RESULT|vec_sub_f32_1k|523
 RESULT|mat_mul_8x8|1201
 BENCHMARK_END`;
 
-export function showBenchPanel(context: vscode.ExtensionContext, deps: BenchDeps): vscode.WebviewPanel {
+export function showBenchPanel(context: vscode.ExtensionContext, deps: BenchDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'bench', title: 'HeT DevTools — 上板测试' }, (panel) => {
 

@@ -10,7 +10,6 @@
   "cmd.commitRelease": "HeT DevTools: Commit assistant (release 📦)",
   "cmd.coverage": "HeT DevTools: Coverage view",
   "cmd.dashboard": "HeT DevTools: Open dashboard",
-  "cmd.detailPin": "HeT DevTools: Pin this detail view as its own tab (see two views side by side)",
   "cmd.docs": "HeT DevTools: Docs center",
   "cmd.docsRun": "HeT DevTools: Build the documentation (HTML output)",
   "cmd.envCheck": "HeT DevTools: Check development environment",
@@ -72,5 +71,6 @@
   "config.netProfile.global": "global — official sources only (same as an unconfigured install)",
   "config.telemetryEnabled": "Opt-in anonymous telemetry (default OFF): counts activations and feature usage locally. No code, no personal data, nothing leaves your machine in this version.",
   "description": "A plain-language engineering cockpit for fcpp-based C/C++ libraries: build, test, dependencies, docs, quality gates, release and board benchmarks — all one click.",
-  "displayName": "HeT DevTools"
+  "displayName": "HeT DevTools",
+  "cmd.detailClose": "HeT DevTools: Close the detail view"
 }

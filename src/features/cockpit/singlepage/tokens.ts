@@ -97,6 +97,12 @@ export const SINGLE_PAGE_LAYOUT_CSS = `
   .sec-body .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; }
   pre, code { overflow-wrap: anywhere; }
   .scrollbox { max-height: min(60vh, 420px); overflow: auto; }
+  /* A 块：页内 Slot（细节视图画在这里，页签恒为 1）。容器必须有界：max-height + overflow */
+  .slot { margin-top: var(--het-gap); border-top: 2px solid var(--het-border); }
+  .slot-head { display: flex; align-items: center; gap: 8px; padding: 8px 0 4px; }
+  .slot-title { font-weight: 600; }
+  .slot-spacer { flex: 1; }
+  .slot-body { max-height: min(70vh, 640px); overflow: auto; }
   @container (max-width: 460px) { .sec-body .kv { grid-template-columns: 1fr; } }
 `;
 

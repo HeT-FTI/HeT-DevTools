@@ -302,6 +302,10 @@
         "title": "%cmd.cockpit%"
       },
       {
+        "command": "het.detail.close",
+        "title": "%cmd.detailClose%"
+      },
+      {
         "command": "het.envCheck",
         "title": "%cmd.envCheck%"
       },
@@ -366,10 +370,6 @@
         "title": "%cmd.healthReport%"
       },
       {
-        "command": "het.detail.pin",
-        "title": "%cmd.detailPin%"
-      },
-      {
         "command": "het.hud.d1",
         "title": "HUD: 执行第 1 个动作",
         "category": "HeT DevTools"
@@ -426,13 +426,6 @@
           "command": "het.newProjectHere",
           "when": "explorerResourceIsFolder",
           "group": "het@1"
-        }
-      ],
-      "editor/title": [
-        {
-          "command": "het.detail.pin",
-          "when": "activeWebviewPanelId =~ /^het\\.detail\\./",
-          "group": "navigation@9"
         }
       ]
     },
@@ -515,6 +508,7 @@
     "test:c5": "npm run compile && node esbuild.mjs --c5 && node scripts/run-c5.mjs",
     "test:c6": "npm run compile && node esbuild.mjs --c6 && node scripts/run-c6.mjs",
     "test:c7": "npm run compile && node esbuild.mjs --c7 && node scripts/run-c7.mjs",
+    "test:c8": "npm run compile && node esbuild.mjs --c8 && node scripts/run-c8.mjs",
     "asset": "node scripts/build-template-asset.mjs",
     "test:real": "npm run compile && node esbuild.mjs --real && node scripts/run-real.mjs",
     "audit:pins": "npm run compile && npm run compile:tests && mocha out/test/auditPins.test.js"

@@ -14,6 +14,7 @@ import { pageShell, esc } from '../../ui';
 import { commandForAction } from './actions';
 import { SECTIONS } from './sections';
 import { singlePageCss } from './tokens';
+import { COCKPIT_RESERVED_TYPES } from '../../slots/protocol';
 import { stateIcon, type CardRow, type L1Item, type SectionId, type SinglePageModel } from './model';
 
 /**
@@ -150,6 +151,14 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
         </main>
       </div>
     </div>
+    <section class="slot" data-slot hidden>
+      <header class="slot-head">
+        <span class="slot-title" data-slot-title></span>
+        <span class="slot-spacer"></span>
+        <button class="secondary" data-action="slot-close">关闭</button>
+      </header>
+      <div class="slot-body" data-slot-body></div>
+    </section>
     <script>
       (function () {
         var opened = {};
@@ -172,6 +181,48 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
             items[i].setAttribute('aria-current', on ? 'true' : 'false');
           }
         }
+        // ── 页内 Slot（A 块）─────────────────────────────────────────────
+        // 互斥折叠：同时只有一个片段在页内。两个片段的全局函数会互相覆盖（各有同名
+        // helper），串台后表现为"点这个视图的按钮改的是那个视图"，所以这条约束不能松。
+        var baseSend = send;
+        var slotId = null;
+        // 驾驶舱自己用掉的消息类型（单一来源：slots/protocol.ts）。片段消息**不许**复用它们，
+        // 否则会被驾驶舱抢先处理；反过来说，驾驶舱自己的消息也不能被打上 __slot ——
+        // 否则卡片动作会被路由进某个视图，表现就是"点了没反应"。
+        var COCKPIT_TYPES = ${JSON.stringify(COCKPIT_RESERVED_TYPES)};
+        function slotSend(msg) {
+          var out = {};
+          for (var k in msg) { if (Object.prototype.hasOwnProperty.call(msg, k)) { out[k] = msg[k]; } }
+          if (slotId && COCKPIT_TYPES.indexOf(String(out.type)) < 0) { out.__slot = slotId; }
+          return baseSend(out);
+        }
+        function mountSlot(id, title, html) {
+          var box = document.querySelector('[data-slot]');
+          var body = document.querySelector('[data-slot-body]');
+          var label = document.querySelector('[data-slot-title]');
+          if (!box || !body) { return; }
+          slotId = id;
+          window.send = slotSend;   // 片段里的 send 会被打上 __slot 标记，宿主据此路由
+          if (label) { label.textContent = title || id; }
+          body.innerHTML = html || '';
+          // innerHTML **不执行** <script>：重建 script 节点才会跑（否则片段里的按钮全是死的）
+          var scripts = body.querySelectorAll('script');
+          for (var i = 0; i < scripts.length; i++) {
+            var s = document.createElement('script');
+            s.textContent = scripts[i].textContent;
+            scripts[i].parentNode.replaceChild(s, scripts[i]);
+          }
+          box.hidden = false;
+          box.scrollIntoView({ block: 'start' });
+        }
+        function unmountSlot() {
+          var box = document.querySelector('[data-slot]');
+          var body = document.querySelector('[data-slot-body]');
+          if (body) { body.innerHTML = ''; }
+          if (box) { box.hidden = true; }
+          slotId = null;
+          window.send = baseSend;
+        }
         document.addEventListener('click', function (ev) {
           var el = ev.target instanceof Element ? ev.target : null;
           if (!el) { return; }
@@ -192,6 +243,11 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
           if (!btn) { return; }
           var act = btn.getAttribute('data-action');
           var sec = btn.getAttribute('data-section');
+          if (act === 'slot-close') {
+            send({ type: 'slot:close' });
+            unmountSlot();
+            return;
+          }
           if (act === 'toggle' && sec) {
             var box = document.querySelector('[data-sec-body="' + sec + '"]');
             var node = document.getElementById('sec-' + sec);
@@ -239,6 +295,19 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
             var btns = document.querySelectorAll('.card button');
             for (var i = 0; i < btns.length; i++) { btns[i].disabled = !!m.on; }
             if (!m.on) { restore('.card button'); }
+            return;
+          }
+          if (m.type === 'slot:open') {
+            mountSlot(m.id, m.title, m.html);
+            return;
+          }
+          if (m.type === 'slot:close') {
+            unmountSlot();
+            return;
+          }
+          if (m.type === 'slot:post') {
+            // 把宿主的消息派发给片段自己的监听器（片段用 window.addEventListener('message') 接）
+            window.dispatchEvent(new MessageEvent('message', { data: m.payload }));
             return;
           }
           if (m.type === 'copilotResult') {

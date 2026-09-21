@@ -79,6 +79,7 @@ const INTERNAL_COMMANDS: Readonly<Record<string, string>> = {
   'het.hasProject': '集成测试判断是否已识别项目',
   'het.getCockpitState': '集成测试/安装后校验读驾驶舱状态',
   'het.getChipState': '集成测试读 chip 状态',
+  'het.getSlotState': 'c8 集成测试读"当前页内 Slot + 页签数"（页签恒为 1 的运行时证据）',
   'het.getConanRuntime': '安装后校验读 conan 运行时',
   'het.getEnvRows': '集成测试读环境行',
   'het.envGc': '托管环境 GC（README/CHANGELOG 里说明的内部动作）',

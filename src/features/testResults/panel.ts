@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { GTestRunSummary, GTestResult } from '../../core/gtestRunner';
 import { esc, pageShell } from '../ui';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface TestResultsPanelDeps {
   runTests: () => void;
@@ -12,7 +12,7 @@ export function showTestResultsPanel(
   context: vscode.ExtensionContext,
   summary: GTestRunSummary,
   deps: TestResultsPanelDeps,
-): vscode.WebviewPanel {
+): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'testResults', title: 'HeT DevTools — 测试结果' }, (panel) => {
     panel.webview.html = buildHtml(summary);

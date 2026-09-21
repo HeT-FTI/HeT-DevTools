@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { esc } from '../ui';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface DiscoveredModule {
   name: string;
@@ -36,7 +36,7 @@ export interface TestgenDeps {
   createModeB: (input: ModeBInput) => Promise<{ ok: boolean; message: string }>;
 }
 
-export function showTestgenPanel(context: vscode.ExtensionContext, deps: TestgenDeps): vscode.WebviewPanel {
+export function showTestgenPanel(context: vscode.ExtensionContext, deps: TestgenDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'testgen', title: 'HeT DevTools — 生成测试' }, (panel) => {
 

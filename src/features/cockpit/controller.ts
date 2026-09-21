@@ -355,8 +355,10 @@ export function emitCockpitEvent(event: CockpitEvent): void {
   }
 }
 
-export function openCockpitPanel(context: vscode.ExtensionContext, focus?: string): vscode.WebviewPanel {
-  const target = resolveFocus(focus);
+import { isSlotMessage, slotFieldOf } from '../slots/protocol';
+import { requestSlotClose, routeSlotMessage } from '../slots/registry';
+
+export function openCockpitPanel(context: vscode.ExtensionContext, focus?: string): vscode.WebviewPanel {  const target = resolveFocus(focus);
   if (cockpitPanel) {
     cockpitPanel.reveal(vscode.ViewColumn.One);
     if (target) {
@@ -391,6 +393,14 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
 
   cockpitPanel.webview.onDidReceiveMessage(
     (message: { type: string; section?: string; id?: string; expand?: boolean; command?: string; action?: string; copilot?: string }) => {
+      // A 块：页内 Slot 的消息先按 `__slot` 路由回对应视图（驾驶舱不拆开看内容）
+      if (isSlotMessage(message)) {
+        const slotId = slotFieldOf(message);
+        if (slotId) {
+          routeSlotMessage(slotId, message as Record<string, unknown>);
+        }
+        return;
+      }
       if (message.type === 'action' && message.action) {
         const cmd = commandForAction(message.action);
         if (cmd) {
@@ -406,6 +416,10 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
         openedSections.add(message.id as SectionId);
         postSinglePage();
         requestFacts();
+      } else if (message.type === 'slot:close') {
+        // 页内 Slot 的“关闭”按钮：请宿主真正撤销接线（否则旧处理器会继续收消息）。
+        // 这里用字面量而不是常量：跨层协议门禁靠“字面量 ↔ 字面量”对账（F.46）。
+        requestSlotClose();
       } else if (message.type === 'folded' && message.id) {
         const id = message.id as SectionId;
         const cur = new Set(foldedSections ?? readFolded());
@@ -425,4 +439,14 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
   });
 
   return cockpitPanel;
+}
+
+/** 往驾驶舱发一条消息（Slot 宿主用；驾驶舱没开时返 false，不抛）。 */
+export function postToCockpit(message: unknown): Thenable<boolean> {
+  return cockpitPanel ? cockpitPanel.webview.postMessage(message) : Promise.resolve(false);
+}
+
+/** 驾驶舱的 webview 句柄（Slot 宿主需要 `asWebviewUri` 等能力时用）。 */
+export function cockpitWebview(): vscode.Webview | undefined {
+  return cockpitPanel?.webview;
 }

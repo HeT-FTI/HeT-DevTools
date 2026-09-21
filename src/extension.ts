@@ -23,7 +23,7 @@ import { QualityRow, QualityRunResult, showQualityPanel } from './features/quali
 import { CommitRequest, CommitState, showCommitPanel } from './features/commit/panel';
 import { ReleaseState, showReleasePanel } from './features/release/panel';
 import { PreflightState, PreflightItem, showPreflightPanel } from './features/preflight/panel';
-import { pinCurrentDetail } from './features/detail/host';
+import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './features/slots/host';
 import { openCockpitPanel, emitCockpitEvent, getCockpitState, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
@@ -459,6 +459,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('het.cockpit', () => openCockpitPanel(context)),
     vscode.commands.registerCommand('het.getCockpitState', () => getCockpitState()),
     vscode.commands.registerCommand('het.getChipState', () => lastChip),
+    // A 块探针：当前页内 Slot + 丢弃消息数（集成测试用，也便于现场排查"消息没人接"）
+    vscode.commands.registerCommand('het.getSlotState', () => ({
+      open: currentDetailView() ?? null,
+      dropped: slotHostDiagnostics().droppedCount,
+      tabs: vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => String((t.input as { viewType?: string } | undefined)?.viewType ?? '').startsWith('het.')).length,
+    })),
     vscode.commands.registerCommand('het.getConanRuntime', async () => ensureConanRuntime()),
     vscode.commands.registerCommand('het.getEnvRows', async () => ensureToolDiscovery()),
     vscode.commands.registerCommand('het.getHostCapabilities', async (force?: boolean) => getHostCapabilities(!!force)),
@@ -621,8 +627,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }),
     ),
     // §D 逃生门：想把当前细节视图固定成独立页签（并排看两个视图）时用
-    vscode.commands.registerCommand('het.detail.pin', () => pinCurrentDetail()),
-    vscode.commands.registerCommand('het.getBuildOk', () => lastBuildOk ?? null),
+    vscode.commands.registerCommand('het.detail.close', () => closeCurrentDetail()),    vscode.commands.registerCommand('het.getBuildOk', () => lastBuildOk ?? null),
     vscode.commands.registerCommand('het.getLastBuildError', () => lastBuildError),
     vscode.commands.registerCommand('het.getTestSummary', () =>
       lastTestSummary
