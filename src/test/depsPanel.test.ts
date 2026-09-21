@@ -102,10 +102,12 @@ describe('§F.42 依赖管理器重做（搜索 × 版本联动 × 域 → 双�
     assert.strictEqual(groups.find((g) => g.bucket === 'common')!.rows.length, 0);
   });
 
-  it('页面：搜索框带 datalist、版本下拉、桶下拉、索引快照可解析', () => {
+  it('页面：包名走有界选择器、版本/桶用下拉、索引快照可解析', () => {
     const html = depsPageHtml({ views: [view()], issues: [] });
-    assert.ok(html.includes('list="dep-list"'), '包名要能搜索（原生 datalist）');
-    assert.ok(html.includes('<datalist id="dep-list">'), '要有候选列表');
+    assert.ok(html.includes('data-picker-id="dep"'), '包名要用有界选择器（可滚动/有计数/键盘可用）');
+    assert.ok(html.includes('id="dep-total"'), '候选要有命中计数');
+    assert.ok(html.includes('id="dep-list"'), '要有候选列表容器');
+    assert.ok(!/<datalist/u.test(html), '原生 datalist 已禁用（规模一大就没滚动条/计数/键盘）');
     assert.ok(html.includes('<select id="ver"'), '版本用下拉');
     assert.ok(html.includes('<select id="bucket"'), '域用下拉');
     assert.ok(html.includes('id="ver-custom"'), '索引过时时要能自定义版本');
@@ -128,8 +130,9 @@ describe('§F.42 依赖管理器重做（搜索 × 版本联动 × 域 → 双�
         `data-action="${a}" 没有处理分支 —— 点了就是没反应`,
       );
     }
-    // 输入事件也要有分支（版本联动靠它）
-    assert.ok(html.includes("el.id === 'q'") && html.includes("el.id === 'ver'"));
+    // 输入事件也要有分支（版本联动靠它；包名筛选由 picker 接管）
+    assert.ok(html.includes("el.id === 'ver'"), '版本下拉的 change 联动要接住');
+    assert.ok(html.includes('window.onPickerSelect'), '选择器选中要回调页面做联动');
   });
 
   it('刷新走局部替换（只首帧整页），并在 #note 回显', () => {
