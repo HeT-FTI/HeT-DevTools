@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { BenchField, BenchPlatform, BenchCase } from '../../core/benchmark';
+import { showDetailPanel } from '../detail/host';
 
 export interface BenchState {
   projectName: string;
@@ -33,40 +34,36 @@ RESULT|mat_mul_8x8|1201
 BENCHMARK_END`;
 
 export function showBenchPanel(context: vscode.ExtensionContext, deps: BenchDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.bench',
-    'HeT DevTools — 上板测试',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'bench', title: 'HeT DevTools — 上板测试' }, (panel) => {
 
-  const render = async (resultHtml = ''): Promise<void> => {
-    const state = await deps.getState();
-    panel.webview.html = buildHtml(state, resultHtml);
-  };
+    const render = async (resultHtml = ''): Promise<void> => {
+      const state = await deps.getState();
+      panel.webview.html = buildHtml(state, resultHtml);
+    };
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string; values?: Record<string, string>; text?: string }) => {
-    if (message.type === 'refresh') {
-      await render();
-    } else if (message.type === 'saveConfig' && message.values) {
-      const r = await deps.saveConfig(message.values);
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'buildNoFlash') {
-      const r = await deps.buildNoFlash();
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'parseSim' && typeof message.text === 'string') {
-      const r = deps.parseSim(message.text);
-      await render(buildResultHtml(r));
-    } else if (message.type === 'openConfig') {
-      await deps.openConfig();
-    }
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string; values?: Record<string, string>; text?: string }) => {
+      if (message.type === 'refresh') {
+        await render();
+      } else if (message.type === 'saveConfig' && message.values) {
+        const r = await deps.saveConfig(message.values);
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'buildNoFlash') {
+        const r = await deps.buildNoFlash();
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'parseSim' && typeof message.text === 'string') {
+        const r = deps.parseSim(message.text);
+        await render(buildResultHtml(r));
+      } else if (message.type === 'openConfig') {
+        await deps.openConfig();
+      }
+    });
+
+    void render().catch((e) => console.error('[het] bench render failed', e));
+    return sub;
   });
-
-  void render().catch((e) => console.error('[het] bench render failed', e));
-  return panel;
 }
 
 function buildFieldHtml(f: BenchField, value: string): string {
@@ -126,7 +123,6 @@ function buildHtml(s: BenchState, resultHtml: string): string {
     </div>
     <script>
       (function () {
-        const vscode = acquireVsCodeApi();
         const collect = () => {
           const out = {};
           document.querySelectorAll('input[data-key]').forEach((i) => { out[i.getAttribute('data-key')] = i.value; });
@@ -135,12 +131,13 @@ function buildHtml(s: BenchState, resultHtml: string): string {
         document.querySelectorAll('button[data-action]').forEach((b) =>
           b.addEventListener('click', () => {
             const act = b.getAttribute('data-action');
-            if (act === 'saveConfig') { vscode.postMessage({ type: 'saveConfig', values: collect() }); }
-            else if (act === 'parseSim') { vscode.postMessage({ type: 'parseSim', text: document.getElementById('sim').value }); }
-            else { vscode.postMessage({ type: act }); }
+            if (act === 'saveConfig') { send({ type: 'saveConfig', values: collect() }); }
+            else if (act === 'parseSim') { send({ type: 'parseSim', text: document.getElementById('sim').value }); }
+            else { send({ type: act }); }
           }));
       })();
     </script>
     `,
   );
 }
+

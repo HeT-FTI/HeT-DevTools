@@ -1,0 +1,485 @@
+name: env-fresh · windows
+
+# T23 裸机验证 · Windows —— 模拟「全新 Windows 机器装 VS Code + HeT DevTools 后直接构建」。
+#
+# 为什么按平台拆成三个 workflow（而不是一个矩阵）：
+#   一个平台 = 一个失败面。日志更短、重跑更便宜、红了不必翻别的平台。
+#     linux   → env-fresh-linux.yml
+#     windows → 本文件（env-fresh-windows.yml）
+#     macos   → env-fresh-macos.yml
+#
+# 日志结构固定为：SCENARIO → GATE → SETUP → MAIN（断言链）→ ASSERT → EVIDENCE。
+#
+# 诚实缺口（写在这里以免误读绿灯）：
+#   Windows 的**托管车道 = WSL2**。GitHub 托管 runner 没有嵌套虚拟化，`wsl --install` 起不来，
+#   所以「车道真的能自举」这一段无法在托管 runner 上验证 → 由本地 DoD 脚本
+#   `scripts/run-lane-dod.mjs`（真机，需本地 Windows）覆盖。
+#   因此本 workflow 覆盖的是：① system（MSVC 兼容模式）能构建；② 自建私有发行版的
+#   （注意：`scenario=all` 只跑轻量版；完整 DoD 用 `-f scenario=wsl-import-full`，它会在
+#    自建发行版里真的跑 conan create + GTest + 覆盖率 + docs —— 工作区在 /mnt/<drive>(9p)，
+#    比 ext4 慢，故该作业超时设为 120 分钟。GitHub 托管作业上限是 6 小时，120 分钟留足余量。）
+#   **计划/代价 → 真实 import 尝试 → 0 侵入 → 撤销**（`windows-wsl-import`）；③ 无车道时
+#   managed 必须「拒绝 + 给可执行指引」，且一键切换 system 后能构建成功。
+#
+# 承诺下限（T27）—— 只在这里维护：engines.vscode = @types/vscode = 这里的钉住版。
+# 金丝雀作业在 env-fresh · linux 里，它显式把这两个值清空（它要跑最新版）。
+env:
+  VSCODE_VERSION: "1.134.0"
+  HET_REAL_EXPECT_VSCODE: "1.134.0"
+
+# 手动触发：
+#   gh workflow run env-fresh-windows --ref main
+#   gh workflow run env-fresh-windows --ref main -f scenario=blocked
+#   gh workflow run env-fresh-windows --ref main -f scenario=wsl-import
+#   gh workflow run env-fresh-windows --ref main -f scenario=wsl-import-full   # 含完整 DoD（较慢）
+#   gh run watch $(gh run list --workflow=env-fresh-windows -L1 --json databaseId -q '.[0].databaseId')
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 要跑哪个场景
+        type: choice
+        default: all
+        options:
+          - all
+          - system
+          - wsl-import
+          - wsl-import-full
+          - blocked
+
+jobs:
+  windows-system:
+    name: windows · 本机工具链（system + MSVC）
+    # 未填 scenario（空字符串）也必须跑 —— 否则手动派发会“静默什么都不跑”。
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'system' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        shell: pwsh
+        run: |
+          Write-Host "::group::SCENARIO — fresh windows · system toolchain (MSVC)"
+          @'
+          模拟场景：Windows 用户显式选择「本机工具链（兼容模式）」——metadata.toolchain="system"。
+
+          本作业要证明：
+            1) Windows 上 system 语义可用：宿主 conan（pip venv）+ MSVC + 宿主 CMake 能完成 `conan create` + GTest；
+            2) 夹具自动关覆盖率（MSVC 无 --coverage），不会在 CMake configure 失败；
+            3) system 语义不依赖车道可用性（Provider 决策在 Windows 上仍是能力优先的
+               win-wsl2 / win-wsl2-pending / win-wsl-required 之一，但构建走原生分支）；
+            4) 构建后 $env:USERPROFILE\.het-fti 仍然不存在（system 不建车道）；
+            5) 宿主**已备齐**文档前置（doxygen/graphviz + sphinx/numpy）时，文档也能跑通
+               —— 即 system 模式是"完整可用"的，前提是宿主像一台正常的开发机。
+
+          未备齐时的正确行为是"符合常规认知的可执行提示"（winget/choco/pip 命令 + 改回
+          managed）—— 该契约由 src/test/docsHints.test.ts 单测锁定；本作业的 SETUP
+          会先把宿主备齐（与 linux-system 对称）。
+
+          第一次跑约 15–25 分钟（@vscode/test-electron 要下 VS Code）。
+          '@ | Write-Host
+          Write-Host "::endgroup::"
+
+      - name: "GATE: 宿主必须是裸机（无车道）"
+        shell: pwsh
+        run: |
+          Write-Host "检查项：$env:USERPROFILE\.het-fti 必须不存在。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::error::unexpected pre-existing lane"; exit 1 }
+          Write-Host "✔ no ~/.het-fti on the runner"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+        shell: pwsh
+        run: |
+          Write-Host "::group::PREFLIGHT (diagnostics)"
+          Write-Host "os:      $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          Write-Host "python:  $(if (Get-Command python -ErrorAction SilentlyContinue) { python --version 2>&1 } else { 'none' })"
+          Write-Host "conan:   $(if (Get-Command conan -ErrorAction SilentlyContinue) { conan --version } else { 'none' })"
+          Write-Host "cmake:   $(if (Get-Command cmake -ErrorAction SilentlyContinue) { (cmake --version | Select-Object -First 1) } else { 'none' })"
+          Write-Host "cl.exe:  $(if (Get-Command cl.exe -ErrorAction SilentlyContinue) { 'on PATH' } else { 'VS installed (via vcvars/conan detect)' })"
+          Write-Host "wsl:     $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'wsl.exe present' } else { 'absent' })"
+          Write-Host "::endgroup::"
+
+      - name: "SETUP: 宿主工具链（pip conan + 文档前置）"
+        shell: pwsh
+        run: |
+          Write-Host "system 模式 = 用宿主自己的工具，扩展**不会**替你安装（设计契约）。"
+          Write-Host "本作业模拟「Windows 原生开发环境齐备」的机器：conan + MSVC + CMake + doxygen/graphviz + sphinx/numpy。"
+          Write-Host "· 宿主 conan（pip venv）"
+          python -m venv "$env:RUNNER_TEMP\het-conan"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet "conan>=2,<3"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile detect --force
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\het-conan\Scripts"
+          Write-Host "· 文档前置（python 侧）：sphinx/numpy 装进同一个 venv（原生 docs 用它挑 python）"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet 'sphinx>=8,<9' sphinx-intl 'sphinx-rtd-theme>=2,<4' 'numpy>=1.26'
+          Write-Host "· 文档前置（系统工具）：choco doxygen + graphviz（这两者不在 windows runner 默认镜像里）"
+          if (-not (Get-Command doxygen -ErrorAction SilentlyContinue)) {
+            choco install -y doxygen.install --no-progress
+          }
+          if (-not (Get-Command dot -ErrorAction SilentlyContinue)) {
+            choco install -y graphviz --no-progress
+          }
+          Write-Host "✔ host conan: $(& "$env:RUNNER_TEMP\het-conan\Scripts\conan" --version)"
+          Write-Host "✔ doxygen: $(doxygen --version 2>&1) | dot: $((dot -V 2>&1))"
+          Write-Host "✔ venv numpy/sphinx: $(& "$env:RUNNER_TEMP\het-conan\Scripts\python" -c 'import numpy, sphinx; print(numpy.__version__)')"
+          Write-Host "（宿主未备齐时应当是「符合常规认知的可执行提示」：winget/choco 命令 —— 由 src/test/docsHints.test.ts 单测锁定）"
+
+      - name: "MAIN: 真实扩展宿主 —— MSVC + 宿主 conan 构建"
+        env:
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
+          HET_REAL_TOOLCHAIN: system
+          HET_REAL_FRESH: "1"
+        run: |
+          Write-Host "::group::MAIN — npm run test:real (system/MSVC)"
+          Write-Host "断言链：provider ∈ win-* → 构建走 system 分支 → conan create(MSVC) → GTest 全绿"
+          Write-Host "        → 文档：宿主已备齐 ⇒ 必须成功并留下 doxygen+sphinx 产物"
+          npm run test:real
+          Write-Host "::endgroup::"
+
+      - name: "ASSERT: system 语义不得创建车道"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "检查项：构建后 ~/.het-fti 必须仍然不存在。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::error::system toolchain must not provision a lane"; exit 1 }
+          Write-Host "✔ no lane created (system semantics respected)"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
+          if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
+          Write-Host "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-windows-system
+          path: out/real-evidence.txt
+          if-no-files-found: ignore
+
+  windows-wsl-import:
+    name: windows · 自建私有发行版（计划 → 导入 → 启动 → 车道自举 → 幂等；full 再跑完整 DoD）
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'wsl-import' || inputs.scenario == 'wsl-import-full' }}
+    runs-on: windows-latest
+    # 轻量版约 7–10 分钟；`wsl-import-full` 还要在自建发行版里跑 conan create + 覆盖率 + docs
+    # （工作区是 /mnt/<drive> 的 9p，比 ext4 慢）→ 统一放宽到 120 分钟（GitHub 上限 6 小时）。
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        shell: pwsh
+        run: |
+          Write-Host "::group::SCENARIO — fresh windows · self-provisioned distro (wsl-import)"
+          @'
+          模拟场景：全新 Windows 机器 —— WSL2 功能在，但**一个发行版都没有**，用户点「一键准备环境」。
+
+          本作业要证明（每条都要有机器证据）：
+            1) 计划层必须提议「自建私有发行版」，并把代价（下载体积/磁盘）与「不会改动你已有的
+               发行版」说清；
+            2) 钉死 sha256 的**官方 rootfs 真下载 + 真校验**（缓存按 sha 命名、复用不重下）；
+            3) **0 侵入**：跑前/跑后的 `wsl -l -q` 对比 —— 已有发行版一个都不能消失；测试夹具会先
+               用一个**同名但没有我们双标记**的发行版占住基础名，产品必须换名（-2），
+               既不覆盖它、也不给它写任何标记；
+            4) 真实执行会走到 `wsl --import` → bootstrap；失败必须给 A（`wsl --install -d Ubuntu-24.04`）
+               / C（`toolchain: system`）两条路，且**绝不**把工程偷偷切成 system；
+            5) `het.envRemove` 只撤销我们自己的那个，诱饵原样保留。
+
+          实测（run 34941657212 · job 104291505313）：发行版能导入**且能启动** —— 车道在 runner 上
+          真的自举完成（`branch=imported`，车道内 gcc-13“与 CI 同基线”），`het.envRemove` 又能干净撤销。
+          所以本作业现在覆盖的是「计划/代价 → 官方 rootfs 真下载真校验 → 导入 → 启动 → 车道自举 →
+          幂等复用 → 撤销」这条链；只剩「同名冲突必须换名」需要夹具的同名诱饵先成立才验得到
+          （诱饵注册不上时，日志会直说“退化为单测 + 机器 DoD”，不假装验过）。
+          '@ | Write-Host
+          Write-Host "::endgroup::"
+
+      - name: "GATE: 裸机 + 跑前发行版快照"
+        shell: pwsh
+        env:
+          # wsl.exe 默认 UTF-16LE 输出 → 日志里出现 NUL；WSL_UTF8=1 让它吐 UTF-8。
+          WSL_UTF8: "1"
+        run: |
+          # 诊断/快照步骤一律不让作业失败：`wsl -l -q` 在"无发行版"时会向 stderr 输出并返回非 0。
+          $ErrorActionPreference = 'Continue'
+          Write-Host "检查项：宿主必须是裸机（没有我们留下的车道目录）。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::error::unexpected lane at ~/.het-fti"; exit 1 }
+          if (Test-Path "$env:LOCALAPPDATA\het-fti") { Write-Host "::error::unexpected lane at %LOCALAPPDATA%\het-fti"; exit 1 }
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $list = @()
+          try {
+            $list = @(& wsl -l -q 2>$null | ForEach-Object { $_.Trim() -replace '\(default\)\s*$','' } | Where-Object { $_ })
+          } catch { $list = @() }
+          $list | Set-Content -Path out/wsl-before.txt -Encoding utf8
+          Write-Host "✔ 跑前发行版：$(if ($list.Count) { $list -join ', ' } else { '(无)' })"
+          if ($list.Count -gt 0) { Write-Host "::warning::runner 上已有发行版：本作业的 0 侵入断言会一并覆盖它们" }
+
+      - name: "PREFLIGHT: runner 的 WSL 能力（诊断用，永不让作业失败）"
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "::group::PREFLIGHT (diagnostics)"
+          Write-Host "wsl.exe: $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'present' } else { 'absent' })"
+          Write-Host "wsl --status:"
+          & wsl --status 2>&1 | Out-String | Write-Host
+          Write-Host "wsl -l -v:"
+          & wsl -l -v 2>&1 | Out-String | Write-Host
+          Write-Host "虚拟化（VirtualizationFirmwareEnabled）：$((Get-CimInstance Win32_Processor | Select-Object -First 1).VirtualizationFirmwareEnabled)"
+          # 2026-09-15 实测（run 34946185911）：作业跑到 46 分钟时**宿主 runner 与服务器失联**
+          # （注解原文：The hosted runner lost communication with the server），
+          # MAIN 之后的步骤全部 null、日志 blob 都没上传 —— 这种死法不留任何证据。
+          # 下面这几行是"下次死之前先把现场留下"：磁盘 / 内存 / 杀软 / 已有 vhdx 占用。
+          # 本作业要在 C: 上落一个 GB 级 ext4.vhdx，`wsl --import` 是重 I/O 步骤。
+          Write-Host "--- 资源现场（供失联时对照）---"
+          Get-PSDrive C,D -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host ("磁盘 {0}: 已用 {1:N1} GB / 剩余 {2:N1} GB" -f $_.Name, ($_.Used / 1GB), ($_.Free / 1GB)) }
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host ("内存：剩余 {0:N1} GB / 共 {1:N1} GB" -f ($os.FreePhysicalMemory / 1MB), ($os.TotalVisibleMemorySize / 1MB))
+          Write-Host "Defender 排除项：$((Get-MpPreference -ErrorAction SilentlyContinue).ExclusionPath -join '; ')（空 = 无排除，大包导入会明显变慢）"
+          $wslRoots = @("$env:LOCALAPPDATA\het-fti", "$env:RUNNER_TEMP")
+          foreach ($r in $wslRoots) {
+            if (Test-Path $r) {
+              $sz = (Get-ChildItem $r -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+              Write-Host ("{0} 现有占用：{1:N2} GB" -f $r, ($sz / 1GB))
+            }
+          }
+          Write-Host '（`wsl -l -v` / `--status` 在无发行版时向 stderr 输出并返回非 0 —— 那是预期，不是故障）'
+          Write-Host "::endgroup::"
+          exit 0
+
+      - name: "MAIN: 真实扩展宿主 —— 计划/代价 → 真实执行 → 0 侵入"
+        env:
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
+          HET_REAL_WSL_IMPORT: "1"
+          HET_REAL_WSL_IMPORT_FULL: ${{ inputs.scenario == 'wsl-import-full' && '1' || '' }}
+          # DoD 跑不建诱饵：诱饵本身要真 import 一份 rootfs（解压成 GB 级 vhdx），
+          # 实测同一份文件在不同 runner 上 1–20+ 分钟不等（2026-09-15 run 34946185911
+          # 就卡在这 20 分钟里）；换名/所有权判据由轻量场景取证（run 34944081639：
+          # 诱饵占名 → 我们用了 -2），这里把时间预算让给 DoD。
+          HET_REAL_SKIP_DECOY: ${{ inputs.scenario == 'wsl-import-full' && '1' || '' }}
+          HET_REAL_FRESH: "1"
+        run: |
+          Write-Host "::group::MAIN — npm run test:real (self-provisioned distro)"
+          Write-Host "断言链：计划提议 + 代价 → rootfs 真校验 → import → 启动 → 车道自举 → 计划翻到 win-wsl2（不 force）→ 车道级幂等（删 profile 必须自愈）→ 0 侵入 → 撤销"
+          if ('${{ inputs.scenario }}' -eq 'wsl-import-full') {
+            Write-Host "         + 完整 DoD：车道内 conan create + GTest + 覆盖率（lcov/genhtml）+ 文档（doxygen/sphinx）"
+            Write-Host "         （本场景不建诱饵 → 换名判据由 -f scenario=wsl-import 覆盖）"
+          }
+          npm run test:real
+          Write-Host "::endgroup::"
+
+      - name: "ASSERT: 0 侵入 + 绝不静默降级 + 证据"
+        if: always()
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function Get-Distros {
+            try { return @(& wsl -l -q 2>$null | ForEach-Object { $_.Trim() -replace '\(default\)\s*$','' } | Where-Object { $_ }) } catch { return @() }
+          }
+          $before = @()
+          if (Test-Path out/wsl-before.txt) { $before = @(Get-Content out/wsl-before.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+          $now = Get-Distros
+          Write-Host "跑前：$(if ($before.Count) { $before -join ', ' } else { '(无)' })"
+          Write-Host "跑后：$(if ($now.Count) { $now -join ', ' } else { '(无)' })"
+          $lost = @($before | Where-Object { $now -notcontains $_ })
+          if ($lost.Count -gt 0) { Write-Host "::error::I2 被破坏：跑前就存在的发行版消失了：$($lost -join ', ')"; exit 1 }
+          $added = @($now | Where-Object { $before -notcontains $_ })
+          $foreign = @($added | Where-Object { $_ -notmatch '^het-lane-\d{4}(-\d+)?$' })
+          if ($foreign.Count -gt 0) { Write-Host "::error::出现了不属于我们的发行版：$($foreign -join ', ')"; exit 1 }
+          Write-Host "✔ 0 侵入：跑前 $($before.Count) 个都还在；新增 $($added.Count) 个全部是我们命名的$(if ($added.Count) { "（$($added -join ', ')）" })"
+          $metaPath = 'out/real-proj/metadata.json'
+          if (Test-Path $metaPath) {
+            $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
+            # managed = 模板里**没有** toolchain 这个键（默认语义）；“被切成 system”才是违约。
+            if ($meta.toolchain -eq 'system') { Write-Host "::error::失败路径不得改 toolchain（实际 $($meta.toolchain)）—— 绝不静默降级"; exit 1 }
+            Write-Host "✔ 自建没成时，工程仍然不是 system（没有偷偷降级）"
+          } else {
+            Write-Host "::warning::找不到 $metaPath（MAIN 可能在准备夹具前就失败了）"
+          }
+          if (-not (Test-Path out/real-evidence.txt)) { Write-Host "::error::缺少证据文件 out/real-evidence.txt"; exit 1 }
+          $ev = Get-Content out/real-evidence.txt -Raw
+          if ($ev -notmatch 'intrude=none') { Write-Host "::error::证据必须写明 intrude=none（0 侵入）"; exit 1 }
+          if ($ev -notmatch 'planCost=ok') { Write-Host "::error::证据必须写明 planCost=ok（计划与代价已验）"; exit 1 }
+          if ($ev -match 'mode=wsl-import-full') {
+            if ($ev -notmatch 'buildOk=true') { Write-Host "::error::full 模式必须带上 buildOk=true"; exit 1 }
+            if ($ev -notmatch 'docs=ok') { Write-Host "::error::full 模式必须带上 docs=ok"; exit 1 }
+            # 必须带**数字**：`coverage=?` 也算"有这一段"，但那是"没读出来"，不是证据。
+            # 2026-09-15 实测：这条曾写成 `-notmatch 'coverage='`，于是 `coverage=?` 蒙混过关。
+            if ($ev -notmatch 'coverage=\d') { Write-Host "::error::full 模式必须带上覆盖率实测值（数字，而不是 '?'）"; exit 1 }
+            if ($ev -notmatch 'idempotent=self-heal-verified') { Write-Host "::error::full 模式必须验到车道级幂等（自愈）"; exit 1 }
+            Write-Host "✔ full：机械 DoD 的事实齐了"
+          }
+          Write-Host "✔ 证据：$($ev.Trim())"
+
+      - name: "CLEANUP: 只删除本次新建、且由我们命名的发行版"
+        if: always()
+        shell: pwsh
+        env:
+          WSL_UTF8: "1"
+        run: |
+          # 安全判据：只删"跑前快照里没有的" + "匹配我们命名模式"的 —— 用户的发行版永远不在集合里。
+          $ErrorActionPreference = 'Continue'
+          function Get-Distros {
+            try { return @(& wsl -l -q 2>$null | ForEach-Object { $_.Trim() -replace '\(default\)\s*$','' } | Where-Object { $_ }) } catch { return @() }
+          }
+          $before = @()
+          if (Test-Path out/wsl-before.txt) { $before = @(Get-Content out/wsl-before.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+          $created = @((Get-Distros) | Where-Object { $before -notcontains $_ })
+          $ours = @($created | Where-Object { $_ -match '^het-lane-\d{4}(-\d+)?$' })
+          Write-Host "本次新建：$(if ($created.Count) { $created -join ', ' } else { '(无)' }) ｜ 其中我们命名的：$(if ($ours.Count) { $ours -join ', ' } else { '(无)' })"
+          foreach ($name in $ours) {
+            & wsl --terminate $name 2>$null | Out-Null
+            & wsl --unregister $name 2>$null | Out-Null
+            Write-Host "removed: $name"
+          }
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\het-fti" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:USERPROFILE\.het-fti" -ErrorAction SilentlyContinue
+          Write-Host "✔ 清理完成（未触碰跑前存在的任何发行版）"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
+          if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
+          Write-Host "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-windows-wsl-import
+          path: out/real-evidence.txt
+          if-no-files-found: ignore
+
+  windows-blocked:
+    name: windows · 车道不可用 → 拒绝 + 一键切换（绝不静默降级）
+    if: ${{ !inputs.scenario || inputs.scenario == 'all' || inputs.scenario == 'blocked' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        shell: pwsh
+        run: |
+          Write-Host "::group::SCENARIO — fresh windows · lane blocked → explicit switch"
+          @'
+          模拟场景：全新 Windows 机器（没有可用的 WSL2 发行版），用户直接点「构建并测试」。
+
+          本作业要证明「车道优先 + 绝不静默降级」这条设计契约：
+            1) managed 项目在无 WSL2 车道时**拒绝构建**，并给出可执行指引；
+            2) 指引必须包含 WSL2 要求 + toolchain=system 的旁路，
+               且**不得**再出现旧行为里的“找不到 conan”误导文案；
+            3) 用户在弹窗/卡片里选择「改用本机工具链（兼容模式）」→ metadata 落盘 toolchain=system
+               （并在非 Linux 平台自动关闭 activate_code_coverage）；
+            4) 切换后重新构建必须成功（宿主 conan + MSVC）。
+
+          已知边界：若本 runner 恰好有可用的 WSL2 发行版，第 1) 步会“合法地”失败
+          （说明 managed 真的跑起来了）→ 此时 harness 会直接报 `PREMISE CHANGED`
+          并指明要改成“lane available”场景，而不是给一句含糊的断言失败。
+          （当前托管 runner 实测：`wsl.exe` 存在但**零发行版** —— 见 PREFLIGHT。）
+          '@ | Write-Host
+          Write-Host "::endgroup::"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用，永不让作业失败）"
+        shell: pwsh
+        env:
+          # wsl.exe 默认 UTF-16LE 输出 → 日志里出现 NUL，连 grep 都当二进制文件。
+          WSL_UTF8: "1"
+        run: |
+          # 纯诊断：任何一项失败都不得让作业失败。两个已踩过的坑：
+          #  ① `wsl -l -v` 在"无发行版"时向 stderr 输出并返回非 0，而 runner 的
+          #     $ErrorActionPreference='Stop'（PS7.4 起 native stderr ⇒ 终止性错误）
+          #     会让整步失败 —— run 34924749669 就是这么死的；
+          #  ② 末尾 `exit 0` 保证不残留 `$LASTEXITCODE`（GH 的 pwsh wrapper 会用它当退出码）。
+          $ErrorActionPreference = 'Continue'
+          Write-Host "::group::PREFLIGHT (diagnostics)"
+          Write-Host "wsl.exe: $(if (Get-Command wsl -ErrorAction SilentlyContinue) { 'present' } else { 'absent' })"
+          if (Get-Command wsl -ErrorAction SilentlyContinue) {
+            $distros = (& wsl -l -v 2>&1 | Out-String)
+            Write-Host "wsl -l -v (exit=$LASTEXITCODE):"
+            Write-Host ($distros -replace "`0", "").Trim()
+          }
+          Write-Host "conan:   $(if (Get-Command conan -ErrorAction SilentlyContinue) { conan --version } else { 'none (本作业随后安装)' })"
+          Write-Host "::endgroup::"
+          exit 0
+
+      - name: "SETUP: 宿主 conan（pip venv）—— 供“切换后重构建”使用"
+        shell: pwsh
+        run: |
+          Write-Host "安装宿主 conan：切到 system 后需要它来完成第二次构建。"
+          python -m venv "$env:RUNNER_TEMP\het-conan"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\pip" install --quiet "conan>=2,<3"
+          & "$env:RUNNER_TEMP\het-conan\Scripts\conan" profile detect --force
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\het-conan\Scripts"
+          Write-Host "✔ host conan ready"
+
+      - name: "MAIN: 真实扩展宿主 —— 被拒绝 → 一键切换 → 重构建"
+        env:
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
+          HET_REAL_FRESH: "1"
+          HET_REAL_EXPECT: blocked
+          HET_REAL_EXPECT_AFTER_SWITCH: ok
+        run: |
+          Write-Host "::group::MAIN — npm run test:real (blocked → useSystemToolchain → rebuild)"
+          @'
+          断言链：
+            het.test（managed）
+              → 构建结果 != true
+              → het.getLastBuildError 含 “WSL2” 与 “toolchain”
+              → 不含 “找不到 conan”
+            het.useSystemToolchain
+              → metadata.json 的 toolchain == "system"
+              → （Windows）activate_code_coverage == false
+            het.test（system）
+              → 构建结果 == true
+          '@ | Write-Host
+          npm run test:real
+          Write-Host "::endgroup::"
+
+      - name: "ASSERT: 切换后仍不得创建车道"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "检查项：构建后 ~/.het-fti 必须不存在（切换 system 也没有建车道）。"
+          if (Test-Path "$env:USERPROFILE\.het-fti") { Write-Host "::warning::lane exists unexpectedly"; exit 1 }
+          Write-Host "✔ no lane created"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "::group::EVIDENCE (out/real-evidence.txt)"
+          if (Test-Path out/real-evidence.txt) { Get-Content out/real-evidence.txt } else { Write-Host "(没有证据文件)" }
+          Write-Host "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-windows-blocked
+          path: out/real-evidence.txt
+          if-no-files-found: ignore

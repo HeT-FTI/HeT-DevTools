@@ -12,14 +12,14 @@ BENCH_CONFIG_FILENAME = "bench_config.json"
 
 
 def _inherit_root_metadata():
-    """继承根目录的 metadata.json"""
+    """Inherit metadata.json from the repo root"""
     root = Path(__file__).parent.parent
     with open(root / "metadata.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def _load_bench_config():
-    """加载 bench 配置"""
+    """Load the bench config"""
     bench_cfg = Path(__file__).parent / BENCH_CONFIG_FILENAME
     if bench_cfg.exists():
         with open(bench_cfg, "r", encoding="utf-8") as f:
@@ -38,7 +38,7 @@ class BenchMcuConan(ConanFile):
     license = _metadata.get("license", "Apache-2.0")
 
     settings = "os", "compiler", "build_type", "arch"
-    # 不需要 shared/fPIC，MCU benchmark 永远是静态裸机
+    # no shared/fPIC: the MCU benchmark is always static baremetal
     options = {
         "target_mcu": ["cortex-m0", "cortex-m3", "cortex-m4", "cortex-m7",
                         "cortex-m23", "cortex-m33", "cortex-m55", "ANY"],
@@ -81,7 +81,7 @@ class BenchMcuConan(ConanFile):
             self._bench_cfg = {}
 
     def requirements(self):
-        """依赖目标库本身"""
+        """Depend on the library under test"""
         lib_name = self._metadata.get("name", "lib")
         lib_ver  = self._metadata.get("version", "1.0.0")
         self.requires(f"{lib_name}/{lib_ver}")
@@ -91,7 +91,7 @@ class BenchMcuConan(ConanFile):
         self.build_requires(f"cmake/{cmake_ver}")
 
     def _resolve_fpu(self):
-        """根据 MCU 自动推断 FPU 类型"""
+        """Infer the FPU type from the MCU"""
         if str(self.options.fpu) != "auto":
             return str(self.options.fpu)
 
@@ -107,7 +107,7 @@ class BenchMcuConan(ConanFile):
         return fpu_map.get(str(self.options.target_mcu), "none")
 
     def _get_cpu_flags(self):
-        """生成 MCU 相关的编译选项"""
+        """Build the MCU-specific compile options"""
         mcu = str(self.options.target_mcu)
         float_abi = str(self.options.float_abi)
         fpu = self._resolve_fpu()
@@ -127,18 +127,18 @@ class BenchMcuConan(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
 
-        # 裸机交叉编译：跳过 CMake 链接测试
+        # baremetal cross-compile: skip the CMake link test
         if self.settings.os == "baremetal":
             tc.variables["CMAKE_TRY_COMPILE_TARGET_TYPE"] = "STATIC_LIBRARY"
 
-        # 传递 MCU 编译选项给 CMake
+        # pass the MCU compile options to CMake
         cpu_flags = self._get_cpu_flags()
         tc.variables["MCU_C_FLAGS"] = ";".join(cpu_flags)
         tc.variables["ALGO_FLASH_ORIGIN"] = str(self.options.algo_flash_origin)
         tc.variables["ALGO_RAM_ORIGIN"] = str(self.options.algo_ram_origin)
         tc.variables["TARGET_MCU"] = str(self.options.target_mcu)
 
-        # 库名
+        # library name
         lib_name = self._metadata.get("name", "lib")
         tc.variables["LIB_NAME"] = lib_name
 
@@ -153,7 +153,7 @@ class BenchMcuConan(ConanFile):
         cmake.build()
 
     def package(self):
-        """将生成的 bin/elf/map 拷贝到 package"""
+        """Copy the generated bin/elf/map into the package"""
         copy(self, "*.bin", src=self.build_folder, dst=os.path.join(self.package_folder, "bin"))
         copy(self, "*.elf", src=self.build_folder, dst=os.path.join(self.package_folder, "bin"))
         copy(self, "*.map", src=self.build_folder, dst=os.path.join(self.package_folder, "bin"))
@@ -161,10 +161,10 @@ class BenchMcuConan(ConanFile):
     def package_info(self):
         self.cpp_info.bindirs = ["bin"]
 
-    # ─────────────── 烧录与测试 ───────────────
+    # ----------------------------- flash and run -----------------------------
 
     def _get_flash_tool_cmd(self, bin_path, flash_addr):
-        """根据配置生成烧录命令"""
+        """Build the flash command from the config"""
         tool = self._bench_cfg.get("flash_tool", "openocd")
 
         if tool == "openocd":
@@ -195,7 +195,7 @@ class BenchMcuConan(ConanFile):
         return []
 
     def test(self):
-        """烧录 + 执行 + 采集结果"""
+        """Flash, run and collect the results"""
         bin_path = os.path.join(self.build_folder, "benchmark.bin")
         flash_addr = str(self.options.algo_flash_origin)
 
@@ -203,7 +203,7 @@ class BenchMcuConan(ConanFile):
             self.output.error(f"Binary not found: {bin_path}")
             return
 
-        # Step 1: 烧录
+        # Step 1: flash
         flash_cmd = self._get_flash_tool_cmd(bin_path, flash_addr)
         if flash_cmd:
             self.output.info(f"Flashing: {' '.join(flash_cmd)}")
@@ -213,7 +213,7 @@ class BenchMcuConan(ConanFile):
                 return
             self.output.info("Flash OK")
 
-        # Step 2: 串口采集
+        # Step 2: collect over serial
         serial_port = self._bench_cfg.get("serial_port", "/dev/ttyUSB0")
         baud = self._bench_cfg.get("serial_baud", 115200)
         timeout = self._bench_cfg.get("timeout", 30)
@@ -221,10 +221,10 @@ class BenchMcuConan(ConanFile):
         self.output.info(f"Collecting from {serial_port} @ {baud}")
         results = self._collect_serial_results(serial_port, baud, timeout)
 
-        # Step 3: 输出报告
+        # Step 3: print the report
         self._print_report(results)
 
-        # Step 4: 保存结果
+        # Step 4: save the results
         mcu = str(self.options.target_mcu)
         export_dir = os.path.join(self.recipe_folder, "results")
         os.makedirs(export_dir, exist_ok=True)
@@ -234,7 +234,7 @@ class BenchMcuConan(ConanFile):
         self.output.info(f"Results saved to {result_file}")
 
     def _collect_serial_results(self, port, baud, timeout):
-        """通过串口采集 benchmark 结果"""
+        """Collect benchmark results over serial"""
         results = []
         try:
             import serial
@@ -249,7 +249,7 @@ class BenchMcuConan(ConanFile):
             ser = serial.Serial(port, baud, timeout=1)
             time.sleep(0.5)
 
-            # 发送 RUN 命令
+            # send the RUN command
             ser.write(b"RUN\r\n")
             ser.flush()
 
@@ -284,7 +284,7 @@ class BenchMcuConan(ConanFile):
         return results
 
     def _print_report(self, results):
-        """打印性能报告"""
+        """Print the performance report"""
         mcu = str(self.options.target_mcu)
         self.output.info("")
         self.output.info(f"{'=' * 50}")

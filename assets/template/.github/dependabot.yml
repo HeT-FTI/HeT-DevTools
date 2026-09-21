@@ -1,14 +1,8 @@
 # Dependabot configuration — fresh template repos stay quiet by default.
 #
-# `open-pull-requests-limit: 0` disables version-update pull requests (and
-# therefore dependabot branches) in every repo instantiated from this template.
-# Security updates are NOT subject to this limit and still raise PRs for
-# vulnerable dependencies. To opt into version updates in your own repo, raise
-# the limit or delete this file.
+# open-pull-requests-limit: 0 disables version-update PRs (security updates still arrive)
 #
-# NOTE: this also applies to the template repo itself. Template maintainers
-# bump pins manually (or temporarily raise the limit) and validate upgrades
-# centrally before shipping them to downstream repos.
+# This applies to the template repo too: maintainers bump pins by hand
 version: 2
 updates:
   # One grouped PR for all GitHub Actions bumps, on the 3rd of each month.

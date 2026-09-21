@@ -13,6 +13,14 @@ esbuild.mjs
 .gitignore
 .git/**
 workspace/**
+# 归档的旧 UI（dead scope，只在 .gitignore 里）—— vsce **不读 .gitignore**，
+# 不显式排除就会把 `_archive/**` 打进 vsix（实测 `vsce ls` 里真有 6 个文件）。
+_archive/**
+# 半成品/归档快照后缀：任何路径下的 *.bak 都不该进包
+**/*.bak
 **/tsconfig*.json
 **/node_modules/**
 *.vsix
+# python 缓存产物：本地跑过就出现，不该进包（与 assets 归一同一类问题）
+**/__pycache__/**
+**/*.pyc

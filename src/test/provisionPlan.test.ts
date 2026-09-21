@@ -20,6 +20,7 @@ function caps(over: Partial<HostCapabilities>): HostCapabilities {
     msvcAvailable: false,
     linuxApt: false,
     linuxAptSudo: false,
+    linuxVenv: false,
     ...over,
   };
 }
@@ -39,8 +40,8 @@ describe('V4-1 provisionPlan', () => {
     assert.ok(providerLabel('linux-native').includes('Linux'));
   });
 
-  it('linux + apt + passwordless root → linux-managed (derived-first, isolated)', () => {
-    const d = resolveProviderDecision(caps({ platform: 'linux', linuxApt: true, linuxAptSudo: true }));
+  it('linux + apt + python3 → linux-managed (derived-first, isolated)', () => {
+    const d = resolveProviderDecision(caps({ platform: 'linux', linuxApt: true, linuxVenv: true, linuxAptSudo: true }));
     assert.strictEqual(d.provider, 'linux-managed');
     assert.strictEqual(d.coverage, 'full');
     assert.ok(d.reason.includes('派生'), 'reason names derived-first');
@@ -49,12 +50,46 @@ describe('V4-1 provisionPlan', () => {
     assert.ok(providerLabel('linux-managed').includes('隔离'), 'label shows isolation');
   });
 
-  it('linux + apt but no passwordless root → linux-native with honest guidance', () => {
-    const d = resolveProviderDecision(caps({ platform: 'linux', linuxApt: true, linuxAptSudo: false }));
-    assert.strictEqual(d.provider, 'linux-native');
+  it('ADR-8: linux + apt + python3，但无免密 root → 仍是 linux-managed（root 只影响自愈）', () => {
+    const d = resolveProviderDecision(caps({ platform: 'linux', linuxApt: true, linuxVenv: true, linuxAptSudo: false }));
+    assert.strictEqual(d.provider, 'linux-managed', '车道本体是用户级的，不该因 sudo 要密码而放弃隔离');
     assert.strictEqual(d.coverage, 'full');
-    assert.ok(d.note.includes('免密 root'), 'note guides enabling passwordless root');
+    assert.strictEqual(d.selfHeal?.ok, false, '如实标注自愈不可用');
+    assert.ok(d.selfHeal?.reason?.includes('免密 root'), 'reason 说明为什么不能自动装包');
+    assert.ok(d.note.includes('免密 root'), 'note 也把原因带给卡片/契约');
     assert.ok(!d.note.includes('MinGW'), 'no degradation channel wording');
+
+    const full = resolveProviderDecision(caps({ platform: 'linux', linuxApt: true, linuxVenv: true, linuxAptSudo: true }));
+    assert.strictEqual(full.selfHeal?.ok, true);
+    assert.strictEqual(full.selfHeal?.reason, undefined, '能自愈就不该有负面原因');
+  });
+
+  it('ADR-8: linux 缺 python3 → linux-native（建不出用户级车道）', () => {
+    const d = resolveProviderDecision(caps({ platform: 'linux', linuxApt: true, linuxVenv: false, linuxAptSudo: true }));
+    assert.strictEqual(d.provider, 'linux-native');
+    assert.ok(d.note.includes('python3'), 'note 说明缺的是 python3');
+  });
+
+  it('ADR-8 偏好：het.env.mode=native 显式回本机；managed 不因无 root 而漂移', () => {
+    const capsBoth = caps({ platform: 'linux', linuxApt: true, linuxVenv: true, linuxAptSudo: true });
+    assert.strictEqual(resolveProviderDecision(capsBoth, { mode: 'native' }).provider, 'linux-native');
+    assert.strictEqual(resolveProviderDecision(capsBoth, { mode: 'managed' }).provider, 'linux-managed');
+    assert.strictEqual(resolveProviderDecision(capsBoth, { mode: 'auto' }).provider, 'linux-managed', 'auto 倾向隔离');
+
+    // native 偏好不能把"建不出车道"变成 managed；managed 偏好也不能凭空造出车道
+    const noVenv = caps({ platform: 'linux', linuxApt: true, linuxVenv: false });
+    assert.strictEqual(resolveProviderDecision(noVenv, { mode: 'managed' }).provider, 'linux-native');
+    assert.strictEqual(resolveProviderDecision(noVenv, { mode: 'native' }).provider, 'linux-native');
+  });
+
+  it('ADR-8：Windows 判定不读 linuxApt/linuxVenv（跨平台不串味）', () => {
+    const win = caps({ platform: 'win32', wslAvailable: true, wslDefaultReady: true, linuxApt: true, linuxVenv: true });
+    assert.strictEqual(resolveProviderDecision(win).provider, 'win-wsl2');
+    const winNoApt = caps({ platform: 'win32', wslAvailable: true, wslDefaultReady: true, linuxApt: false, linuxVenv: false });
+    assert.strictEqual(resolveProviderDecision(winNoApt).provider, 'win-wsl2', 'Linux 能力字段不该影响 Windows');
+    const winPref = caps({ platform: 'win32', wslAvailable: true, wslDefaultReady: true });
+    assert.strictEqual(resolveProviderDecision(winPref, { mode: 'managed' }).provider, 'win-wsl2');
+    assert.strictEqual(resolveProviderDecision(winPref, { mode: 'native' }).provider, 'win-wsl2', 'Linux 偏好不该改 Windows 判定');
   });
 
   it('linux + no apt → linux-native (managed lane needs Debian/Ubuntu apt)', () => {
@@ -129,7 +164,16 @@ describe('V4-1 provisionPlan', () => {
     assert.strictEqual(mk('{"platform":"win32"}').provider, 'win-wsl-required');
     assert.strictEqual(mk('{"platform":"win32","wslAvailable":true,"wslDefaultReady":true}').provider, 'win-wsl2');
     assert.strictEqual(mk('{"platform":"linux"}').provider, 'linux-native');
-    assert.strictEqual(mk('{"platform":"linux","linuxApt":true,"linuxAptSudo":true}').provider, 'linux-managed');
+    // ADR-8：车道判定看"能不能建用户级车道"（apt + python3），不看 sudo 时间戳；
+    // 无免密 root 只把自愈能力标成不可用。
+    assert.strictEqual(
+      mk('{"platform":"linux","linuxApt":true,"linuxVenv":true,"linuxAptSudo":true}').provider,
+      'linux-managed',
+    );
+    const noSudo = mk('{"platform":"linux","linuxApt":true,"linuxVenv":true,"linuxAptSudo":false}');
+    assert.strictEqual(noSudo.provider, 'linux-managed', '常规 sudo 要密码的机器也能拿到隔离车道');
+    assert.strictEqual(noSudo.selfHeal?.ok, false);
+    assert.strictEqual(mk('{"platform":"linux","linuxApt":true,"linuxAptSudo":true}').provider, 'linux-native', '缺 python3 → 建不出用户级车道');
     assert.strictEqual(mk('{"platform":"darwin"}').provider, 'macos-native');
   });
 });

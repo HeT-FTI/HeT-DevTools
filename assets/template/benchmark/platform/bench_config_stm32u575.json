@@ -1,0 +1,26 @@
+{
+  "_comment": "Board configuration. Edit this file for your specific hardware target. This is the ONLY file you need to change per board.",
+
+  "target_mcu":        "cortex-m33",
+  "float_abi":         "hard",
+  "fpu":               "fpv5-sp-d16",
+  "algo_flash_origin": "0x08030000",
+  "algo_ram_origin":   "0x20002000",
+  "compiler_version":          "14",
+  "toolchain_package_version": "11.3.rel1",
+  "extra_cflags":              [],
+
+  "flash_tool":        "openocd",
+  "openocd_interface": "interface/stlink.cfg",
+  "openocd_target":    "target/stm32u5x.cfg",
+
+  "jlink_device":      "",
+  "jlink_speed":       "4000",
+
+  "pyocd_target":      "",
+  "pyocd_probe":       "",
+
+  "serial_port":       "/dev/ttyUSB0",
+  "serial_baud":       115200,
+  "timeout":           30
+}

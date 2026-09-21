@@ -1,9 +1,6 @@
 name: Release
 
-# Release runs standalone (on push to main) so it can hold scoped write
-# permissions and create tags/releases. It is gated by metadata.json:
-#   workflow_triggers.release == true  -> semantic-release may bump a version.
-# It is also still callable via workflow_call for manual/backward-compat use.
+# Standalone on push to main so it can hold write permissions; gated by workflow_triggers.release
 
 on:
   workflow_call:
@@ -21,17 +18,27 @@ jobs:
       should_release: ${{ steps.gate.outputs.should_release }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check metadata release trigger
         id: gate
+        env:
+          # Same predicate the controller uses: any commit in a push may carry the release gitmoji.
+          # Non-push events (workflow_call) have no commits, so the release stays off for them.
+          COMMIT_MESSAGES: ${{ github.event_name == 'push' && join(github.event.commits.*.message, '\n') || '' }}
         run: |
           python3 - <<'PY'
-          import json
+          import json, os
           meta = json.load(open('metadata.json'))
           enabled = bool(meta.get('workflow_triggers', {}).get('release', False))
+          requested = '(:package:): ' in os.environ.get('COMMIT_MESSAGES', '')
+          should = enabled and requested
           print(f'::notice::workflow_triggers.release = {enabled}')
-          print(f'should_release={str(enabled).lower()}')
+          print(f'::notice::release gitmoji present = {requested}')
+          print(f'::notice::should_release = {should}')
+          # a switch grants permission, the gitmoji states intent: both are required
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'should_release={str(should).lower()}\n')
           PY
 
   auto-release:
@@ -46,20 +53,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 'lts/*'
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund --ignore-scripts
 
-      # Snapshot metadata.json before semantic-release touches it, so we can
-      # prove afterwards that ONLY the version field changed (format preserved).
+      # snapshot metadata.json first, so we can prove only the version field changed
       - name: Snapshot metadata.json
         run: cp metadata.json /tmp/metadata.pre.json
 
@@ -67,17 +73,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # NOTE 1: `--extends` resolves relative paths as ESM modules and fails
-          # with MODULE_NOT_FOUND for .json — always use the absolute path.
-          # NOTE 2: repositoryUrl is derived from runner env, no hardcoded URL.
+          # `--extends` needs an absolute path for .json; repositoryUrl comes from the runner env
           ./node_modules/.bin/semantic-release -r "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --extends "$GITHUB_WORKSPACE/.github/misc/.releaserc.json" 2>&1 | tee /tmp/semantic-release.log
           test "${PIPESTATUS[0]}" -eq 0
 
       - name: Verify metadata.json format preserved
         run: |
-          # Closed-loop guard: the release may change ONLY the version field.
-          # Any other byte-level change (reformatting by a future tool, etc.)
-          # fails the job loudly instead of silently drifting the file format.
+          # the release may change ONLY the version field, else the job fails loudly
           python3 - <<'PY'
           import json, difflib, sys
           pre = open('/tmp/metadata.pre.json', encoding='utf-8').read()
@@ -100,5 +102,11 @@ jobs:
         if: always()
         run: |
           echo "::notice::visible tags: $(git tag -l | tr '\n' ' ')"
-          echo "::notice::commits since v1.0.0: $(git rev-list v1.0.0..HEAD --count 2>/dev/null || echo N/A)"
+          # the tag preceding this release, whatever it happens to be: HEAD is the release commit
+          prev_tag="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          if [ -n "${prev_tag}" ]; then
+            echo "::notice::commits since ${prev_tag}: $(git rev-list "${prev_tag}..HEAD" --count)"
+          else
+            echo "::notice::no earlier release tag (first release, or nothing to release)"
+          fi
           tail -n 40 /tmp/semantic-release.log | sed 's/^/::notice::/'

@@ -38,8 +38,7 @@ struct BenchState {
 
 BenchState &bench_state(void)
 {
-	// Function-local static: replaces file-scope mutable globals to avoid
-	// cross-translation-unit state pollution.
+	// Function-local static avoids cross-translation-unit state pollution
 	static BenchState state = {};
 	return state;
 }

@@ -1,11 +1,17 @@
-cmake_minimum_required(VERSION 3.28)
+# Downstream contract (HeT DevTools): the CI baseline stays 3.28. Hosts with an
+# older CMake may explicitly lower the floor — the default path is unchanged:
+#   cmake -DHET_CMAKE_MIN=3.15 ..
+if(DEFINED HET_CMAKE_MIN)
+  cmake_minimum_required(VERSION ${HET_CMAKE_MIN})
+else()
+  cmake_minimum_required(VERSION 3.28)
+endif()
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 string(JSON PROJECT_NAME_VALUE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "name")
 string(JSON TARGET_NAMESPACE_VALUE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "target")
 string(JSON PROJECT_VERSION_VALUE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "version")
 string(JSON BUILD_CPPSTD ERROR_VARIABLE json_error GET "${METADATA_JSON}" "build_cppstd")
 string(JSON BUILD_CSTD ERROR_VARIABLE json_error GET "${METADATA_JSON}" "build_cstd")
-string(JSON ENABLE_COVERAGE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "activate_code_coverage")
 string(JSON IS_SHARED ERROR_VARIABLE json_error GET "${METADATA_JSON}" "is_shared")
 string(JSON IS_HEADER ERROR_VARIABLE json_error GET "${METADATA_JSON}" "is_header")
 string(JSON STD_MODULES ERROR_VARIABLE json_error GET "${METADATA_JSON}" "std_modules")
@@ -17,6 +23,14 @@ else()
     set(PROJECT_NAMESPACE "${LIB_NAME}")
 endif()
 project(${LIB_NAME} LANGUAGES C CXX)
+
+# Coverage is decided once per build and injected by the recipe; it must be read after
+# project(), which is when the Conan toolchain that carries it is processed. An instrumented
+# library cannot be linked by an uninstrumented consumer, so the two must never disagree.
+# A direct `cmake -S . -B build` has nobody to inject it, so metadata.json stays the default.
+if(NOT DEFINED ENABLE_COVERAGE)
+    string(JSON ENABLE_COVERAGE ERROR_VARIABLE json_error GET "${METADATA_JSON}" "activate_code_coverage")
+endif()
 
 
 function(parse_conan_deps INPUT_VAR OUTPUT_VAR)
@@ -206,7 +220,9 @@ else()  # general package
           set(LINK_FLAGS "--coverage")
       elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
           set(COVERAGE_FLAGS "-fprofile-instr-generate" "-fcoverage-mapping" "-O0" "-g")
-          set(LINK_FLAGS "")
+          # -fprofile-instr-generate is a driver flag: the LLVM profile runtime is
+          # only pulled in when the flag also appears on the link line.
+          set(LINK_FLAGS "-fprofile-instr-generate")
       else()
           message(FATAL_ERROR "Code coverage not support for compiler: ${CMAKE_CXX_COMPILER_ID}")
       endif()
@@ -215,7 +231,8 @@ else()  # general package
       target_compile_options(${LIB_NAME}_c PRIVATE ${COVERAGE_FLAGS})
       target_compile_options(${LIB_NAME}_cpp PRIVATE ${COVERAGE_FLAGS})
 
-      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+      # Applies to GNU (--coverage) and Clang (-fprofile-instr-generate) alike.
+      if(LINK_FLAGS)
           target_link_options(${LIB_NAME}_c PRIVATE ${LINK_FLAGS})
           target_link_options(${LIB_NAME}_cpp PRIVATE ${LINK_FLAGS})
       endif()

@@ -1,12 +1,11 @@
 name: Docs
 
-# This workflow can be triggered in two ways:
-# 1. Via workflow_call from ci-orchestrator.yml (recommended)
-# 2. Directly on push/pull_request (for backward compatibility)
+# Called by ci-orchestrator.yml, or run manually via workflow_dispatch.
 
 on:
   workflow_call:
     # No inputs needed - documentation build is self-contained
+  workflow_dispatch:
 
 env:
   CONAN_HOME: ~/.conan2
@@ -18,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -33,3 +32,14 @@ jobs:
       - name: Build documentation
         run: |
           python ./docs/build.py
+
+      - name: Assert the documentation was produced
+        shell: bash
+        run: |
+          status=0
+          for f in docs/doxygen/build/docs.html docs/sphinx/build/html/index.html; do
+            if [ -f "$f" ]; then echo "ok: $f"; else echo "::error::missing documentation artifact: $f"; status=1; fi
+          done
+          # DOT_PATH is empty by design, so `dot` must be resolvable from PATH
+          if command -v dot >/dev/null 2>&1; then echo "ok: $(dot -V 2>&1)"; else echo "::error::graphviz 'dot' is not on PATH"; status=1; fi
+          exit $status

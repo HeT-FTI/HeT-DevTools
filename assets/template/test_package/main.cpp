@@ -5,7 +5,6 @@
 #include <string>
 #include <fstream>
 #include "cpptest.hpp"
-#include "net.hpp"
 // import "hello.hpp"; // C++23 only
 
 
@@ -38,6 +37,7 @@ int main() {
     test_c_compiler();
     test_c_zlib();
     test_c_pcre();
+    test_c_generic();
 
     // CPP test
     test_hello();
@@ -53,15 +53,6 @@ int main() {
 
     const Color<int> red(255, 0, 0);
     red.print();
-
-    // train_with_random_data();
-
-    // int prediction = predict_random_sample();
-    int prediction = 3;  // skip net.cpp CI
-
-    std::cout << "prediction result for random sample: " << prediction << std::endl;
-    std::cout << "input structure: 28x28" << std::endl;
-    std::cout << "export structure: 10 (0-9 classes)" << std::endl;
 
     // print example text in resources folder
     print_example_text();

@@ -1,8 +1,12 @@
 name: Tests
 
-# This workflow can be triggered in two ways:
-# 1. Via workflow_call from ci-orchestrator.yml (recommended)
-# 2. Directly on push/pull_request (for backward compatibility)
+# Called by ci-orchestrator.yml.
+#
+# Scope: the whole test chain in one place -- unit + stress suites, coverage and artifact
+# archive -- because it is the expensive half. Two platforms run it in parallel, in the single
+# build type metadata.json declares. gcc/lcov and clang/llvm-cov instrument differently, so the
+# second leg checks the first leg's instrumentation; it is not a second copy of the same number.
+# Windows is excluded on purpose: no coverage backend exists for MSVC (see het-fix-ci).
 
 on:
   workflow_call:
@@ -21,21 +25,31 @@ on:
         required: false
         type: string
         default: 'false'
+      build_type:
+        description: 'Build type from metadata.json: this chain has one config, not a matrix'
+        required: false
+        type: string
+        default: 'Debug'
 
 env:
   CONAN_HOME: ~/.conan2
 
 jobs:
   auto-testing:
-    name: Auto Testing
-    runs-on: ubuntu-latest
+    name: Auto Testing (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # fail-fast off: a disagreement between the legs is only readable when both have reported
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -57,9 +71,15 @@ jobs:
           echo "CONAN_HOME=${{ env.CONAN_HOME }}" >> $GITHUB_ENV
           conan profile detect --force
 
-      - name: System dependencies
+      - name: System dependencies (Ubuntu)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
           sudo apt install -y libnsl-dev lcov
+
+      - name: System dependencies (macOS)
+        if: ${{ matrix.os == 'macos-latest' }}
+        # lcov/genhtml render the report on either leg; llvm-profdata/llvm-cov ship with the CLT
+        run: brew install lcov
 
       - name: Cache Conan packages
         uses: actions/cache@v5
@@ -71,7 +91,7 @@ jobs:
 
       - name: Build and test with Conan
         run: |
-          conan create . -pr:b=default -pr:h=default -s build_type=Debug --build=missing \
+          conan create . -pr:b=default -pr:h=default -s build_type=${{ inputs.build_type }} --build=missing \
           -c tools.system.package_manager:mode=install -c tools.system.package_manager:sudo=True
         timeout-minutes: 55
 
@@ -84,9 +104,9 @@ jobs:
         if: >-
           steps.read_metadata.outputs.trigger == 'true' &&
           steps.read_metadata.outputs.saving == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: TestResult-log-${{ env.timestamp }}
+          name: TestResult-log-${{ matrix.os }}-${{ env.timestamp }}
           path: test_package/test/export/TestResult.log
           if-no-files-found: warn
 
@@ -94,11 +114,51 @@ jobs:
         if: >-
           steps.read_metadata.outputs.trigger == 'true' &&
           steps.read_metadata.outputs.coverage == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: Coverage-report-${{ env.timestamp }}
+          name: Coverage-report-${{ matrix.os }}-${{ env.timestamp }}
           path: test_package/test/export/coverage/
           if-no-files-found: warn
+
+      - name: Assert the coverage report
+        if: ${{ inputs.activate_code_coverage == 'true' }}
+        # Assert on the artifact, after the upload, so a red gate still archives its evidence.
+        run: |
+          summary=test_package/test/export/coverage/coverage_summary.json
+          report=test_package/test/export/coverage/coverage_report/index.html
+          for f in "$summary" "$report"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::coverage artifact missing: $f"
+              exit 1
+            fi
+          done
+          # read the recipe's summary, not genhtml's HTML: the tracefile is upstream, the HTML is a template
+          lpct=$(python3 -c "import json;print(json.load(open('$summary'))['lines']['percent'])")
+          lhit=$(python3 -c "import json;print(json.load(open('$summary'))['lines']['hit'])")
+          lfound=$(python3 -c "import json;print(json.load(open('$summary'))['lines']['found'])")
+          fpct=$(python3 -c "import json;print(json.load(open('$summary'))['functions']['percent'])")
+          fhit=$(python3 -c "import json;print(json.load(open('$summary'))['functions']['hit'])")
+          ffound=$(python3 -c "import json;print(json.load(open('$summary'))['functions']['found'])")
+          # the gate stays on lines; functions are reported so a drop is visible, not yet a threshold
+          if ! python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$lpct"; then
+            echo "::error::line coverage is ${lpct}% (${lhit} of ${lfound} lines) -- expected greater than zero"
+            exit 1
+          fi
+          {
+            echo "### Coverage (${{ matrix.os }}, ${{ inputs.build_type }})"
+            echo
+            echo "| metric | hit | found | rate |"
+            echo "| --- | --- | --- | --- |"
+            echo "| lines | ${lhit} | ${lfound} | ${lpct}% |"
+            echo "| functions | ${fhit} | ${ffound} | ${fpct}% |"
+            echo
+            echo "| output | path |"
+            echo "| --- | --- |"
+            echo "| report | test_package/test/export/coverage/coverage_report/index.html |"
+            echo "| summary | test_package/test/export/coverage/coverage_summary.json |"
+            echo
+            echo "$(lcov --version) | $(genhtml --version)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean up test_package builds
         run: |
@@ -108,4 +168,79 @@ jobs:
         if: always()
         run: |
           conan remove "${{ steps.read_metadata.outputs.pkg_name }}/*" --confirm
+
+  # The two legs measure the library with different tools, so their rates are NOT comparable:
+  # llvm-cov reports the header/inline lines that gcov attributes to the caller. What must agree
+  # is the set of translation units that got instrumented -- a file missing from one report means
+  # one toolchain silently skipped it. The lcov leg is what gets published.
+  reconcile:
+    name: Reconcile coverage
+    needs: [auto-testing]
+    if: ${{ needs.auto-testing.result == 'success' && inputs.activate_code_coverage == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download every leg's coverage report
+        uses: actions/download-artifact@v7
+        with:
+          pattern: Coverage-report-*
+          path: legs
+
+      - name: Compare the legs and choose the canonical report
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re, sys
+
+          ARTIFACT = 'Coverage-report-'
+          TU_ROOTS = ('src/', 'api/')  # the translation units the library builds; headers are tool-specific
+
+          legs = {}
+          for path in sorted(pathlib.Path('legs').glob('*/coverage_summary.json')):
+              label = re.sub(r'-\d{4}-\d{2}-\d{2}T[\d_]+Z$', '', path.parent.name[len(ARTIFACT):])
+              legs[label] = {'data': json.loads(path.read_text(encoding='utf-8')), 'dir': str(path.parent)}
+
+          if len(legs) < 2:
+              print(f'::error::expected a coverage summary from every leg, found: {sorted(legs) or "none"}')
+              sys.exit(1)
+
+          labels = sorted(legs)
+          tus = lambda label: {f for f in legs[label]['data']['files'] if f.startswith(TU_ROOTS)}
+          base, base_tus = labels[0], tus(labels[0])
+          for other in labels[1:]:
+              if base_tus != tus(other):
+                  print(f'::error::{base} and {other} instrumented different translation units: '
+                        f'{base} only {sorted(base_tus - tus(other))}, {other} only {sorted(tus(other) - base_tus)}')
+                  sys.exit(1)
+          if not base_tus:
+              print(f'::warning::{base} reports no file under {TU_ROOTS}, so the unit check was vacuous')
+
+          report = ['### Coverage reconciled', '', '| leg | lines | functions | files |', '| --- | --- | --- | --- |']
+          for label in labels:
+              d = legs[label]['data']
+              report.append(f"| {label} | {d['lines']['percent']}% ({d['lines']['hit']}/{d['lines']['found']}) "
+                            f"| {d['functions']['percent']}% ({d['functions']['hit']}/{d['functions']['found']}) "
+                            f"| {len(d['files'])} |")
+          report += ['', f"Translation units agree on every leg: `{'`, `'.join(sorted(base_tus))}`", ''
+                     'Everything else each leg reports:', '']
+          for label in labels:
+              report.append(f"- `{label}`: {sorted(set(legs[label]['data']['files']) - base_tus) or '_(nothing)_'}")
+          report += ['', 'The rates are shown, not asserted: gcov and llvm-cov count inline and header lines differently.']
+
+          text = '\n'.join(report) + '\n'
+          print(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as fh:
+              fh.write(text)
+
+          canonical = next((l for l in labels if 'ubuntu' in l), base)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as fh:
+              fh.write(f"CANONICAL_LEG_DIR={legs[canonical]['dir']}\n")
+          print(f'canonical report (lcov): {canonical} -> {legs[canonical]["dir"]}')
+          PY
+
+      - name: Publish the canonical coverage report
+        uses: actions/upload-artifact@v6
+        with:
+          name: Coverage-report
+          path: ${{ env.CANONICAL_LEG_DIR }}
+          if-no-files-found: error
 

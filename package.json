@@ -2,15 +2,15 @@
   "name": "het-devtools",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "het-fti",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CubicZebra/HeT-DevTools.git"
+    "url": "https://github.com/HeT-FTI/HeT-DevTools.git"
   },
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.134.0"
   },
   "categories": [
     "Programming Languages",
@@ -68,13 +68,102 @@
           },
           "default": {},
           "description": "Manual toolchain overrides: het.tools.<name> = absolute executable path (e.g. conan, cmake, doxygen, graphviz/dot, clang-format). Set from the dashboard '环境与工具链' block."
+        },
+        "het.env.pipIndexUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envPipIndexUrl%"
+        },
+        "het.env.conanRemote": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envConanRemote%"
+        },
+        "het.env.wslRootfsUrl": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envWslRootfsUrl%"
+        },
+        "het.env.wslRootfsSha256": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envWslRootfsSha256%"
+        },
+        "het.copilot.renameSession": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.copilotRenameSession%"
+        },
+        "het.env.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "managed",
+            "native"
+          ],
+          "enumDescriptions": [
+            "%config.envMode.auto%",
+            "%config.envMode.managed%",
+            "%config.envMode.native%"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.envMode%"
+        },
+        "het.env.keepRootfsCache": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.envKeepRootfsCache%"
+        },
+        "het.env.httpProxy": {
+          "type": "string",
+          "default": "",
+          "description": "%config.envHttpProxy%"
+        },
+        "het.net.profile": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "cn",
+            "global",
+            "custom"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "%config.netProfile.auto%",
+            "%config.netProfile.cn%",
+            "%config.netProfile.global%",
+            "%config.netProfile.custom%"
+          ],
+          "markdownDescription": "%config.netProfile%"
+        },
+        "het.net.mirrors": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "%config.netMirrors%"
+        },
+        "het.net.dockerMirror": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%config.netDockerMirror%"
+        },
+        "het.hud.fontSize": {
+          "type": "number",
+          "default": 13.5,
+          "minimum": 10,
+          "maximum": 20,
+          "description": "%config.hudFontSize%"
+        },
+        "het.hud.disableHud": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.hudDisableHud%"
         }
       }
     },
     "commands": [
       {
         "command": "het.hello",
-        "title": "HeT DevTools: Hello (smoke test)"
+        "title": "%cmd.hello%"
       },
       {
         "command": "het.refresh",
@@ -137,6 +226,10 @@
         "title": "%cmd.docs%"
       },
       {
+        "command": "het.docsRun",
+        "title": "%cmd.docsRun%"
+      },
+      {
         "command": "het.quality",
         "title": "%cmd.quality%"
       },
@@ -151,6 +244,10 @@
       {
         "command": "het.release",
         "title": "%cmd.release%"
+      },
+      {
+        "command": "het.pushHint",
+        "title": "%cmd.pushHint%"
       },
       {
         "command": "het.preflight",
@@ -185,6 +282,10 @@
         "title": "%cmd.chipOverview%"
       },
       {
+        "command": "het.templateFetch",
+        "title": "%cmd.templateFetch%"
+      },
+      {
         "command": "het.templateUpdate",
         "title": "%cmd.templateUpdate%"
       },
@@ -195,6 +296,50 @@
       {
         "command": "het.envCheck",
         "title": "%cmd.envCheck%"
+      },
+      {
+        "command": "het.envDump",
+        "title": "%cmd.envDump%"
+      },
+      {
+        "command": "het.envStatus",
+        "title": "%cmd.envStatus%"
+      },
+      {
+        "command": "het.envPrepare",
+        "title": "%cmd.envPrepare%"
+      },
+      {
+        "command": "het.envRemove",
+        "title": "%cmd.envRemove%"
+      },
+      {
+        "command": "het.useSystemToolchain",
+        "title": "%cmd.useSystemToolchain%"
+      },
+      {
+        "command": "het.useManagedToolchain",
+        "title": "%cmd.useManagedToolchain%"
+      },
+      {
+        "command": "het.getHostCapabilities",
+        "title": "%cmd.getHostCapabilities%"
+      },
+      {
+        "command": "het.getProvisionPlan",
+        "title": "%cmd.getProvisionPlan%"
+      },
+      {
+        "command": "het.getWslLane",
+        "title": "%cmd.getWslLane%"
+      },
+      {
+        "command": "het.getLinuxLane",
+        "title": "%cmd.getLinuxLane%"
+      },
+      {
+        "command": "het.getMacosLane",
+        "title": "%cmd.getMacosLane%"
       },
       {
         "command": "het.openDocsArtifact",
@@ -211,6 +356,60 @@
       {
         "command": "het.healthReport",
         "title": "%cmd.healthReport%"
+      },
+      {
+        "command": "het.detail.pin",
+        "title": "%cmd.detailPin%"
+      },
+      {
+        "command": "het.hud.d1",
+        "title": "HUD: 执行第 1 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d2",
+        "title": "HUD: 执行第 2 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d3",
+        "title": "HUD: 执行第 3 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d4",
+        "title": "HUD: 执行第 4 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d5",
+        "title": "HUD: 执行第 5 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d6",
+        "title": "HUD: 执行第 6 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d7",
+        "title": "HUD: 执行第 7 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d8",
+        "title": "HUD: 执行第 8 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.d9",
+        "title": "HUD: 执行第 9 个动作",
+        "category": "HeT DevTools"
+      },
+      {
+        "command": "het.hud.esc",
+        "title": "HUD: 关闭监控卡",
+        "category": "HeT DevTools"
       }
     ],
     "menus": {
@@ -220,6 +419,13 @@
           "when": "explorerResourceIsFolder",
           "group": "het@1"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "het.detail.pin",
+          "when": "activeWebviewPanelId =~ /^het\\.detail\\./",
+          "group": "navigation@9"
+        }
       ]
     },
     "chatParticipants": [
@@ -228,6 +434,58 @@
         "name": "het",
         "description": "HeT DevTools intent router: natural language → matching HeT GUI action",
         "isSticky": true
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "het.hud.d1",
+        "key": "1",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d2",
+        "key": "2",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d3",
+        "key": "3",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d4",
+        "key": "4",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d5",
+        "key": "5",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d6",
+        "key": "6",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d7",
+        "key": "7",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d8",
+        "key": "8",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.d9",
+        "key": "9",
+        "when": "activeWebviewPanelId == het.hud"
+      },
+      {
+        "command": "het.hud.esc",
+        "key": "escape",
+        "when": "activeWebviewPanelId == het.hud"
       }
     ]
   },
@@ -250,13 +508,14 @@
     "test:c6": "npm run compile && node esbuild.mjs --c6 && node scripts/run-c6.mjs",
     "test:c7": "npm run compile && node esbuild.mjs --c7 && node scripts/run-c7.mjs",
     "asset": "node scripts/build-template-asset.mjs",
-    "test:real": "npm run compile && node esbuild.mjs --real && node scripts/run-real.mjs"
+    "test:real": "npm run compile && node esbuild.mjs --real && node scripts/run-real.mjs",
+    "audit:pins": "npm run compile && npm run compile:tests && mocha out/test/auditPins.test.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.0",
-    "@types/vscode": "^1.95.0",
+    "@types/vscode": "~1.134.0",
     "@vscode/codicons": "^0.0.46-24",
     "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.2.1",

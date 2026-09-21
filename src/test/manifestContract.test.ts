@@ -1,0 +1,169 @@
+import * as assert from 'node:assert';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, sep } from 'node:path';
+import { HUD_CLOSE_COMMAND, HUD_DIGITS, digitCommand } from '../features/hud/keys';
+
+/**
+ * **manifest ↔ 代码 的对账门禁**（§F.47）。
+ *
+ * 这是"页面发出去没人接"的**同一个错误在清单层的翻版**：
+ *   · `package.json` 声明了命令、代码里没 `registerCommand` → 命令面板里点了没反应；
+ *   · 代码注册了命令、清单里没声明 → 命令面板搜不到、快捷键也绑不上；
+ *   · 标题写成 `%cmd.x%` 但 nls 里没有 → 界面上直接显示 `%cmd.x%`（用户看不懂）；
+ *   · keybinding 指向没声明的命令 → 按键静默失效。
+ *
+ * 四种情况都机器可查，且都能在开发期红 —— 不该等实测反馈来发现。
+ */
+
+interface Manifest {
+  contributes: {
+    commands: { command: string; title: string }[];
+    keybindings?: { command: string; key: string; when?: string; title?: string }[];
+    menus?: Record<string, { command: string; when?: string }[]>;
+  };
+}
+
+const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as Manifest;
+const declared = new Set(pkg.contributes.commands.map((c) => c.command));
+
+const strip = (t: string): string =>
+  t.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|[^:])\/\/[^\n]*/gu, '$1');
+
+/** src 下的非测试源码（扩展本体）。 */
+function sourceFiles(): string[] {
+  const out: string[] = [];
+  const walk = (d: string): void => {
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      if (statSync(p).isDirectory()) {
+        walk(p);
+      } else if (n.endsWith('.ts') && !p.includes(`${sep}test${sep}`)) {
+        out.push(p);
+      }
+    }
+  };
+  walk(join('src'));
+  return out;
+}
+
+const SOURCES = sourceFiles();
+const ALL_SOURCE_TEXT = SOURCES.map((f) => strip(readFileSync(f, 'utf8'))).join('\n');
+
+/** 代码里字面量注册的命令。 */
+function literalRegistrations(): Set<string> {
+  return new Set(
+    [...ALL_SOURCE_TEXT.matchAll(/registerCommand\(\s*'([^']+)'/gu)].map((m) => m[1]),
+  );
+}
+
+/**
+ * **表驱动注册**：命令 id 由数据生成（现在只有 HUD 的 1–9/Esc）。
+ *
+ * 这类注册没法用字面量正则找出来，所以在这里显式登记"生成器"，并断言生成出来的
+ * 每一条命令都在清单里声明（等于把这个特例纳回门禁，而不是放它一马）。
+ */
+const GENERATED_REGISTRATIONS: Array<{ why: string; commands: () => string[] }> = [
+  {
+    why: 'HUD 的数字键位（1–9）与 Esc 由 `hudKeyCommands()` 表驱动注册',
+    commands: () => [...HUD_DIGITS.map(digitCommand), HUD_CLOSE_COMMAND],
+  },
+];
+
+/**
+ * **内部命令**：注册了但**有意不声明**（自动化 / 集成测试入口，不该出现在命令面板）。
+ * 每条都要写清"谁在用"，且名单自我清理：一旦它被声明，就必须从这里删掉。
+ */
+const INTERNAL_COMMANDS: Readonly<Record<string, string>> = {
+  'het.getActivationLine': '集成测试读激活耗时（src/test/integration）',
+  'het.getCurrentProject': '集成测试读当前项目根',
+  'het.hasProject': '集成测试判断是否已识别项目',
+  'het.getCockpitState': '集成测试/安装后校验读驾驶舱状态',
+  'het.getChipState': '集成测试读 chip 状态',
+  'het.getConanRuntime': '安装后校验读 conan 运行时',
+  'het.getEnvRows': '集成测试读环境行',
+  'het.envGc': '托管环境 GC（README/CHANGELOG 里说明的内部动作）',
+  'het.getLastDocsOutput': '集成测试读最近一次文档输出',
+  'het.newProjectDirect': '集成脚本 c4/c7 的"直接建项目"通道（跳过表单）',
+  'het.getBuildOk': '集成测试读构建结论',
+  'het.getLastBuildError': '集成测试读构建错误',
+  'het.getTestSummary': '集成测试读测试汇总',
+  'het.getLastConanOutput': '集成测试读 conan 输出尾部',
+};
+
+describe('§F.47 manifest ↔ 代码 对账（命令 / 快捷键 / nls）', () => {
+  it('声明了的命令，必须真的注册（否则"点了没反应"，且只有用户能发现）', () => {
+    const registered = new Set([...literalRegistrations(), ...GENERATED_REGISTRATIONS.flatMap((g) => g.commands())]);
+    const missing = [...declared].filter((c) => !registered.has(c));
+    assert.deepStrictEqual(missing, [], `这些命令在 package.json 里声明了但代码里没注册：\n${missing.join('\n')}`);
+    // 生成器不能退化成空壳（否则等于把上面的检查架空）
+    for (const g of GENERATED_REGISTRATIONS) {
+      assert.ok(g.commands().length > 0, `生成器没产出命令：${g.why}`);
+      assert.ok(g.why.length > 5, '生成器要写清为什么不能用字面量找');
+    }
+  });
+
+  it('注册了的命令，要么声明、要么在内部名单里写清理由（名单自我清理）', () => {
+    const registered = literalRegistrations();
+    const undeclared = [...registered].filter((c) => !declared.has(c));
+    const unexplained = undeclared.filter((c) => INTERNAL_COMMANDS[c] === undefined);
+    assert.deepStrictEqual(
+      unexplained,
+      [],
+      `这些命令注册了但没声明、也没在内部名单里说明：\n${unexplained.join('\n')}`,
+    );
+    assert.deepStrictEqual(
+      Object.keys(INTERNAL_COMMANDS).filter((c) => declared.has(c)),
+      [],
+      '内部名单里的命令已经声明了 → 请把它从名单删掉（名单必须与事实一致）',
+    );
+    // 内部命令必须看着就像内部（统一前缀），别和用户可见命令混成一个样子
+    for (const c of Object.keys(INTERNAL_COMMANDS)) {
+      assert.ok(
+        /^het\.(get|has|env|new)/u.test(c),
+        `${c} 命名看不出是内部命令（内部命令要用 get/has/env/new 这类前缀，避免和用户命令混淆）`,
+      );
+    }
+  });
+
+  it('菜单与快捷键指向的命令必须已声明（否则入口静默失效）', () => {
+    const fromMenus = Object.entries(pkg.contributes.menus ?? {}).flatMap(([where, items]) =>
+      items.filter((m) => !declared.has(m.command)).map((m) => `${where} → ${m.command}`),
+    );
+    assert.deepStrictEqual(fromMenus, [], `菜单挂到了没声明的命令上：\n${fromMenus.join('\n')}`);
+    const fromKeys = (pkg.contributes.keybindings ?? [])
+      .filter((k) => !k.command.startsWith('workbench.') && !declared.has(k.command))
+      .map((k) => `${k.key} → ${k.command}`);
+    assert.deepStrictEqual(fromKeys, [], `快捷键绑到了没声明的命令上：\n${fromKeys.join('\n')}`);
+  });
+
+  it('`%nls.key%` 两个语言都齐（缺了界面上就显示原始 `%key%`）', () => {
+    const en = JSON.parse(readFileSync('package.nls.json', 'utf8')) as Record<string, string>;
+    const zh = JSON.parse(readFileSync('package.nls.zh-cn.json', 'utf8')) as Record<string, string>;
+    const raw = readFileSync('package.json', 'utf8');
+    const keys = new Set([...raw.matchAll(/"%([\w.]+)%"/gu)].map((m) => m[1]));
+    assert.ok(keys.size >= 40, `nls key 太少（${keys.size}）—— 提取失效？`);
+    assert.deepStrictEqual([...keys].filter((k) => !(k in en)), [], '英文 nls 缺 key');
+    assert.deepStrictEqual([...keys].filter((k) => !(k in zh)), [], '中文 nls 缺 key');
+    // 反过来：nls 里的死条目也算漂移（改文案时漏删）
+    assert.deepStrictEqual(
+      Object.keys(en).filter((k) => !keys.has(k)),
+      [],
+      'package.nls.json 里有没人用的条目（请删掉或接上）',
+    );
+    assert.deepStrictEqual(
+      Object.keys(zh).filter((k) => !(k in en)),
+      [],
+      '中文 nls 里有英文没有的 key（两份要对齐）',
+    );
+  });
+
+  it('命令标题要么国际化、要么是可直接显示的中文（不许留裸 key）', () => {
+    for (const c of pkg.contributes.commands) {
+      const t = c.title;
+      assert.ok(
+        /^%[\w.]+%$/u.test(t) || /[\u4e00-\u9fa5]/u.test(t),
+        `${c.command} 的标题既不是 %nls.key% 也不是可读中文：${t}`,
+      );
+    }
+  });
+});

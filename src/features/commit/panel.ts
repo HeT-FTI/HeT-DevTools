@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { ChangeEntry, TriggerEmoji, TRIGGER_EMOJIS } from '../../core/commitAssistant';
+import { showDetailPanel } from '../detail/host';
 
 export interface CommitState {
   projectName: string;
@@ -30,31 +31,27 @@ export interface CommitDeps {
 }
 
 export function showCommitPanel(context: vscode.ExtensionContext, deps: CommitDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.commit',
-    'HeT DevTools — 提交助手',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'commit', title: 'HeT DevTools — 提交助手' }, (panel) => {
 
-  const render = async (): Promise<void> => {
-    const state = await deps.getState();
-    panel.webview.html = buildHtml(state);
-  };
+    const render = async (): Promise<void> => {
+      const state = await deps.getState();
+      panel.webview.html = buildHtml(state);
+    };
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string; req?: CommitRequest }) => {
-    if (message.type === 'refresh') {
-      await render();
-    } else if (message.type === 'commit' && message.req) {
-      const r = await deps.commit(message.req);
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    }
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string; req?: CommitRequest }) => {
+      if (message.type === 'refresh') {
+        await render();
+      } else if (message.type === 'commit' && message.req) {
+        const r = await deps.commit(message.req);
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      }
+    });
+
+    void render().catch((e) => console.error('[het] commit render failed', e));
+    return sub;
   });
-
-  void render().catch((e) => console.error('[het] commit render failed', e));
-  return panel;
 }
 
 function emojiCardHtml(t: TriggerEmoji, enabled: boolean, selected: boolean): string {
@@ -128,7 +125,6 @@ function buildHtml(state: CommitState): string {
     </div>
     <script>
       (function () {
-        const vscode = acquireVsCodeApi();
         const $ = (s) => document.querySelector(s);
         const EMOJI = ${JSON.stringify(TRIGGER_EMOJIS.map((t) => ({ id: t.id, emoji: t.emoji })))};
         let selEmoji = ${JSON.stringify(state.suggestedEmojiId)};
@@ -161,8 +157,8 @@ function buildHtml(state: CommitState): string {
           push,
           paths: pickPaths(),
         });
-        $('#commitBtn').addEventListener('click', () => vscode.postMessage({ type: 'commit', req: collect(false) }));
-        $('#pushBtn').addEventListener('click', () => vscode.postMessage({ type: 'commit', req: collect(true) }));
+        $('#commitBtn').addEventListener('click', () => send({ type: 'commit', req: collect(false) }));
+        $('#pushBtn').addEventListener('click', () => send({ type: 'commit', req: collect(true) }));
         update();
       })();
     </script>

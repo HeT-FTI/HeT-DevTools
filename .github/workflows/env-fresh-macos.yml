@@ -1,0 +1,186 @@
+name: env-fresh · macos
+
+# T23 裸机验证 · macOS（Apple Silicon / arm64）—— 模拟「全新 Mac 装 VS Code + HeT DevTools 后直接构建」。
+#
+# 为什么按平台拆成三个 workflow（而不是一个矩阵）：
+#   一个平台 = 一个失败面。日志更短、重跑更便宜、红了不必翻别的平台。
+#     linux   → env-fresh-linux.yml
+#     windows → env-fresh-windows.yml
+#     macos   → 本文件（env-fresh-macos.yml）
+#
+# 平台承诺（见 env-onboarding-plan.md §5）：
+#   · macOS **仅承诺 arm64**（macos-latest 即 arm64）；x64 已不再兼容，车道会显式拒绝；
+#   · 车道 = `~/.het-fti/managed-env`（用户级私有 venv + 生成的 apple-clang profile），不需要 root；
+#   · 覆盖率 = `unsupported`（Apple clang 无 GNU gcov）→ 本作业**不**断言覆盖率，也不因它失败；
+#     llvm-cov 路线图见 T20；
+#   · 文档需要 brew 的 doxygen/graphviz/make（我们**不**代装，只引导）→ 本作业预装以验证"文档能力真的可用"。
+#
+# 日志结构固定为：SCENARIO → GATE → SETUP → MAIN（断言链）→ ASSERT → EVIDENCE。
+#
+# 手动触发：
+#   gh workflow run env-fresh-macos --ref main
+#   gh run watch $(gh run list --workflow=env-fresh-macos -L1 --json databaseId -q '.[0].databaseId')
+
+env:
+  # 承诺下限（T27）：engines.vscode = @types/vscode = 这里的钉住版，单点维护。
+  VSCODE_VERSION: "1.134.0"
+  HET_REAL_EXPECT_VSCODE: "1.134.0"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-lane:
+    name: macos · 托管车道（clang + venv + docs）
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+
+      - name: "SCENARIO: 这个作业要证明什么"
+        run: |
+          echo "::group::SCENARIO — fresh macos · managed lane"
+          cat <<'EOF'
+          模拟场景：全新 Mac（Apple Silicon，无 ~/.het-fti）→ 安装扩展 → 一键准备 → 构建并测试。
+
+          本作业要证明：
+            1) Provider 决策在 macOS 上是 macos-native（能力优先，不看 brew/pip 是否存在）；
+            2) 车道能从零自举：~/.het-fti/managed-env 私有 venv（**用宿主自带的 Python**，从不代装）+ 生成的 apple-clang profile；
+               — 宿主 Python 必须是 >= 3.10 的那一个（docs 栈钉住 sphinx>=8）。runner 上 `python3`=3.14，
+                 而 `/usr/bin/python3`=3.9；车道过去偏好后者 → pip 报 'No matching distribution found for sphinx<9,>=8'。
+            3) 车道内 `conan create` + GTest 全绿（Apple clang / libc++）；
+            4) docs 可产出：venv sphinx + 宿主 doxygen/graphviz/make（缺失时是引导，不是崩）；
+            5) 覆盖率断言**不**执行（macOS 有限支持，unsupported 不计失败）。
+
+          失败时优先看：AssertionError 的上一段 [real] 输出 + ASSERT 步骤 + Artifact。
+          EOF
+          echo "::endgroup::"
+
+      - name: "GATE 1: 架构必须是 arm64（平台承诺边界）"
+        run: |
+          echo "检查项：uname -m == arm64 —— 我们的 macOS 车道只承诺 Apple Silicon。"
+          arch="$(uname -m)"
+          echo "arch: $arch"
+          if [ "$arch" != "arm64" ]; then echo "::error::macOS lane only commits to arm64; runner is $arch (x64 unsupported)"; exit 1; fi
+          echo "✔ arm64"
+
+      - name: "GATE 2: 裸机 + CLT 前提"
+        run: |
+          echo "检查项：① ~/.het-fti 不存在（真裸机）；② Command Line Tools 可用（xcrun clang）。"
+          if [ -e "$HOME/.het-fti" ]; then echo "::error::unexpected pre-existing lane at $HOME/.het-fti"; exit 1; fi
+          xcode-select -p || { echo "::error::Command Line Tools missing (xcode-select --install)"; exit 1; }
+          xcrun --find clang || { echo "::error::clang unavailable via xcrun"; exit 1; }
+          echo "✔ fresh host + CLT: $(xcrun clang --version | head -1)"
+
+      - name: "PREFLIGHT: runner 自带哪些工具（诊断用）"
+        run: |
+          echo "::group::PREFLIGHT (diagnostics)"
+          echo "os:      $(sw_vers -productVersion) ($(uname -m))"
+          echo "python3: $(command -v python3) → $(python3 --version 2>&1 || echo none)"
+          echo "python3 (system): /usr/bin/python3 → $(/usr/bin/python3 --version 2>&1 || echo none)"
+          echo "conan:   $(conan --version 2>/dev/null || echo none)"
+          echo "cmake:   $(cmake --version 2>/dev/null | head -1 || echo none)"
+          echo "ninja:   $(ninja --version 2>/dev/null || echo none)"
+          echo "doxygen: $(doxygen --version 2>/dev/null || echo none)"
+          echo "dot:     $(dot -V 2>&1 || echo none)"
+          echo "make:    $(make --version 2>/dev/null | head -1 || echo none)"
+          echo "::endgroup::"
+
+      - name: "SETUP: 宿主工具（brew cmake/ninja/doxygen/graphviz + venv conan/sphinx）"
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          echo "::group::SETUP — host tools"
+          echo "· 车道会挑宿主里最新的 Python（docs 栈需要 >= 3.10，车道从不代装 Python）"
+          py3="$(command -v python3)"
+          pv="$("$py3" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "  PATH python3: $py3 ($pv) ｜ /usr/bin/python3: $(/usr/bin/python3 --version 2>&1)"
+          if ! awk -v v="$pv" -v m="3.10" 'BEGIN{split(v,a,".");split(m,b,".");exit !(a[1]>b[1]||(a[1]==b[1]&&a[2]>=b[2]))}'; then
+            echo "  PATH 上的 python3 过旧 → 用 brew 备一个新解释器（否则车道只能退回 system python）"
+            brew install python@3.12
+            echo "  $(command -v python3.12) $(python3.12 --version)"
+          fi
+          echo "· venv /tmp/het-conan：宿主 conan（车道自举 + system 分支都用它）+ docs 的 sphinx/numpy"
+          python3 -m venv /tmp/het-conan
+          /tmp/het-conan/bin/pip install --quiet "conan>=2,<3"
+          /tmp/het-conan/bin/conan profile detect --force
+          echo "/tmp/het-conan/bin" >> "$GITHUB_PATH"
+          /tmp/het-conan/bin/pip install --quiet 'sphinx>=8,<9' 'sphinx-intl' 'sphinx-rtd-theme>=2,<4' 'numpy>=1.26'
+          echo "· brew：cmake/ninja（构建）+ doxygen/graphviz（文档，真机上是“引导”，这里预装以验证能力）"
+          command -v cmake  >/dev/null 2>&1 || brew install cmake
+          command -v ninja  >/dev/null 2>&1 || brew install ninja
+          command -v doxygen >/dev/null 2>&1 || brew install doxygen
+          command -v dot    >/dev/null 2>&1 || brew install graphviz
+          /tmp/het-conan/bin/python -c 'import numpy, sphinx; print("venv docs ok:", numpy.__version__)'
+          echo "::endgroup::"
+
+      # 不再预装 VS Code（教训）：brew cask 装的是**最新版**，而 run-real.mjs 当时优先用
+      # 本地安装 → 作业里写的 VSCODE_VERSION 被**静默忽略**（实测跑 1.136.1），
+      # “承诺下限”在 macOS 上根本没被验证；同时也把 test-electron 的 darwin 主程序
+      # 名 bug 掩盖掉了。现在由 harness 自己下载钉住版并自己定位主程序。
+      # T29：下限抬到 1.134.0 后，macOS 主程序名**不再随版本变**——恒为
+      #   …/Visual Studio Code.app/Contents/MacOS/Code
+      # （1.110 起 product.nameShort 生效、1.131 起 Electron 兼容软链已删；只有 1.95 那种
+      #  旧布局才叫 Electron，已不在支持范围。详见 env-onboarding-plan T29。）
+      - name: "MAIN: 真实扩展宿主 —— macOS 车道构建 + 测试 + 文档"
+        env:
+          # VSCODE_VERSION / HET_REAL_EXPECT_VSCODE 由 workflow 级 env 提供（单点维护）。
+          # T28：macOS 与 Linux/Windows 一样跑**钉住版**并硬断言（曾以 1.95.0 核实：
+          # vscode=1.95.0 / vscodeSource=download@1.95.0，run 34930943299）；T29 抬到
+          # 1.134.0 后需重跑核实一次。宿主版本漂了就红，而不是继续绿着说假话。
+          # HET_VSCODE_HONOR_PIN：macOS 上"本机已装的 VS Code"会抢在下载之前生效，
+          # 打开它就直接跑本机版（实测 1.136.1）→ 必须显式要求下载钉住版。
+          HET_VSCODE_HONOR_PIN: "1"
+          HET_REAL_FRESH: "1"
+          HET_REAL_EXPECT_PROVIDER: macos-native
+        run: |
+          echo "::group::MAIN — npm run test:real (macos lane, fresh)"
+          cat <<'EOF'
+          即将执行：npm run test:real
+            · 夹具：assets/template → out/real-proj（toolchain=managed；macOS 上夹具自动关覆盖率）
+            · 断言链：
+                provider == macos-native
+                → het.test：车道自举（~/.het-fti/managed-env 私有 venv + apple-clang profile）
+                            → conan create --build=missing → GTest 全绿
+                → 覆盖率步骤跳过（macOS unsupported，不计失败）
+                → het.docsRun：doxygen（docs.html）+ sphinx（index.html）必须存在
+
+          注意（T28）：宿主版本会被打印并写进证据（vscode=<版本> vscodeSource=local:…|download@x）。
+          本作业下载并运行**钉住的 1.134.0**（harness 自己定位 .app 主程序），版本不符即断言失败。
+          EOF
+          npm run test:real
+          echo "::endgroup::"
+
+      - name: "ASSERT: 车道真的被使用（事后事实）"
+        if: always()
+        run: |
+          echo "检查项：构建后 ~/.het-fti/managed-env 必须存在 —— 证明本次构建用的是托管 venv。"
+          if [ ! -d "$HOME/.het-fti/managed-env" ]; then echo "::error::managed lane dir missing after build"; exit 1; fi
+          ls "$HOME/.het-fti/managed-env/bin" | head -20 || true
+          # 车道的 venv 是拿宿主的哪个解释器建的？这是 F.13 的事后证据
+          # （车道从不代装 Python，只挑宿主已有的；docs 栈要求 >= 3.10）。
+          echo "—— lane venv interpreter (pyvenv.cfg) ——"
+          cat "$HOME/.het-fti/managed-env/venv/pyvenv.cfg" 2>/dev/null || echo "(no pyvenv.cfg)"
+          "$HOME/.het-fti/managed-env/venv/bin/python" -c 'import sys; print("lane python:", sys.executable, sys.version.split()[0])' || true
+          echo "✔ lane in use: $HOME/.het-fti/managed-env"
+
+      - name: "EVIDENCE: 本作业证明了什么"
+        if: always()
+        run: |
+          echo "::group::EVIDENCE (out/real-evidence.txt)"
+          if [ -f out/real-evidence.txt ]; then cat out/real-evidence.txt; else echo "(没有证据文件：作业在写出证据前就失败了，请看上一个失败步骤)"; fi
+          echo "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-macos
+          path: out/real-evidence.txt
+          if-no-files-found: ignore

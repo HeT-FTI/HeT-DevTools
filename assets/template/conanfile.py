@@ -1,6 +1,8 @@
 from conan import ConanFile
+from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMakeToolchain, CMake, CMakeDeps, cmake_layout
 from conan.tools.build import cross_building
+from conan.tools.scm import Version
 from typing import Literal
 from pathlib import Path
 import yaml
@@ -25,6 +27,9 @@ conan_targets = {
     'Catch2::Catch2': 'catch2::catch2'
 }
 
+# CMake below 4.2 cannot name the newest Visual Studio generator, so an MSVC host dies at configure.
+CMAKE_MSVC_FLOOR = '4.2'
+
 # Module annotation / include-guard literals (extracted to avoid drift).
 METADATA_FILENAME = 'metadata.json'
 TAG_EXPORTER = '@exporter'
@@ -47,8 +52,7 @@ _metadata = _inherit_root_metadata()
 
 
 def _get_export_objects(x: list[str], tag: Literal['@exporter', '@attacher'] = TAG_EXPORTER) -> list[str]:
-    # Note: split on '\n\n' (two blank lines) per the repo convention between
-    # global objects; revisit '\n\n\n' if module namespaces ever need it.
+    # Global objects are separated by two blank lines (repo convention)
     _cache = (''.join(x)).split('\n\n')
     _export_objs = [_ for _ in _cache if tag in _]
 
@@ -190,7 +194,18 @@ class PackageRecipe(ConanFile):
         return _tmp + ['"' + _ + '.hpp";' for _ in self.meta.get("user_modules")]
 
     def build_requirements(self):
-        self.build_requires(f"cmake/{self.meta.get('cmake_version')}")
+        # escape: HET_CMAKE_BUILD_REQUIRE=none keeps the cmake on PATH, a version pins another
+        _override = (os.environ.get('HET_CMAKE_BUILD_REQUIRE') or '').strip()
+        if _override.lower() == 'none':
+            return
+        _cmake = _override or self.meta.get('cmake_version')
+        # fail here with the fix, rather than inside CMake with a generator name it never heard of
+        if str(self.settings.get_safe('compiler')) == 'msvc' and Version(_cmake) < Version(CMAKE_MSVC_FLOOR):
+            raise ConanInvalidConfiguration(
+                f"cmake/{_cmake} cannot name the Visual Studio generator Conan picks for "
+                f"msvc/{self.settings.get_safe('compiler.version')}: CMake {CMAKE_MSVC_FLOOR}+ is required. "
+                f"Raise metadata.json 'cmake_version', or set HET_CMAKE_BUILD_REQUIRE to a newer version.")
+        self.build_requires(f"cmake/{_cmake}")
 
     def config_options(self):
         if self.settings.os == "Windows":
@@ -226,6 +241,12 @@ class PackageRecipe(ConanFile):
             with open(_f, 'w', encoding='utf-8') as f:
                 f.write(''.join(_new_text))
 
+    def _coverage_enabled(self):
+        """Whether this run instruments the library; `-c user.het:run_tests=False` narrows metadata for one run."""
+        if not self.conf.get('user.het:run_tests', default=True, check_type=bool):
+            return False
+        return bool(self.meta.get("activate_code_coverage"))
+
     def _test_dependencies_enabled(self):
         return bool(self.meta.get("trigger_tests"))
 
@@ -250,6 +271,7 @@ class PackageRecipe(ConanFile):
     def generate(self):
         tc = CMakeToolchain(self)
         tc.variables['C_DEPS'], tc.variables['CPP_DEPS'] = self._preparing_deps_links()
+        tc.variables['ENABLE_COVERAGE'] = self._coverage_enabled()
 
         if cross_building(self) and self.settings.os == "baremetal":  # cross build to MCU
             tc.variables["CMAKE_TRY_COMPILE_TARGET_TYPE"] = "STATIC_LIBRARY"
@@ -277,10 +299,7 @@ class PackageRecipe(ConanFile):
         return _c_deps, list(set(_cpp_deps).union(set(_infra_deps)))
 
     def package_id(self):
-        # float_abi/fpu 通过 profile [conf] 的 tools.build:cflags 注入，不属于 settings/options，
-        # 默认不参与 package_id；不同 MCU（如 cortex-m3 soft 与 cortex-m7 hard+fpu）在 Conan 里
-        # 可能共享同一个 arch（如 armv7），导致误复用不兼容 ABI 的缓存二进制，链接期报 VFP 寄存器不匹配。
-        # 把交叉编译标志纳入 package_id，确保不同 ABI 组合各自产出独立二进制。
+        # Fold tools.build:cflags/cxxflags into package_id so each MCU ABI gets its own binary
         for key in ("tools.build:cflags", "tools.build:cxxflags"):
             value = self.conf.get(key, default=None)
             if value:
@@ -294,18 +313,19 @@ class PackageRecipe(ConanFile):
         self._validate_built_archives()
 
     def _validate_built_archives(self):
-        # The compat check reads ELF attributes via GNU readelf (`readelf -A`);
-        # it only applies to ELF toolchains (Linux native / WSL lane / gcc
-        # cross). On macOS (Mach-O, Apple clang) or Windows native there is no
-        # ELF readelf — skip gracefully instead of failing a successful build.
-        try:
-            readelf_path = self._find_binutil("readelf")
-        except RuntimeError:
-            self.output.info("[compat] 无 ELF readelf（macOS/Win 原生或未装 binutils）→ 跳过归档兼容校验")
+        # escape Linux/baremetal, two cross-compilation cases (Mach-O/PE have neither readelf nor ELF attributes)
+        _non_elf_os = {"Macos", "iOS", "watchOS", "tvOS", "Windows"}
+        if str(self.settings.os) in _non_elf_os:
+            self.output.info(
+                f"[compat:SKIP] os={self.settings.os}: ELF attribute validation "
+                "is not applicable (Mach-O/PE target)"
+            )
             return
+
         archive_names = [f"lib{self.name}_c.a", f"lib{self.name}_cpp.a"]
         build_dir = Path(self.build_folder)
 
+        readelf_path = self._find_binutil("readelf")
         ar_path = self._find_binutil("ar")
 
         reports = []
@@ -434,8 +454,7 @@ class PackageRecipe(ConanFile):
             "armv8_32": {"v8-M.baseline", "v8-M.mainline"},
         }.get(target_arch, set())
 
-        # 部分 GCC 版本（如 11.3.1）不再把 M-profile 后缀拼进 Tag_CPU_arch（如 "v7-M"），
-        # 而是拆分到独立的 Tag_CPU_arch_profile="Microcontroller"；两种写法均视为合法。
+        # GCC 11+ may drop the -M suffix from Tag_CPU_arch; both spellings are valid
         expected_bases = {tag.split("-M")[0].split(".")[0] for tag in expected}
         arch_ok = (not expected) or (cpu_arch in expected) or (
             cpu_arch in expected_bases and cpu_arch_profile == "Microcontroller"
@@ -448,7 +467,7 @@ class PackageRecipe(ConanFile):
         if arm_isa.lower() in {"yes", "1", "true"}:
             problems.append("ARM ISA is enabled, but baremetal Cortex-M targets require Thumb code")
 
-        # v6/v7 内核用 "Thumb-1"/"Thumb-2" 字符串；v8-M（如 Cortex-M23/M33）用布尔式 "Yes"。
+        # v6/v7 report "Thumb-1"/"Thumb-2"; v8-M (Cortex-M23/M33) reports a boolean "Yes"
         if thumb_isa.lower() not in {"yes", "1", "true"} and "Thumb" not in thumb_isa:
             problems.append("Thumb ISA attribute is missing")
 
@@ -481,9 +500,7 @@ class PackageRecipe(ConanFile):
 
 
     def _module_elements(self, x: list[str], m_name: str):
-        # two transformations if matches:
-        # 1. #include <lib> => import <lib>;
-        # 2. #include "lib.hpp" => import "lib.hpp";
+        # transforms: <lib> -> import <lib>; "lib.hpp" -> import "lib.hpp"
 
         _flag, _is_import_lines, _splitter = 1, [], 0
         for i, _l in enumerate(x):

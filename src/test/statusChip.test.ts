@@ -138,6 +138,39 @@ describe('statusChip V5-2/V5-6 hover console', () => {
     assert.ok(s.tooltip.includes('conan create (Debug)'));
   });
 
+  it('§F.35 忙时 chip 说"正在做什么"，不说分数（更不许飘红）', () => {
+    const s = chipSpec(
+      projectModel({
+        running: '构建中',
+        runningAction: 'build',
+        lastBuildOk: false,
+        health: 42,
+      }),
+    )!;
+    assert.strictEqual(s.text, '$(sync~spin) HeT 构建中');
+    assert.ok(!s.text.includes('42'), '忙的时候不给历史分数');
+    assert.strictEqual(s.color, undefined, 'chip 不因"上次失败"变红');
+  });
+
+  it('§F.35 忙的域在悬停里显示进行中，而不是上一次的失败', () => {
+    const s = chipSpec(
+      projectModel({ running: '构建中', runningAction: 'build', lastBuildOk: false }),
+    )!;
+    assert.ok(s.tooltip.includes('$(sync~spin) 构建 进行中'), s.tooltip.slice(0, 400));
+    assert.ok(!s.tooltip.includes('$(error) 构建 失败'), '不许把"正在跑"写成"失败"');
+    // 同一时刻测试格保持真实历史结果（不许被别的域牵连）
+    const t = chipSpec(
+      projectModel({
+        running: '测试中',
+        runningAction: 'test',
+        lastBuildOk: false,
+        test: { passed: 7, failed: 0, skipped: 1 },
+      }),
+    )!;
+    assert.ok(t.tooltip.includes('$(sync~spin) 测试 进行中'));
+    assert.ok(t.tooltip.includes('$(error) 构建 失败'), '构建格仍显示真实的历史失败');
+  });
+
   it('is invisible without a project (monitoring only)', () => {
     assert.strictEqual(chipSpec({ projectName: '', health: null, running: null, lastBuildOk: null, test: null, templateBehind: 0 }), null);
   });

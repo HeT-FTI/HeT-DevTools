@@ -12,7 +12,10 @@
  * testable. The wsl.exe execution layer lives in features/env/wslLane.
  */
 import { posix } from 'node:path';
-import { managedProfile } from './managedEnv';
+import { LaneCompiler, laneProfileFor } from './laneProfile';
+import { LaneMirror, conanRemoteUpdateLine, mirrorShellExports } from './laneMirror';
+import { laneSettingsEnsureSteps, profileCompilerVersion } from './laneSettings';
+import { lanePythonFloorGuardSteps, laneVenvBootstrapSteps } from './lanePython';
 
 /** Lane root & tools inside the distro's Linux home (ext4 — venv-safe). */
 export interface WslLaneLayout {
@@ -49,18 +52,26 @@ export function wslLaneLayout(home: string): WslLaneLayout {
   };
 }
 
-/** Canonical lane compiler (the managed gcc 13 semantic; see ToolchainManifest). */
-export const WSL_CC = '/usr/bin/gcc-13';
-export const WSL_CXX = '/usr/bin/g++-13';
-
-/** Generated (never guessed) conan default profile for the lane. */
-export function wslLaneProfile(buildType = 'Release'): string {
-  return managedProfile(
-    { cc: WSL_CC, cxx: WSL_CXX, version: '13', libcxx: 'libstdc++11' },
-    'Linux',
-    'x86_64',
-    buildType,
-  );
+/**
+ * T01/T02: the lane compiler AND arch are NOT pinned here anymore.
+ *
+ * They come from the facts probe + ladder in `core/laneProfile` (the single
+ * place where CI facts are allowed to live): gcc-13 baseline → 14/15/12
+ * compatible → distro default, with the host arch probed via `uname -m`.
+ * Hard-coding `/usr/bin/gcc-13` + `x86_64` here was the E1/E2 bug class
+ * (see workspace/develope/env-onboarding-plan.md).
+ */
+export interface LaneEnsureOptions {
+  /** Chosen compiler facts — echoed back into the lane report/contract. */
+  compiler?: LaneCompiler;
+  /** conan arch setting derived from the host (x86_64 / armv8). */
+  arch?: string;
+  /** gcov matching the chosen compiler (written as a venv-local shim). */
+  gcov?: string;
+  /** conan settings.yml key for this lane's compiler (`apple-clang` / `gcc`). */
+  settingsCompiler?: string;
+  /** T18: corporate mirror/proxy (pip index · conan remote · http proxy). */
+  mirror?: LaneMirror;
 }
 
 /**
@@ -71,43 +82,69 @@ export function wslLaneProfile(buildType = 'Release'): string {
  *      conan/cmake/ninja into it (only when conan is missing)
  *   3. write the generated default profile (never detected)
  *   4. CONAN_HOME marker
- *   5. report lane tool versions (conan/cmake/gcc-13/lcov)
+ *   5. report lane tool versions (conan/cmake/selected compiler/lcov) + the
+ *      gcov shim that keeps coverage aligned with the chosen compiler
  * Never touches the user's conda envs: nothing is installed into base, no
  * `pip install --user`, no profile detection.
  */
-export function wslLaneEnsureCommand(home: string, profileText: string): string {
+export function wslLaneEnsureCommand(home: string, profileText: string, opts: LaneEnsureOptions = {}): string {
   const l = wslLaneLayout(home);
   const venvBin = posix.join(l.venv, 'bin');
   const steps = [
     'set -e',
+    ...mirrorShellExports(opts.mirror),
     `DIR="${l.root}"`,
     // One-time migration (V5-6): the conan home was `…/managed-env/conan2`;
     // CI-parity coverage needs the literal `…/.conan2/…` cache layout.
     `[ -d "${posix.join(l.root, 'conan2')}" ] && [ ! -d "${l.conanHome}" ] && mv "${posix.join(l.root, 'conan2')}" "${l.conanHome}"`,
     `mkdir -p "${l.profilesDir}"`,
-    `if [ ! -x "${posix.join(venvBin, 'conan')}" ]; then`,
-    '  PY=""',
-    '  CONDA_PY=""',
-    '  if command -v conda >/dev/null 2>&1; then CONDA_PY="$(dirname "$(command -v conda 2>/dev/null)")/python"; fi',
-    '  for c in /usr/bin/python3 "$CONDA_PY" "$(command -v python3 2>/dev/null || true)" "$(command -v python 2>/dev/null || true)"; do',
-    '    [ -n "$c" ] && [ -x "$c" ] || continue',
-    '    if "$c" -m venv --help >/dev/null 2>&1 && "$c" -m venv "' + l.venv + '" >/dev/null 2>&1; then PY="$c"; break; fi',
-    '    rm -rf "' + l.venv + '"',
-    '  done',
-    '  if [ -z "$PY" ]; then echo "FATAL: no python3 that can create venvs (install python3-venv via apt, or use a conda python)"; exit 3; fi',
-    '  if [ ! -x "' + posix.join(venvBin, 'pip') + '" ]; then "' + posix.join(l.venv, 'bin', 'python') + '" -m ensurepip --upgrade >/dev/null 2>&1 || true; fi',
-    `  "${posix.join(venvBin, 'pip')}" install --disable-pip-version-check -q "conan>=2.0,<3" "cmake>=4.0,<5" "ninja>=1.11"`,
-    'fi',
+    // The lane owns a private venv but uses the HOST's Python (never installs
+    // one). Preference order + the docs floor live in ./lanePython.
+    ...laneVenvBootstrapSteps(l.venv, LANE_VENV_PIP),
+    // T18: point the lane's PRIVATE conan home at the corporate mirror (if any).
+    ...(conanRemoteUpdateLine(opts.mirror, venvBin) ? [conanRemoteUpdateLine(opts.mirror, venvBin) as string] : []),
     `cat > "${l.profile}" <<'HET_WSL_PROFILE'`,
     profileText,
     'HET_WSL_PROFILE',
+    // conan's settings.yml is a closed vocabulary: a brand-new compiler version
+    // makes EVERY build fail (`Invalid setting '21.0.0' …`). Teach the lane's
+    // own copy before any build runs (never the user's).
+    ...laneSettingsEnsureSteps(opts.settingsCompiler ?? '', profileCompilerVersion(profileText), venvBin, l.conanHome),
     `touch "${posix.join(l.conanHome, '.conan_home_marker')}"`,
+    ...gcovShimSteps(opts.gcov, venvBin),
     `echo lane_conan:$(${posix.join(venvBin, 'conan')} --version 2>/dev/null | head -1 || echo -)`,
     `echo lane_cmake:$(${posix.join(venvBin, 'cmake')} --version 2>/dev/null | head -1 || echo -)`,
-    'echo lane_gcc:$([ -x /usr/bin/gcc-13 ] && /usr/bin/gcc-13 --version | head -1 || echo -)',
+    `echo lane_arch:${opts.arch ?? '-'}`,
+    `echo lane_cc_selected:${opts.compiler?.cc ?? '-'}`,
+    `echo lane_cc_version:${opts.compiler?.version ?? '-'}`,
+    `echo lane_cc_baseline:${opts.compiler?.baseline ?? '-'}`,
     'echo lane_lcov:$([ -x /usr/bin/lcov ] && lcov --version | head -1 || echo -)',
+    // 2026-09-15 CI 实测：Ubuntu 官方 WSL rootfs **不带 make**，而 Conan/CMake 的默认
+    // 生成器是 "Unix Makefiles"（模板 cmake_layout + CMakeToolchain 都没指定 Ninja）
+    // → 源码编译的依赖（bzip2/pcre2/zlib…）与工程自身的构建都要它。
+    // 报告成事实 → 执行层按同一条自愈路径 apt 补上（与 lcov 完全同构）。
+    'echo lane_make:$(command -v make >/dev/null 2>&1 && make --version 2>/dev/null | head -1 || echo -)',
   ];
   return steps.join('\n');
+}
+
+/**
+ * E5: lcov's geninfo resolves the UNVERSIONED `gcov` from PATH, while the lane
+ * may build with gcc-14/12. A venv-local shim pins gcov to the chosen compiler
+ * (the build command prepends the venv bin to PATH) without touching /usr/bin.
+ */
+function gcovShimSteps(gcov: string | undefined, venvBin: string): string[] {
+  if (!gcov) {
+    return [];
+  }
+  const shim = posix.join(venvBin, 'gcov');
+  return [
+    `cat > "${shim}" <<'HET_GCOV_SHIM'`,
+    '#!/bin/sh',
+    `exec "${gcov}" "$@"`,
+    'HET_GCOV_SHIM',
+    `chmod +x "${shim}"`,
+  ];
 }
 
 /**
@@ -124,7 +161,7 @@ export function wslLaneEnsureCommand(home: string, profileText: string): string 
  *   - the template's coverage step copies .gcda from the FIRST `conan list`
  *     package id — with multiple stale binaries it can pick the wrong one.
  */
-export function wslLaneBuildCommand(cwdWsl: string, home: string, buildType = 'Debug', forceSelf?: string): string {
+export function wslLaneBuildCommand(cwdWsl: string, home: string, buildType = 'Debug', forceSelf?: string, profiles: string[] = []): string {
   const l = wslLaneLayout(home);
   const lines = [
     'set -o pipefail',
@@ -135,24 +172,55 @@ export function wslLaneBuildCommand(cwdWsl: string, home: string, buildType = 'D
   if (forceSelf) {
     lines.push(`conan remove "${forceSelf}/*" --confirm || true`);
   }
-  lines.push(`cd "${cwdWsl}"`, `conan create . -s build_type=${buildType} --build=missing`);
+  // T11: user profiles (het.conan.profiles / HET_CONAN_PROFILES) apply INSIDE
+  // the lane too — they used to be read only by the native branch, so the
+  // documented escape hatch silently did nothing on the default path.
+  const profileArgs = profiles.filter((p) => p.trim().length > 0).map((p) => `-pr "${p}"`).join(' ');
+  lines.push(
+    // T09: when the lane already provides CMake (private venv), skip the
+    // template's ConanCenter `cmake/<version>` build_requires — one CMake
+    // download instead of two, CI keeps its pinned behavior.
+    `if [ -x "${posix.join(l.venv, 'bin', 'cmake')}" ]; then export HET_CMAKE_BUILD_REQUIRE=none; fi`,
+    `cd "${cwdWsl}"`,
+    `conan create . -s build_type=${buildType} --build=missing${profileArgs ? ` ${profileArgs}` : ''}`,
+  );
   return lines.join('\n');
+}
+
+/**
+ * 车道 ensure 脚本打印的 `lane_*` 自证行（一行一事实：解释器/venv/conan/cmake/
+ * settings/gcov shim/编译器/架构/lcov）。它们此前只存在于脚本的 stdout 里，
+ * 成功了就丢掉 —— 于是"车道真的备好了什么"在 IDE 日志和 CI 日志里都看不见，
+ * 只能靠"没抛异常"反推。上层（三个车道执行层）现在会把它们逐行打进日志。
+ *
+ * 纯函数 → 可单测。
+ */
+export function laneReportLines(stdout: string): string[] {
+  return (stdout ?? '')
+    .split(/\r?\n/u)
+    .map((l) => l.trim())
+    .filter((l) => /^lane_[a-z0-9_]+:/u.test(l));
 }
 
 /** V5-4: pip packages for the docs stack (loose pins, per the manifest). */
 export const WSL_DOCS_PIP = ['"numpy>=1.26"', '"sphinx>=8,<9"', 'sphinx-intl', '"sphinx-rtd-theme>=2,<4"'];
+
+/** Lane build tooling installed into the private venv (conan drives cmake/ninja). */
+export const LANE_VENV_PIP = ['"conan>=2.0,<3"', '"cmake>=4.0,<5"', '"ninja>=1.11"'];
 
 /**
  * V5-4: idempotent docs-stack bootstrap inside the lane venv (runs as the
  * default user). System packages (doxygen/graphviz/make) are installed by the
  * host via passwordless root apt — never through the user's conda envs.
  */
-export function wslLaneDocsEnsureCommand(home: string): string {
+export function wslLaneDocsEnsureCommand(home: string, opts: LaneEnsureOptions = {}): string {
   const l = wslLaneLayout(home);
   const venvBin = posix.join(l.venv, 'bin');
   return [
     'set -e',
+    ...mirrorShellExports(opts.mirror),
     `export PATH="${venvBin}:$PATH"`,
+    ...lanePythonFloorGuardSteps(venvBin),
     `if [ ! -x "${posix.join(venvBin, 'sphinx-build')}" ]; then`,
     `  "${posix.join(venvBin, 'pip')}" install --disable-pip-version-check -q ${WSL_DOCS_PIP.join(' ')}`,
     'fi',
@@ -194,9 +262,7 @@ export function wslOutToWin(output: string): string {
  * the Linux lane a naming that does not imply WSL; behaviour is identical.
  */
 export const managedLaneLayout = wslLaneLayout;
-export const LANE_CC = WSL_CC;
-export const LANE_CXX = WSL_CXX;
-export const managedLaneProfile = wslLaneProfile;
+export const managedLaneProfile = laneProfileFor;
 export const managedLaneEnsureCommand = wslLaneEnsureCommand;
 export const managedLaneBuildCommand = wslLaneBuildCommand;
 export const managedLaneDocsEnsureCommand = wslLaneDocsEnsureCommand;

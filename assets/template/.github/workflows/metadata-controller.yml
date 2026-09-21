@@ -1,8 +1,6 @@
 name: Metadata Controller
 
-# Reusable workflow that analyzes metadata.json and outputs decision flags
-# for downstream workflows. This is the single source of truth for
-# workflow triggering logic.
+# Single source of truth for triggering: reads metadata.json and emits decision flags
 
 on:
   workflow_call:
@@ -44,6 +42,9 @@ on:
       trigger_security:
         description: 'Whether to trigger security scan workflow'
         value: ${{ jobs.analyze.outputs.trigger_security }}
+      trigger_cross_compile:
+        description: 'Whether to trigger the online cross-compile workflow'
+        value: ${{ jobs.analyze.outputs.trigger_cross_compile }}
       
       # Test configuration
       saving_tests_log:
@@ -71,6 +72,7 @@ jobs:
       trigger_release: ${{ steps.compute_triggers.outputs.trigger_release }}
       trigger_docs: ${{ steps.compute_triggers.outputs.trigger_docs }}
       trigger_security: ${{ steps.compute_triggers.outputs.trigger_security }}
+      trigger_cross_compile: ${{ steps.compute_triggers.outputs.trigger_cross_compile }}
       
       # Test configuration
       saving_tests_log: ${{ steps.read_metadata.outputs.saving_tests_log }}
@@ -78,7 +80,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -93,12 +95,9 @@ jobs:
           saving_tests_log=$(jq -r '.saving_tests_log // false | tostring | ascii_downcase' metadata.json)
           activate_code_coverage=$(jq -r '.activate_code_coverage // false | tostring | ascii_downcase' metadata.json)
           
-          # Read workflow_triggers flags (fail-loud: missing switch aborts CI, no silent defaults)
-          # NOTE 1: jq `//` treats `false` as falsy — use has() for existence, read value separately.
-          # NOTE 2: JSON key is `security_scan` but the variable is `wf_security` — keep the pair map explicit.
-          # NOTE 3: associative array instead of eval (no command injection surface).
+          # fail-loud on a missing switch; jq `//` treats false as falsy, so use has()
           declare -A wf
-          for pair in "build build" "tests tests" "release release" "docs docs" "security security_scan"; do
+          for pair in "build build" "tests tests" "release release" "docs docs" "security security_scan" "cross cross_compile"; do
             set -- $pair
             _var="$1"; _key="$2"
             jq -e --arg k "$_key" '.workflow_triggers | has($k)' metadata.json >/dev/null \
@@ -106,7 +105,7 @@ jobs:
             wf["$_var"]=$(jq -r --arg k "$_key" '.workflow_triggers[$k] | tostring | ascii_downcase' metadata.json)
           done
           wf_build=${wf[build]}; wf_tests=${wf[tests]}; wf_release=${wf[release]}
-          wf_docs=${wf[docs]}; wf_security=${wf[security]}
+          wf_docs=${wf[docs]}; wf_security=${wf[security]}; wf_cross=${wf[cross]}
           
           # Output all values
           echo "pkg_name=$pkg_name" >> $GITHUB_OUTPUT
@@ -120,6 +119,7 @@ jobs:
           echo "wf_release=$wf_release" >> $GITHUB_OUTPUT
           echo "wf_docs=$wf_docs" >> $GITHUB_OUTPUT
           echo "wf_security=$wf_security" >> $GITHUB_OUTPUT
+          echo "wf_cross=$wf_cross" >> $GITHUB_OUTPUT
           
           # Log for debugging
           echo "📦 Package: $pkg_name v$version"
@@ -127,20 +127,20 @@ jobs:
           echo "🧪 Trigger Tests: $trigger_tests"
           echo "📝 Saving Test Logs: $saving_tests_log"
           echo "📊 Code Coverage: $activate_code_coverage"
-          echo "🎛️  Workflow Toggles: build=$wf_build tests=$wf_tests release=$wf_release docs=$wf_docs security=$wf_security"
+          echo "🎛️  Workflow Toggles: build=$wf_build tests=$wf_tests release=$wf_release docs=$wf_docs security=$wf_security cross=$wf_cross"
 
       - name: Compute workflow triggers
         id: compute_triggers
         env:
           EVENT_NAME: ${{ inputs.event_name }}
           COMMIT_MESSAGES: ${{ inputs.commit_messages }}
-          BUILD_TYPE: ${{ steps.read_metadata.outputs.build_type }}
           TRIGGER_TESTS_FLAG: ${{ steps.read_metadata.outputs.trigger_tests }}
           WF_BUILD: ${{ steps.read_metadata.outputs.wf_build }}
           WF_TESTS: ${{ steps.read_metadata.outputs.wf_tests }}
           WF_RELEASE: ${{ steps.read_metadata.outputs.wf_release }}
           WF_DOCS: ${{ steps.read_metadata.outputs.wf_docs }}
           WF_SECURITY: ${{ steps.read_metadata.outputs.wf_security }}
+          WF_CROSS: ${{ steps.read_metadata.outputs.wf_cross }}
         run: |
           # Initialize trigger flags
           trigger_build="false"
@@ -148,6 +148,7 @@ jobs:
           trigger_release="false"
           trigger_docs="false"
           trigger_security="false"
+          trigger_cross_compile="false"
           
           # Check commit messages for emoji triggers
           has_build_emoji="false"
@@ -155,6 +156,7 @@ jobs:
           has_release_emoji="false"
           has_docs_emoji="false"
           has_security_emoji="false"
+          has_cross_emoji="false"
           
           if echo "$COMMIT_MESSAGES" | grep -q ':building_construction:'; then
             has_build_emoji="true"
@@ -175,34 +177,33 @@ jobs:
           if echo "$COMMIT_MESSAGES" | grep -q ':shield:'; then
             has_security_emoji="true"
           fi
+
+          if echo "$COMMIT_MESSAGES" | grep -q ':hammer_and_wrench:'; then
+            has_cross_emoji="true"
+          fi
           
-          # Compute build trigger
-          # Build triggers on :building_construction: emoji on push AND workflow_triggers.build is true
+          # build: :building_construction: on push + workflow_triggers.build
           if [[ "$EVENT_NAME" == "push" && "$has_build_emoji" == "true" && "$WF_BUILD" == "true" ]]; then
             trigger_build="true"
           fi
           
-          # Compute test trigger
-          # Tests trigger on :beer: emoji on push AND build_type is Debug AND trigger_tests is true AND workflow_triggers.tests is true
-          if [[ "$EVENT_NAME" == "push" && "$has_test_emoji" == "true" && "$BUILD_TYPE" == "Debug" && "$TRIGGER_TESTS_FLAG" == "true" && "$WF_TESTS" == "true" ]]; then
+          # tests: :beer: on push + trigger_tests + workflow_triggers.tests
+          # (deliberately NOT gated on build_type: a switch grants permission, a state must not)
+          if [[ "$EVENT_NAME" == "push" && "$has_test_emoji" == "true" && "$TRIGGER_TESTS_FLAG" == "true" && "$WF_TESTS" == "true" ]]; then
             trigger_tests="true"
           fi
           
-          # Compute release trigger
-          # Release triggers on (:package:): emoji on push AND build_type is Release AND workflow_triggers.release is true
-          if [[ "$EVENT_NAME" == "push" && "$has_release_emoji" == "true" && "$BUILD_TYPE" == "Release" && "$WF_RELEASE" == "true" ]]; then
+          # release: (:package:): on push + workflow_triggers.release
+          if [[ "$EVENT_NAME" == "push" && "$has_release_emoji" == "true" && "$WF_RELEASE" == "true" ]]; then
             trigger_release="true"
           fi
           
-          # Compute docs trigger
-          # Docs trigger on :book: emoji on push AND workflow_triggers.docs is true
+          # docs: :book: on push + workflow_triggers.docs
           if [[ "$EVENT_NAME" == "push" && "$has_docs_emoji" == "true" && "$WF_DOCS" == "true" ]]; then
             trigger_docs="true"
           fi
           
-          # Compute security trigger
-          # Security scan triggers on :shield: emoji on push AND workflow_triggers.security_scan is true
-          # Also triggers on pull_request events when security_scan is enabled (shift-left security)
+          # security: :shield: on push (or any PR, shift-left) + workflow_triggers.security_scan
           if [[ "$WF_SECURITY" == "true" ]]; then
             if [[ "$EVENT_NAME" == "push" && "$has_security_emoji" == "true" ]]; then
               trigger_security="true"
@@ -211,13 +212,20 @@ jobs:
               trigger_security="true"
             fi
           fi
+
+          # cross compile: :hammer_and_wrench: on push + workflow_triggers.cross_compile
+          # Deliberately absent from the shift-left block below -- this pipeline is
+          # decoupled, so only its own emoji starts it.
+          if [[ "$EVENT_NAME" == "push" && "$has_cross_emoji" == "true" && "$WF_CROSS" == "true" ]]; then
+            trigger_cross_compile="true"
+          fi
           
           # Shift-left on pull_request: build/tests are required gates, no emoji needed
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             if [[ "$WF_BUILD" == "true" ]]; then
               trigger_build="true"
             fi
-            if [[ "$WF_TESTS" == "true" && "$BUILD_TYPE" == "Debug" && "$TRIGGER_TESTS_FLAG" == "true" ]]; then
+            if [[ "$WF_TESTS" == "true" && "$TRIGGER_TESTS_FLAG" == "true" ]]; then
               trigger_tests="true"
             fi
           fi
@@ -228,6 +236,7 @@ jobs:
           echo "trigger_release=$trigger_release" >> $GITHUB_OUTPUT
           echo "trigger_docs=$trigger_docs" >> $GITHUB_OUTPUT
           echo "trigger_security=$trigger_security" >> $GITHUB_OUTPUT
+          echo "trigger_cross_compile=$trigger_cross_compile" >> $GITHUB_OUTPUT
           
           # Log trigger decisions
           echo "📋 Workflow Trigger Decisions:"
@@ -236,4 +245,5 @@ jobs:
           echo "  📦 Release: $trigger_release"
           echo "  📚 Docs: $trigger_docs"
           echo "  🛡️ Security: $trigger_security"
+          echo "  🛠️ Cross compile: $trigger_cross_compile"
 

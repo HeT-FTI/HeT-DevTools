@@ -23,13 +23,18 @@ user-invocable: true
 | `conan create` timeout | deps compile too slow (55 min) | raise timeout / pre-cache |
 | deps not found | network / bad version | check `conandata.yml` / `--build=missing` |
 | Windows build odd | shared forced to static | expected, not an error |
-| coverage artifact missing | switches off | turn on `trigger_tests`/`activate_code_coverage` |
+| `Could not create named generator Visual Studio 18 2026` | `cmake_version` is below the 4.2 floor, so CMake cannot name the generator Conan derives for msvc 195 | raise `metadata.json` `cmake_version` — the recipe now rejects that pair up front with this very message |
+| coverage artifact missing | switches off, **or** the run was build-only | check `trigger_tests`/`activate_code_coverage`; a `-c user.het:run_tests=False` run produces none by design |
+| `Reconcile coverage` red: legs instrumented different translation units | one toolchain skipped a source file, so one report is incomplete | read the `::error::` line: it names the file per leg. A missing file on **both** legs is a build-config problem, on **one** it is a toolchain problem |
+| `Reconcile coverage` red: expected a summary from every leg | an `Auto Testing` leg produced no `coverage_summary.json` | look at that leg first; reconcile only runs when both legs succeeded |
+| `Auto Testing (windows-latest)` fails at configure | the test chain has no MSVC coverage backend | Windows is intentionally not in this chain — do not add it until coverage is implemented for MSVC |
+| coverage gate red in `Tests` | the report was produced but the summary is absent or 0% | the gate reads `coverage_summary.json`; 0% means no test reached the library |
 
 ### Release（发布）
 | Symptom | Cause | Fix |
 |------|------|------|
 | version not bumped | no conventional prefix | use `feat/fix/perf` |
-| not triggered | build_type != Release or switch off | fix metadata |
+| not triggered | `workflow_triggers.release` off, or this push carries no release gitmoji | read the two gate notices |
 
 ### Docs（文档）
 | Symptom | Cause | Fix |
@@ -43,6 +48,7 @@ user-invocable: true
 | format red | clang-format violation | `clang-format -i` |
 | clang-tidy warning | WarningsAsErrors | fix code |
 | secret alert | secret committed | check gitleaks report |
+| devskim `Banned C function detected` | a banned function (e.g. the printf family) in include/ + src/ | rewrite with `fputs`-style calls; MegaLinter scans only those two roots |
 
 ### Board（上板）
 | Symptom | Cause | Fix |
@@ -55,8 +61,12 @@ user-invocable: true
 
 1. **gitmoji not triggered**: emoji spelling? Use canonical `type(:emoji:): description`（emoji 放括号）；`workflow_triggers.*` = true?
 2. **Switches off**: `workflow_triggers` all false → turn on first. 开关没开。
-3. **Artifacts not found**: download from the bottom **Artifacts** area. 产物在 Actions 页底部 Artifacts。
-4. **Reproduce locally**: `conan create . -s build_type=Debug --build=missing` is faster than CI. 本地复现更快。
+3. **Cross Compile red**: the emoji is `:hammer_and_wrench:` (not `:fire:`, which is the
+   self-hosted board route). The leg prints the generated profile first (a wrong `arch` or
+   `-mcpu` shows up there), then the apt toolchain package, then Class/Machine.
+   在线交叉编译腿失败：先看你打出的 profile，再看工具链包名与产物架构。
+4. **Artifacts not found**: download from the bottom **Artifacts** area. 产物在 Actions 页底部 Artifacts。
+5. **Reproduce locally**: `conan create . -s build_type=Debug --build=missing` is faster than CI. 本地复现更快。
 
 ## Route to Specific Skills（定位后转交）
 

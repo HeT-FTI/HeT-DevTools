@@ -18,11 +18,11 @@ user-invocable: true
 | 3 | Docs | `python ./docs/build.py` | no error, en/zh pages |
 | 4 | Audit | `het-audit` (N6) | no blocking issues |
 | 5 | Version | confirm semantic-release will bump as expected (feat→minor/fix→patch/BREAKING→major) | matches plan |
-| 6 | metadata switches | `build_type=Release`, `workflow_triggers.release=true` | ready |
+| 6 | metadata switches | `workflow_triggers.release=true` (the switch is permission; the release gitmoji is intent) | ready |
 
 ## After the Gate（门禁通过后）
 
-1. Commit with proper prefixes (see `het-commit` N5); for release add `chore(:package:): ...` and `build_type=Release`. 规范提交 + 触发发布。
+1. Commit with proper prefixes (see `het-commit` N5); for release add the release gitmoji. 规范提交 + 带发布 emoji。
 2. Hand over to `het-release` (S2): semantic-release generates CHANGELOG.md, rewrites metadata version, tags and releases. 交给 S2。
 
 ## Quick Script（本地快速跑一遍）

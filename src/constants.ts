@@ -1,7 +1,5 @@
 /** Global identifiers and small constants shared across the extension. */
 
-export const EXTENSION_ID = 'het-test-publisher.het-devtools';
-
 /** Output channel (full logs for long-running tasks). */
 export const LOG_CHANNEL_NAME = 'HeT DevTools';
 

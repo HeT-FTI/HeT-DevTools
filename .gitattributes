@@ -1,0 +1,26 @@
+# 行尾策略：交付物不能取决于"谁打的包"
+#
+# `assets/template/**` 会被原样打进 vsix（离线建工程用），所以它是**发给所有平台用户的
+# 产物**，不是仓库内部文件：Linux/macOS 上必须有 LF（shell/py/rst 带 CRLF 会出问题），
+# 而仓库里本来就存 LF。
+#
+# 不加这条时，Windows 的 git 默认 `core.autocrlf=true` 会把它们检出成 CRLF —— 于是
+# **windows 那份 vsix 与 linux/macOS 那份逐字节不同**（2026-09-15 实测：158 个文件里
+# 155 个 hash 不一样，全是行尾差异）。这正是"同一个交付物在不同机器上不一致"的典型：
+# 打包机的 git 配置泄漏进了产品。
+#
+# 因此：模板资源在仓库里存 LF、检出也必须是 LF，`ci.yml` 另有一道门禁兜底。
+assets/template/** text eol=lf
+
+# 2026-09-18 实测补丁：上面那条 `assets/template/** text eol=lf` 把**二进制也当文本**了。
+# 后果不是"行尾不好看"，而是**内容被改坏**：`docs/images/ALL_logo.jpg` 在仓库里比上游
+# 少 1 个字节（CRLF→LF 少了一个 CR），PNG/JPG 这种压缩格式丢字节就是图坏了 —— 而且
+# 坏的那份正是打进 vsix 的模板。同时工作区会长期"磁盘 ≠ blob"，体检/打包都容易被误导。
+# 所以：文本一律 LF（上面那条），二进制一律显式声明为 binary（下面前缀规则**在后**，覆盖上面的 text 规则）。
+assets/template/**/*.png  binary
+assets/template/**/*.jpg  binary
+assets/template/**/*.jpeg binary
+assets/template/**/*.gif  binary
+assets/template/**/*.ico  binary
+assets/template/**/*.webp binary
+assets/template/**/*.pdf  binary

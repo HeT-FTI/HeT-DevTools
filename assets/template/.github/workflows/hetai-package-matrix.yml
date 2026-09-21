@@ -37,7 +37,6 @@ env:
   BUILD_REGISTRY_API_URL: ${{ vars.BUILD_REGISTRY_API_URL }}
   CONAN_REMOTE_URL: ${{ vars.CONAN_REMOTE_URL }}
   HETAI_RUN_KEY: ${{ format('{0}-attempt-{1}', github.run_id, github.run_attempt) }}
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   prepare:

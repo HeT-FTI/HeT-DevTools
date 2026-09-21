@@ -1,5 +1,13 @@
 name: CI (lint / test / package)
 
+# 本文件只做**自动静态门禁**：push / PR 时跑三 OS 的 lint + 单测 + 打包（几十秒，必跑）。
+# 真实工具链（裸机车道）验证**按平台拆分**为三个手动 workflow，便于定位与重跑：
+#   linux   → .github/workflows/env-fresh-linux.yml   （managed lane / system）
+#   windows → .github/workflows/env-fresh-windows.yml （system+MSVC / lane-blocked → 一键切换）
+#   macos   → .github/workflows/env-fresh-macos.yml   （macos-native lane + docs）
+# （原 ci.yml › platform-real 的 macOS+Linux 混合矩阵已移除：macOS 归 env-fresh-macos，
+#   Linux 真实构建归 env-fresh-linux › linux-managed。）
+
 "on":
   push:
     branches: [main]
@@ -15,7 +23,34 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # 必须在 checkout **之前**：Windows runner 的 git 默认 `core.autocrlf=true`，
+      # 会把 `assets/template/**` 检出成 CRLF → windows 那份 vsix 与 linux/macOS 那份
+      # 逐字节不同（2026-09-15 实测：155/158 个模板文件 hash 不一致，全是行尾差异）。
+      # 模板是发给所有平台的产物，交付物不能取决于打包机的 git 配置。
+      # （仓库另有 `.gitattributes` 声明 `assets/template/** text eol=lf` 做双保险。）
+      - name: Normalise line endings (template assets must stay LF)
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
+
+      # 2026-09-15：Windows 上模板曾被检出成 CRLF（=> 三份 vsix 不一致）。
+      # `.gitattributes`（`eol=lf`）与上面的 `core.autocrlf false` 都没能挡住 ——
+      # 所以现在**产物阶段**自己归一（`scripts/lf.mjs`，见 `npm run asset`）。
+      # 这步保留事实记录：到底是 git 转的，还是后面某步改的。
+      - name: "DIAG: 检出后的行尾现状"
+        shell: bash
+        run: |
+          echo "HOME=$HOME GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-unset}"
+          git config --list --show-origin | grep -iE 'autocrlf|core\.eol' || echo "(无 autocrlf/core.eol 配置)"
+          echo "模板属性：$(git check-attr text eol -- assets/template/.editorconfig | tr '\n' ' ')"
+          echo "检出后含 CR 的模板文件：$(grep -rlI $'\r' assets/template | wc -l) / $(find assets/template -type f | wc -l)"
+          # 字节级现场：CR 到底是哪种形态（CRLF / LFCR / 单独 CR）—— 上一轮就是这里没看清
+          f=assets/template/.editorconfig
+          echo "$f：CR 字节 $(tr -dc '\r' < "$f" | wc -c) ｜ LF 字节 $(tr -dc '\n' < "$f" | wc -c)"
+          head -c 48 "$f" | od -c | head -4
+          # 交叉判据：上面的 grep 与 Node 读到的字节是否一致（不一致 = 判据本身有问题）
+          node scripts/check-template-lf.mjs || true
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -35,8 +70,17 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Audit (no CI facts leaked into product code)
+        run: npm run audit:pins
+
       - name: Package .vsix (dry-run artifact)
         run: npm run package
+
+      # 门禁：进 vsix 的模板必须是 LF（否则打出来的包因平台而异，见上面的 checkout 步骤）。
+      # 用 Node 版判据（读到的字节说了算）：上一轮 grep 版在 Windows 上给出的结论自相矛盾，
+      # 详见 scripts/check-template-lf.mjs 的注释。
+      - name: Guard — packaged template must be LF (same bytes on every OS)
+        run: node scripts/check-template-lf.mjs
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -44,83 +88,5 @@ jobs:
           name: het-devtools-vsix-${{ matrix.os }}
           path: "*.vsix"
           if-no-files-found: error
-
-  # P2 platform REAL run — macOS native + Linux extension host driving a REAL
-  # conan build through the extension (fixture = COMMITTED assets/template;
-  # coverage ON on the Linux lane / OFF on macOS). Converged (run
-  # 34196799144 all green) → now MANUAL ONLY (workflow_dispatch) to save quota.
-  platform-real:
-    name: platform-real (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Bootstrap conan into PATH (native lane runtime)
-        run: |
-          python3 -m venv /tmp/het-conan
-          /tmp/het-conan/bin/pip install --quiet "conan>=2,<3"
-          echo "/tmp/het-conan/bin" >> "$GITHUB_PATH"
-
-      # conan 2 needs a default profile before the first `create`; fresh
-      # runners have none (~/.conan2/profiles/default missing -> error). Detect
-      # once so the native lane can build (gcc on Linux, apple-clang on macOS).
-      - name: Conan default profile detect (fresh runners)
-        run: conan profile detect --force
-
-      - name: Ensure macOS build tools (cmake/ninja)
-        if: runner.os == 'macOS'
-        run: |
-          command -v cmake >/dev/null 2>&1 || brew install cmake
-          command -v ninja >/dev/null 2>&1 || brew install ninja
-
-      # Decision 3 (docs real on macOS): native docs build needs doxygen/
-      # graphviz on PATH and sphinx inside the PATH python (the conan venv).
-      - name: macOS docs toolchain (doxygen/graphviz + sphinx venv)
-        if: runner.os == 'macOS'
-        run: |
-          command -v doxygen >/dev/null 2>&1 || brew install doxygen
-          command -v dot >/dev/null 2>&1 || brew install graphviz
-          /tmp/het-conan/bin/pip install --quiet 'sphinx>=8,<9' 'sphinx-intl' 'sphinx-rtd-theme>=2,<4' 'numpy>=1.26'
-          /tmp/het-conan/bin/python -c 'import numpy, sphinx; print("venv docs ok:", numpy.__version__)'
-          echo "PATH python -> $(command -v python || echo none) | python3 -> $(command -v python3 || echo none)"
-
-      # @vscode/test-electron's own macOS download+unzip is unreliable on the
-      # runners (spawn .../MacOS/Electron ENOENT); install VS Code via the brew
-      # cask to /Applications. scripts/run-real.mjs LOCATES the main executable
-      # inside the .app at runtime (name has varied across versions).
-      - name: Install VS Code (macOS, brew cask)
-        if: runner.os == 'macOS'
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          HOMEBREW_NO_INSTALL_CLEANUP: "1"
-        run: |
-          if [ ! -d "/Applications/Visual Studio Code.app" ]; then
-            brew install --cask visual-studio-code
-          fi
-          ls -la "/Applications/Visual Studio Code.app/Contents/MacOS/" || true
-
-      - name: REAL extension-host build (VS Code 1.95; xvfb on headless Linux)
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:real
-          else
-            npm run test:real
-          fi
-        env:
-          VSCODE_VERSION: "1.95.0"
 
 

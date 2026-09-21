@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { onStateChange } from '../live';
+import { showDetailPanel } from '../detail/host';
 
 export interface CoverageState {
   /** Current project name ('' when none). */
@@ -20,52 +21,48 @@ export interface CoverageDeps {
 }
 
 export function showCoveragePanel(context: vscode.ExtensionContext, deps: CoverageDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.coverage',
-    'HeT DevTools — 覆盖率',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'coverage', title: 'HeT DevTools — 覆盖率' }, (panel) => {
 
-  const render = async (): Promise<void> => {
-    if (panelIsDisposed) {
-      return;
-    }
-    const state = await deps.getState();
-    if (!panelIsDisposed) {
-      panel.webview.html = buildHtml(state);
-    }
-  };
-
-  // V5-6 (issue-3): stay byte-synced with the chip — any state change
-  // (build/test/coverage elsewhere) repaints this panel too.
-  let panelIsDisposed = false;
-  const unsubscribe = onStateChange(() => void render());
-  panel.onDidDispose(() => {
-    panelIsDisposed = true;
-    unsubscribe();
-  });
-
-  panel.webview.onDidReceiveMessage(async (message: { type: string; enabled?: boolean }) => {
-    if (message.type === 'toggle' && typeof message.enabled === 'boolean') {
-      const r = await deps.toggle(message.enabled);
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'runCoverage') {
-      const r = await deps.runCoverage();
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'openReport') {
-      const state = await deps.getState();
-      if (state.reportPath) {
-        void vscode.env.openExternal(vscode.Uri.file(state.reportPath));
+    const render = async (): Promise<void> => {
+      if (panelIsDisposed) {
+        return;
       }
-    }
-  });
+      const state = await deps.getState();
+      if (!panelIsDisposed) {
+        panel.webview.html = buildHtml(state);
+      }
+    };
 
-  void render().catch((e) => console.error('[het] coverage render failed', e));
-  return panel;
+    // V5-6 (issue-3): stay byte-synced with the chip — any state change
+    // (build/test/coverage elsewhere) repaints this panel too.
+    let panelIsDisposed = false;
+    const unsubscribe = onStateChange(() => void render());
+    panel.onDidDispose(() => {
+      panelIsDisposed = true;
+      unsubscribe();
+    });
+
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string; enabled?: boolean }) => {
+      if (message.type === 'toggle' && typeof message.enabled === 'boolean') {
+        const r = await deps.toggle(message.enabled);
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'runCoverage') {
+        const r = await deps.runCoverage();
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'openReport') {
+        const state = await deps.getState();
+        if (state.reportPath) {
+          void vscode.env.openExternal(vscode.Uri.file(state.reportPath));
+        }
+      }
+    });
+
+    void render().catch((e) => console.error('[het] coverage render failed', e));
+    return sub;
+  });
 }
 
 function buildHtml(state: CoverageState): string {
@@ -98,17 +95,17 @@ function buildHtml(state: CoverageState): string {
      </div>
      <script>
        (function () {
-         const vscode = acquireVsCodeApi();
          document.querySelectorAll('[data-action]').forEach((b) =>
            b.addEventListener('click', () => {
              const act = b.getAttribute('data-action');
              if (act === 'toggle') {
-               vscode.postMessage({ type: 'toggle', enabled: b.getAttribute('data-value') === 'true' });
+               send({ type: 'toggle', enabled: b.getAttribute('data-value') === 'true' });
              } else {
-               vscode.postMessage({ type: act });
+               send({ type: act });
              }
            }));
        })();
      </script>`,
   );
 }
+

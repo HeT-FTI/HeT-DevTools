@@ -3,7 +3,6 @@ PROJECT_NAME = %LIB_NAME%
 PROJECT_LOGO = ../../../images/ALL_logo.jpg
 INPUT = ./_%LAN%_v%VER%_docstrings/
 FILE_PATTERNS = %PATTERNS%
-MAIN_PAGE = mainpage
 RECURSIVE = YES
 OUTPUT_DIRECTORY = ./build_sub/
 
@@ -11,7 +10,13 @@ OUTPUT_DIRECTORY = ./build_sub/
 EXTRACT_ALL = YES
 EXTRACT_PRIVATE = NO
 HIDE_UNDOC_MEMBERS = NO
-CLANG_ASSISTED_PARSING = YES
+# Off on purpose: INPUT is the generated mirror, not the real build context, so clang only
+# reported missing Conan headers that the docs job never installs.
+CLANG_ASSISTED_PARSING = NO
+# Show include/ src/ dox/ rather than the mirror's internal folder name.
+FULL_PATH_NAMES = YES
+STRIP_FROM_PATH = ./_%LAN%_v%VER%_docstrings
+STRIP_FROM_INC_PATH = ./_%LAN%_v%VER%_docstrings
 
 # export format
 GENERATE_HTML = YES
@@ -39,6 +44,6 @@ ALIASES += "exporter="
 ALIASES += "attacher="
 
 # support examples source
-EXAMPLE_PATH = ./_%LAN%_v%VER%_docstrings/
+EXAMPLE_PATH = %EXAMPLE_DIRS%
 EXAMPLE_PATTERNS = *.cxx
 EXAMPLE_RECURSIVE = YES

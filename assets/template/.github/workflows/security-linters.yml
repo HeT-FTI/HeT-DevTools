@@ -1,12 +1,8 @@
 name: MegaLinter
 
-# This workflow is called by ci-orchestrator.yml when the :shield: gitmoji
-# is present in commit messages.
+# Called by ci-orchestrator.yml on the :shield: gitmoji
 #
-# NOTE: The fcpp-dev branch has this workflow in debugging mode (triggers on
-# push to fcpp-dev only). In the ci-orchestrator system, this workflow is
-# triggered via workflow_call, and the gitmoji trigger logic is centralized
-# in the metadata-controller.
+# fcpp-dev keeps a debug trigger; under the orchestrator the gitmoji logic lives in the controller
 
 on:
   workflow_call:
@@ -34,15 +30,12 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install toolchain
         run: |
           sudo apt-get update
-          # Derive system packages from conandata.yml requirements so the gate
-          # follows dependency changes. When adding a new C/C++ dep whose headers
-          # appear in src/, extend the mapping below (see het-deps N1). Unknown
-          # deps are ignored here and surface as clang-tidy include errors.
+          # system packages derive from conandata.yml; extend the mapping for new deps whose headers land in src/
           DEPS=$(python3 - <<'PY'
           import yaml
           reqs = yaml.safe_load(open('conandata.yml'))['requirements']
@@ -52,12 +45,10 @@ jobs:
           PY
           )
           sudo apt-get install -y clang-tidy $DEPS
-          # apt clang-format (v18 on noble) does NOT support the `Language: C`
-          # config section (needs LLVM >= 19) — pin the pip build instead.
+          # apt clang-format 18 lacks the "Language: C" section (< 19) -- pin the pip build
           python3 -m pip install --only-binary :all: clang-format==23.1.0
 
-      # ETL is header-only and has no Ubuntu package; download the release
-      # archive at the version declared in conandata.yml (no hardcoded version).
+      # ETL is header-only with no apt package: fetch the version declared in conandata.yml
       - name: Install ETL headers (version from conandata.yml)
         run: |
           ETL_VER=$(python3 -c "import yaml; d=yaml.safe_load(open('conandata.yml')); print([r for r in d['requirements'] if r.startswith('etl/')][0].split('/')[1])")
@@ -65,10 +56,7 @@ jobs:
           unzip -q /tmp/etl.zip -d /tmp/etl-src
           echo "ETL_INC=/tmp/etl-src/etl-${ETL_VER}/include" >> "$GITHUB_ENV"
 
-      # Required gate: formatting must be clean.
-      # Private convention routes by language family: .c/.h -> C, .cpp/.hpp -> C++
-      # (clang-format's built-in extension map treats .h as C++, so we route
-      #  .h explicitly to the C config — see .github/skills/_shared/code-conventions.md)
+      # required: formatting clean; .h routes to C, .hpp to C++ (see code-conventions.md)
       - name: clang-format gate
         run: |
           find include src -type f \( -name '*.c' -o -name '*.h' \) \
@@ -76,9 +64,7 @@ jobs:
           find include src -type f \( -name '*.cpp' -o -name '*.hpp' \) \
             -exec clang-format --dry-run --Werror --style=file:.github/misc/.clang-format-cpp {} +
 
-      # Required gate: static analysis, warning = failure (WarningsAsErrors in .clang-tidy).
-      # Third-party headers come from apt and are treated as system headers, so only
-      # repo diagnostics count (HeaderFilterRegex anchored to ^(include|src)/).
+      # required: clang-tidy warnings are failures; only include|src diagnostics count
       - name: clang-tidy gate
         run: |
           shopt -s nullglob
@@ -98,19 +84,15 @@ jobs:
           /tmp/gitleaks detect -c .github/misc/.gitleaks.toml --no-banner
 
   megalinter:
-    name: MegaLinter (advisory)
+    name: MegaLinter
     runs-on: ubuntu-latest
-    # The MegaLinter run is advisory (see F7). It only needs to read the repo
-    # and upload its report artifact; it does NOT need to write back to GitHub.
-    # Keeping this read-only also lets the ci-orchestrator call this reusable
-    # workflow with a read-only token (GitHub caps reusable-workflow perms by
-    # the caller, and a write job here would force the caller into write-all).
+    # MegaLinter blocks on the rules it is configured with; it only reads, so callers stay least-privilege
     permissions:
       contents: read
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -130,14 +112,10 @@ jobs:
           API_USER: ${{ secrets.API_REPORTER_BASIC_AUTH_USERNAME }}
           API_PASS: ${{ secrets.API_REPORTER_BASIC_AUTH_PASSWORD }}
 
-      # Run MegaLinter WITH Grafana API reporter when secrets are available
-      # [advisory] semgrep/checkov/devskim run inside MegaLinter cannot be made
-      # deterministic without runner log access (see REMEDIATION-PLAN.md F7);
-      # the REQUIRED gates are the native quality-gates job above.
+      # devskim/semgrep/checkov block as well; the native gate above is the deterministic baseline
       - name: MegaLinter (with Grafana reporter)
         if: steps.check_grafana.outputs.available == 'true'
-        # Pinned to MegaLinter v8.8.0 — keep in sync with `--release` in
-        # .github/misc/run-megalinter.sh so local runs match CI exactly.
+        # Pinned to MegaLinter v8.8.0 -- keep in sync with run-megalinter.sh --release
         uses: oxsecurity/megalinter@e08c2b05e3dbc40af4c23f41172ef1e068a7d651
         continue-on-error: false
         id: ml_grafana
@@ -169,7 +147,7 @@ jobs:
       # Always upload artifacts as a safety net (works for both paths)
       - name: Archive production artifacts
         if: success() || failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: MegaLinter reports
           include-hidden-files: "true"

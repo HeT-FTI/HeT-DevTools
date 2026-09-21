@@ -1,9 +1,6 @@
 # .mega-linter.yml
 #
-# Version note: this config is consumed by BOTH CI and local runs. The MegaLinter
-# image version is pinned outside this file — in the CI action
-# (oxsecurity/megalinter@e08c2b05... = v8.8.0) and in .github/misc/run-megalinter.sh
-# (--release v8.8.0). Keep those two in sync.
+# MegaLinter version is pinned outside this file: the CI action SHA and run-megalinter.sh --release
 FILTER_REGEX_INCLUDE: "(include|src)/"
 
 ENABLE: "C,CPP"
@@ -18,8 +15,7 @@ ENABLE_LINTERS:
 DISABLE_LINTERS:
   - C_CPPLINT
   - CPP_CPPLINT
-  # clang-tidy is owned by the native required gate in security-linters.yml
-  # (MegaLinter cannot resolve conan/apt dependency headers)
+  # clang-tidy is owned by the native required gate
   - C_CLANG_TIDY
   - CPP_CLANG_TIDY
 
@@ -41,8 +37,7 @@ REPOSITORY_SEMGREP_ARGUMENTS:
 REPOSITORY_CHECKOV_CONFIG_FILE: ".github/misc/.checkov.yml"
 
 REPOSITORY_CHECKOV_ARGUMENTS:
-  # NOTE: no `-d .` here — the checkov descriptor already runs `--directory .`,
-  # adding it again makes checkov scan the repo TWICE (every finding duplicated).
+  # no `-d .`: the checkov descriptor already scans the repo root, duplicating findings
   - "--skip-path"
   - "include/"
   - "--skip-path"
@@ -61,10 +56,7 @@ REPOSITORY_DEVSKIM_ARGUMENTS:
   - "--ignore-globs"
   - "**/test_package/**"
 
-# clang-format configs. NOTE: must use the FLAT <LINTER>_CONFIG_FILE form —
-# MegaLinter reads `C_CLANG_FORMAT_CONFIG_FILE` as a top-level key; the nested
-# `C_CLANG_FORMAT: {CONFIG_FILE: ...}` form is NOT parsed and silently falls
-# back to clang-format's LLVM defaults (which is why every line was flagged).
+# use the FLAT <LINTER>_CONFIG_FILE key; the nested form is silently ignored
 C_CLANG_FORMAT_CONFIG_FILE: ".github/misc/.clang-format-c"
 CPP_CLANG_FORMAT_CONFIG_FILE: ".github/misc/.clang-format-cpp"
 

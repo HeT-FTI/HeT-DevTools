@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { FcppMetadata } from '../../types';
 import { esc, pageShell } from '../ui';
+import { showDetailPanel } from '../detail/host';
 
 export interface SettingsFieldDef {
   key: string;
@@ -39,35 +40,31 @@ export interface SettingsPanelDeps {
 }
 
 export function showSettingsPanel(context: vscode.ExtensionContext, deps: SettingsPanelDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.settings',
-    'HeT DevTools — 项目设置',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'settings', title: 'HeT DevTools — 项目设置' }, (panel) => {
 
-  const render = async (): Promise<void> => {
-    const data = await deps.getMetadata();
-    panel.webview.html = buildHtml(data.metadata, data.error);
-  };
-  panel.webview.onDidReceiveMessage(
-    async (message: { type: string; patch?: Record<string, unknown>; refresh?: boolean }) => {
-      if (message.type === 'save' && message.patch) {
-        const result = await deps.savePatch(message.patch);
-        await vscode.window.showInformationMessage(result.message);
-        if (result.ok) {
-          await deps.refreshProject();
+    const render = async (): Promise<void> => {
+      const data = await deps.getMetadata();
+      panel.webview.html = buildHtml(data.metadata, data.error);
+    };
+    const sub = panel.webview.onDidReceiveMessage(
+      async (message: { type: string; patch?: Record<string, unknown>; refresh?: boolean }) => {
+        if (message.type === 'save' && message.patch) {
+          const result = await deps.savePatch(message.patch);
+          await vscode.window.showInformationMessage(result.message);
+          if (result.ok) {
+            await deps.refreshProject();
+          }
+          await render();
+        } else if (message.type === 'refresh') {
+          await render();
         }
-        await render();
-      } else if (message.type === 'refresh') {
-        await render();
-      }
-    },
-  );
+      },
+    );
 
-  void render().catch((e) => console.error('[het] settings render failed', e));
-  return panel;
+    void render().catch((e) => console.error('[het] settings render failed', e));
+    return sub;
+  });
 }
 
 function controlHtml(field: SettingsFieldDef, value: unknown): string {
@@ -130,8 +127,7 @@ function buildHtml(metadata?: FcppMetadata, error?: string): string {
        <button class="secondary" onclick="refresh()">↻ 重新加载</button>
      </div>
      <script>
-       const vscode = acquireVsCodeApi();
-       function refresh() { vscode.postMessage({ type: 'refresh' }); }
+       function refresh() { send({ type: 'refresh' }); }
        function save() {
          const patch = {};
          document.querySelectorAll('[data-key]').forEach((el) => {
@@ -145,8 +141,9 @@ function buildHtml(metadata?: FcppMetadata, error?: string): string {
              else { patch[key] = raw; }
            }
          });
-         vscode.postMessage({ type: 'save', patch: patch });
+         send({ type: 'save', patch: patch });
        }
      </script>`,
   );
 }
+

@@ -86,14 +86,21 @@ export function pageShell(title: string, inner: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${esc(title)}</title>
 ${BASE_CSS}
-</head>
-<body>
-${inner}
 <script>
+  // 本页**唯一**获取 VS Code API 的地方。同一文档里 acquireVsCodeApi() 只能调用一次，
+  // 第二次会抛 "An instance of the VS Code API has already been acquired"，把该 script
+  // 里后面的代码整段带走（页面按钮全部变哑 —— 见 F.29 质量面板那次）。
+  // 两条配套规则：
+  // · **片段 HTML 禁止自带 <script>**，要发消息就调用这里的全局 send()；
+  // · 这段放在 <head> 里，保证它在任何页面片段脚本**之前**就绪（不靠"谁先跑"）。
   const vscode = acquireVsCodeApi();
+  function send(msg) { vscode.postMessage(msg); }
   function post(cmd) { vscode.postMessage({ type: 'command', command: cmd }); }
   function refresh() { vscode.postMessage({ type: 'refresh' }); }
 </script>
+</head>
+<body>
+${inner}
 </body>
 </html>`;
 }

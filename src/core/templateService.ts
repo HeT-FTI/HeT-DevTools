@@ -1,4 +1,10 @@
-import { TEMPLATE_LOCAL_PATH, TEMPLATE_REF, TEMPLATE_REPO, TEMPLATE_TAG } from './templateDefaults';
+import {
+  TEMPLATE_LOCAL_PATH,
+  TEMPLATE_REF,
+  TEMPLATE_REPO,
+  TEMPLATE_TAG,
+  TEMPLATE_TAG_COMMIT,
+} from './templateDefaults';
 
 /**
  * Resolve the template origin used to bootstrap new fcpp projects (D-8).
@@ -55,18 +61,28 @@ export interface TemplateAnchor {
 
 /**
  * D-E3: maintainer-anchored bootstrap chain for the DEFAULT (recommended) path.
- * Order is fixed: TEMPLATE_TAG (official release) → TEMPLATE_REF (fixed hash).
+ * Order: TEMPLATE_TAG (official release) → TEMPLATE_REF (fixed hash).
  * The caller falls back to the bundled asset template when every anchor fails
  * (offline / unknown ref) — the third rung of the chain.
  * Local-mode sources return no remote anchors (they ARE the template).
- * `tag` is injectable so tests can simulate a future upstream release.
+ *
+ * `tag` / `tagCommit` are injectable so tests can simulate a future release.
+ *
+ * ⚠️ **tag 只有当它与 pin 同内容时才能排链首**（`tagCommit === source.ref`）：
+ * 链上只有**一条** sha256，拿它去校验"旧 tag"的 tarball 必然失败 —— 白下一轮候选才退到固定
+ * 哈希（2026-09-20 上游"修了但不打 tag"就是这个形状）。没有 tag 时链首直接是固定哈希。
  */
-export function recommendedAnchors(source: TemplateSource, tag = TEMPLATE_TAG): TemplateAnchor[] {
+export function recommendedAnchors(
+  source: TemplateSource,
+  tag = TEMPLATE_TAG,
+  tagCommit = TEMPLATE_TAG_COMMIT,
+): TemplateAnchor[] {
   if (source.mode !== 'remote') {
     return [];
   }
   const out: TemplateAnchor[] = [];
-  if (tag) {
+  const tagUsable = !!tag && (source.ref === tag || !source.ref || tagCommit === source.ref);
+  if (tagUsable) {
     out.push({ ref: tag, label: `推荐 · Release ${tag}` });
   }
   if (source.ref && source.ref !== tag) {

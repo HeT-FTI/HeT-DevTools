@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://schemas.fcpp.dev/metadata.json",
+  "$id": "https://example.com/schemas/metadata.json",
   "title": "Template metadata contract",
-  "description": "Single source of truth for fcpp build & CI. Consumers: CMake, conanfile.py, test_package, ci-orchestrator. See .github/skills/_shared/metadata-contract.md.",
+  "description": "Single source of truth for this project's build & CI. Consumers: CMake, conanfile.py, test_package, ci-orchestrator. See .github/skills/_shared/metadata-contract.md.",
   "type": "object",
   "required": ["name", "version", "build_type", "dependencies", "workflow_triggers"],
   "additionalProperties": false,
@@ -19,7 +19,11 @@
     "url": { "type": "string" },
     "homepage": { "type": "string" },
     "cmake_version": { "type": "string" },
-    "build_cppstd": { "type": "string" },
+    "build_cppstd": {
+      "description": "C++ standard. Both recipes silently fall back to 17 for anything outside this set, so the enum is what stops that fallback from quietly hiding a typo.",
+      "type": "string",
+      "enum": ["17", "20", "23"]
+    },
     "build_cstd": { "type": "string" },
     "build_type": { "type": "string", "enum": ["Debug", "Release"] },
     "activate_code_coverage": { "type": "boolean" },
@@ -50,14 +54,15 @@
     "enable_python_bindings": { "type": "boolean" },
     "workflow_triggers": {
       "type": "object",
-      "required": ["build", "tests", "release", "docs", "security_scan"],
+      "required": ["build", "tests", "release", "docs", "security_scan", "cross_compile"],
       "additionalProperties": false,
       "properties": {
         "build": { "type": "boolean" },
         "tests": { "type": "boolean" },
         "release": { "type": "boolean" },
         "docs": { "type": "boolean" },
-        "security_scan": { "type": "boolean" }
+        "security_scan": { "type": "boolean" },
+        "cross_compile": { "type": "boolean" }
       }
     }
   },

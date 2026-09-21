@@ -5,6 +5,7 @@ import {
   hudEnabled,
   hudHtml,
 } from '../features/hud/hudModel';
+import { hudKeyHint } from '../features/hud/keys';
 
 function model(over: Partial<HudModel> = {}): HudModel {
   return {
@@ -53,8 +54,12 @@ describe('V4-6 hudModel (Level-2 HUD card)', () => {
     assert.ok(html.includes('87%'), 'coverage badge');
     assert.ok(html.includes('WSL2'), 'provider line');
     assert.ok(html.includes('conan 托管'), 'env row value');
-    assert.ok(html.includes('<kbd>1</kbd>'), 'digit hint');
-    assert.ok(html.includes("vscode.postMessage({ type: 'close' })"), 'Esc wiring');
+    // §F.43：提示行不再手写"按键 1–9"，而是与命令表同源（`hudKeyHint()`），
+    // 并注明"卡片聚焦或在编辑器里都可按"（实测反馈：只按页面内 keydown 时按键常常无效）。
+    assert.ok(html.includes(hudKeyHint()), 'digit hint 与键位表同源');
+    assert.ok(hudKeyHint().includes('1–9'), '要写清键位范围');
+    assert.ok(html.includes('Esc'), '要写清关闭键');
+    assert.ok(html.includes("send({ type: 'close' })"), 'Esc wiring');
   });
 
   it('font-size setting is honoured (clamped 10..20)', () => {
@@ -76,25 +81,26 @@ describe('V4-6 hudModel (Level-2 HUD card)', () => {
       }),
       13,
     );
-    assert.ok(html.includes('class="env-path"'), 'dual-line path element present');
+    assert.ok(html.includes('class="next"'), 'dual-line path element present（共用卡片的次级行）');
     assert.ok(html.includes('~/.het-fti/managed-env/venv/bin/conan'), 'lane conan path shown');
     assert.ok(html.includes('~/.het-fti/managed-env/venv/bin/cmake'), 'lane cmake path shown');
   });
 
-  it('env tones map to ok/warn/fail classes', () => {
+  it('env tones map onto the shared card states（不再有自己的 dot 皮肤）', () => {
     const html = hudHtml(
       model({
         env: [
           { label: 'conan', value: 'ok', tone: 'ok' },
           { label: 'x', value: 'warn', tone: 'warn' },
           { label: 'y', value: 'fail', tone: 'fail' },
+          { label: 'z', value: 'plain', tone: 'plain' },
         ],
       }),
       13,
     );
-    assert.ok(html.includes('class="dot ok"'));
-    assert.ok(html.includes('class="dot warn"'));
-    assert.ok(html.includes('class="dot fail"'));
+    for (const cls of ['card st-ok', 'card st-warn', 'card st-fail', 'card st-na']) {
+      assert.ok(html.includes(cls), `缺 ${cls}`);
+    }
   });
 
   it('hudEnabled: only an explicit true disables the HUD', () => {

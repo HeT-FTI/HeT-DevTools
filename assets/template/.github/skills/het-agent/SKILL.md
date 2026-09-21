@@ -50,6 +50,18 @@ user-invocable: true
 | "挖掘专利点并生成交底书" | `het-patent` (N8) |
 | "上板前先审计裸机依赖" | `het-audit` (N6) → `het-board` (S5) |
 
+## Intent Shortcuts（意图快捷词：把自然语言映射到技能与流水线）
+
+| Phrase（说法） | Means（含义） | Where（去向） |
+|------|------|------|
+| 全量 / 全量测试 / 走一遍全量 / full sweep | every online pipeline except release (build + tests + docs + security + cross-compile) | commit form in `_shared/gitmoji.md`; if red → `het-fix-ci` |
+| 只构建 / build only | the build pipeline alone | `het-build` (S1) |
+| 发版 / release / 打 tag | semantic-release, needs `(:package:):` | `het-release` (S2) |
+| 上板 / board / 烧录 | the self-hosted `:fire:` route | `het-board` (S5) |
+| 覆盖率 / coverage | rates + the two-leg reconciliation | `het-build` (S1) |
+
+A "全量" request is **not** a release request: never add `(:package:):` to satisfy it. 全量不含发版。
+
 ## Available Skills（可用技能范围）
 
 - **Template built-in（模板内置）**: all under `skills/` (manifest-registered). 全部技能。

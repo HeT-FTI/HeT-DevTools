@@ -1,4 +1,4 @@
-# C++ family (.hpp and .cpp) — fcpp private convention: .hpp/.cpp are C++
+# C++ family (.hpp and .cpp) — project convention: .hpp/.cpp are C++
 # (see .github/skills/_shared/code-conventions.md; conanfile.py syntax guide #9)
 # The native gate routes .cpp/.hpp files to this config explicitly (--style=file:).
 Language: Cpp

@@ -13,3 +13,7 @@ void test_c_zlib();
 
 
 void test_c_pcre();
+
+
+
+void test_c_generic();

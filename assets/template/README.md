@@ -27,7 +27,8 @@ capabilities.
 - **Component Structure**:
     - pairwise header and source assumption
     - suffix distinguishment, (.h, .c) for C part, and (.hpp, .cpp) for C++ part
-    - documenting system uses .dox for pure docstring, .cxx for examples codes
+    - documenting system uses .dox for pure docstring, .cxx for examples codes; both are
+      documentation-only and live exclusively under `docs/doxygen/dox/`, never in `include/`/`src/`
 
 ## Features
 
@@ -100,15 +101,18 @@ as a **soft rule** the emoji also triggers from anywhere in the message:
 | Pipeline | gitmoji in commit message | Gate (`metadata.json`) |
 |----------|---------------------------|------------------------|
 | Build | `:building_construction:` | `workflow_triggers.build` |
-| Tests + coverage | `:beer:` | `trigger_tests` / `activate_code_coverage` (needs `build_type=Debug`) |
-| Release | `(:package:):` | `workflow_triggers.release` (needs `build_type=Release`) |
+| Tests + coverage | `:beer:` | `trigger_tests` / `activate_code_coverage` |
+| Release | `(:package:):` | `workflow_triggers.release` + the gitmoji in the pushed commits |
 | Docs | `:book:` | `workflow_triggers.docs` |
 | Security / lint | `:shield:` | `workflow_triggers.security_scan` (also runs on every PR) |
+| Online cross-compile | `:hammer_and_wrench:` | `workflow_triggers.cross_compile` (Conan cross-build from a generated profile; decoupled: the emoji starts only this one) |
 | Board cross-build | `:fire:` (or `🔥`) | hetai self-hosted runner |
 
-> **Note**: `workflow_triggers.build` / `.tests` / `.security_scan` are enabled by default
-> (commit-lint & schema gates always run on push/PR; build/tests/security shift-left on PRs).
-> `release` and `docs` require both the gitmoji and the switch (`build_type` must match too).
+> **Note**: `workflow_triggers.build` / `.tests` / `.docs` / `.security_scan` / `.cross_compile` are
+> enabled by default (commit-lint & schema gates always run on push/PR; build/tests/security
+> shift-left on PRs).
+> `release` needs both halves: the switch is the standing permission, the gitmoji is this push's
+> intent. `build_type` is the project's default build type and gates nothing.
 
 ## Crash Course of Build
 
@@ -132,18 +136,16 @@ conan create . -pr:b=default -pr:h=arm_profile -s build_type=Debug --build=missi
 python ./docs/build.py
 ```
 
-### 3. One-lined build automation 
+### 3. Full local pass
 
-Unix-like platforms (Linux, MacOS):
+Steps 1-2 end to end, then drop the local package. `build_type` is the one `metadata.json` declares,
+and the package name is yours — there is nothing to edit here:
 
 ```bash
-bash ./build
-```
-
-Windows:
-
-```powershell
-Get-Content "build" | Invoke-Expression
+conan create . -pr:b=default -pr:h=default -s build_type=Debug --build=missing
+python ./docs/build.py
+python ./test_package/conanfile.py
+conan remove "<your-package>/*" --confirm
 ```
 
 ### 4. Add requirements
@@ -155,11 +157,11 @@ link (no need modification on *CMakeLists.txt*).
 Requirements for your project can be the package archived on [Conan Center](https://conan.io/center), or user 
 built ones. If the later one, at least you need a locale Conan server for managing your libraries.
 
-### 5. Run MegaLinter locally (advisory SAST)
+### 5. Run MegaLinter locally (blocking SAST)
 
 MegaLinter mirrors the CI `megalinter` job (`.github/workflows/security-linters.yml`): same config
 (`.github/misc/.mega-linter.yml`), same full image, and the same version (`v8.8.0`, pinned to match the
-CI action). It runs the **advisory** SAST layer — gitleaks / semgrep / checkov / devskim, plus clang-format
+CI action). It runs the SAST layer — gitleaks / semgrep / checkov / devskim, plus clang-format
 & cppcheck. The **required** gates (clang-format / clang-tidy / gitleaks with pinned tool versions) are the
 native `quality-gates` job of the same workflow.
 
@@ -216,8 +218,8 @@ project-root/
 ├── wokspace/                 # Agentic Coding work products (git-ignored)
 ├── docs/                     # Documentations root
 │   ├── doxygen/              # Doxygen system main root
-│   │   ├── dox/              # Pure documentations' folder
-│   │   │   ├── demos/        # Examples catalogue
+│   │   ├── dox/              # Pure documentations' folder (the only home of .dox/.cxx)
+│   │   │   ├── demos/        # Examples catalogue (hand-written, standalone)
 │   │   │   │   ├── *.dox     # Documenting docstring
 │   │   │   │   └── *.cxx     # Example codes
 │   │   │   └── *.dox         # Main pages and etc
@@ -238,6 +240,13 @@ project-root/
     ├── conanfile.py          # Conan recipe for test_package
     └── CMakeLists.txt        # CMake build workflow for test_package
 ```
+
+> **Suffix rule**: `.dox` and `.cxx` are **documentation-only**. They live exclusively under
+> `docs/doxygen/dox/` as hand-written standalone files (`mainpage.dox`, `demos/*.dox`,
+> `demos/*.cxx`) and are never written as a docstring inside `include/` or `src/`, which carry
+> `.h/.c/.hpp/.cpp` only. A complete doc set is a landing page plus a tutorial; example code is
+> optional (0..N `.cxx` per `.dox`, no pairing) and `docs/build.py` fails the build when any of
+> those properties breaks.
 
 ## Module Generation (experimental)
 
@@ -264,6 +273,23 @@ migration to fit the future C++ standard.
 
 - **Desktop**: Windows, Linux, MacOS
 - **Mobile**: arm-linux, risc-v
+
+## Downstream Contract (HeT DevTools)
+
+This template is also built by the **HeT DevTools** VS Code extension in a *managed lane*: it creates its
+own private venv / `CONAN_HOME` and a **generated** Conan profile instead of probing the user's machine.
+The interfaces below are **backward compatible** — by default the behaviour is byte-for-byte the CI one.
+
+| Interface | Value | Default | Meaning |
+|---|---|---|---|
+| `HET_CMAKE_MIN` | version string (e.g. `3.15`) | unset | Overrides the `cmake_minimum_required` floor (CI baseline is 3.28) |
+| `HET_CMAKE_BUILD_REQUIRE` | `none` or a version | unset | Skips / replaces the ConanCenter `cmake/<metadata.cmake_version>` (read by **both** recipes) |
+| `metadata.graphviz_bin` | directory path | **absent** | Absent = use `dot` from `PATH`. This is a **machine-specific** field and normally should not be committed |
+| `conancenter` remote name | keep the standard name | — | A downstream private `CONAN_HOME` may point it at a corporate mirror — never assume its URL |
+| Coverage artifact | `test_package/test/export/coverage/coverage_summary.json` | — | **Parse the JSON, not the HTML.** The `coverage_report/index.html` path stays a stable artifact, but its layout belongs to genhtml and may be restyled at any release. CI publishes the lcov leg as the canonical `Coverage-report` artifact and keeps `Coverage-report-<os>-<ts>` as per-leg evidence |
+| `user.het:run_tests` | conan conf (`-c user.het:run_tests=False`) | `True` | Narrows `metadata.trigger_tests` for one run and leaves the library uninstrumented — what the build-only CI legs do. Namespaced to the template, not to the package, so a rename never has to touch it |
+
+(The implementations live in `CMakeLists.txt`, `conanfile.py`, `test_package/conanfile.py` and `docs/build.py`.)
 
 ## Benchmark (on-board)
 

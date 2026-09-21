@@ -1,4 +1,4 @@
-# C family (.c and .h) — fcpp private convention: .h/.c are C
+# C family (.c and .h) — project convention: .h/.c are C
 # (see .github/skills/_shared/code-conventions.md; conanfile.py syntax guide #9)
 # The native gate routes .c/.h files to this config explicitly (--style=file:).
 #

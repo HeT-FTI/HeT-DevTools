@@ -2,6 +2,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { run } from '../utils/exec';
+import { wslExePath } from './wslHost';
 
 /**
  * Generic toolchain discovery (V2 follow-up: "environment completeness").
@@ -194,7 +195,7 @@ export async function probeWslTools(timeoutMs = 8000): Promise<Record<string, st
   }
     const script =
       'for t in gcc g++ make cmake lcov gcovr mingw32-make python3; do printf "%s=%s\\n" "$t" "$(command -v $t 2>/dev/null || echo none)"; done';
-    const r = await run('wsl.exe', ['-e', 'sh', '-lc', script], { timeoutMs }).catch(() => null);
+    const r = await run(wslExePath(), ['-e', 'sh', '-lc', script], { timeoutMs }).catch(() => null);
   return r && r.code === 0 ? parseWslSnapshot(r.stdout) : {};
 }
 

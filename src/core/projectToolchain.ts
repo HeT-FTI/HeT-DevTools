@@ -40,3 +40,18 @@ export function projectToolchainLabel(v: ProjectToolchain | undefined): string {
   }
   return '未声明（按托管语义处理）';
 }
+
+/**
+ * T12 (E7): the build type used for LOCAL `conan create`.
+ *
+ * metadata.build_type is the project's declared semantics (the release flow
+ * writes Release), but the previous code hard-coded 'Debug' at every call site,
+ * so a Release project was never locally verified as Release. Coverage runs are
+ * the one exception: instrumentation is Debug-only by construction.
+ */
+export function localBuildType(meta?: { build_type?: string; activate_code_coverage?: boolean }): 'Debug' | 'Release' {
+  if (meta?.activate_code_coverage === true) {
+    return 'Debug';
+  }
+  return meta?.build_type === 'Release' ? 'Release' : 'Debug';
+}

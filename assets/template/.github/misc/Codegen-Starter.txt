@@ -122,15 +122,26 @@ generate/modify each one according to the project design above.
      • Set "is_shared", "is_header", "enable_python_bindings",
        "activate_code_coverage" from Section 1.
      • Populate "dependencies" → common/c/cpp/infra from Section 3.
-     • Set "cmake_version" to "4.0.1" (or newer).
+     • Set "cmake_version" to "4.2.3" (or newer). 4.2 is the floor for MSVC:
+       below it CMake cannot name the Visual Studio generator Conan derives.
      • Set "trigger_tests" to true, "saving_tests_log" to true.
-     • Set "workflow_triggers" to the team default:
-         {"build": true, "tests": true, "release": false,
-          "docs": false, "security_scan": true}
-       build/test/security gates are on by default (PR shift-left);
-       release/docs are opt-in via gitmoji.
+     • Set "workflow_triggers" to the team default (all six true):
+         {"build": true, "tests": true, "release": true,
+          "docs": true, "security_scan": true, "cross_compile": true}
+       A switch grants PERMISSION, the gitmoji states INTENT. Handing every
+       permission out up front is what keeps one skill document literally true
+       in every derived project. build/test/docs/security gates are on by
+       default (PR shift-left); cross_compile is decoupled (only
+       :hammer_and_wrench: starts it, and it never runs on a PR); release needs
+       BOTH the switch and the release gitmoji in the pushed commits.
+     • Leave "build_type" at the project default ("Debug"). It is a declared
+       project state, NOT a gate: no pipeline reads it, so never flip it in
+       order to release.
      • Configure "doc_languages", "doc_versions", "doc_doxygen_folders",
-       "doc_doxygen_suffix" as appropriate.
+       "doc_doxygen_suffix" as appropriate. Keep .dox/.cxx as documentation-only
+       suffixes: every .dox/.cxx file must live under docs/doxygen/dox/, never
+       under include/ or src/ (the suffix list applies to all folders, so it
+       does not enforce this by itself).
 
 4.2  conandata.yml  (dependency specs)
      ─────────────
@@ -257,6 +268,8 @@ via `python ./docs/build.py`. The agent must generate:
 
 5.2  docs/doxygen/dox/mainpage.dox  (Doxygen landing page)
      ─────────────────────────────
+     • HARD REQUIREMENT: exactly one @mainpage must exist, or the docs cannot
+       be built at all (docs/build.py fails the build otherwise).
      • Rewrite the mainpage to reflect the new project: name, purpose, quick
        usage snippet, feature list.
      • Support [en]/[zh] @section tags if multi-language.
@@ -264,9 +277,17 @@ via `python ./docs/build.py`. The agent must generate:
 
 5.3  docs/doxygen/dox/demos/*.dox + *.cxx  (Doxygen example pages)
      ────────────────────────────────────
-     • For each major feature, create a .dox file with explanatory docstring
-       and a paired .cxx file with runnable example code.
+     • HARD REQUIREMENT: demos/ must exist and hold at least one tutorial .dox
+       with @example -- that tutorial plus the mainpage is what makes the doc
+       set "complete".
+     • SOFT: the example code. For each major feature create a .dox with the
+       explanatory docstring and 0..N .cxx files it pulls in via @include.
+       Several .cxx per .dox is normal; no 1:1 pairing is required.
      • Use @example, @code{.cpp} / @endcode, @ingroup as in the template.
+     • IMPORTANT: .dox and .cxx are documentation-only. They live exclusively
+       under docs/doxygen/dox/ and must never be created under include/ or
+       src/, which carry .h/.c/.hpp/.cpp only. A .dox/.cxx in those trees is a
+       layout violation (see docs/doxygen/dox/ for the canonical set).
 
 5.4  Sphinx documentation  (index.rst as a mini journal paper)
      ─────────────────────
@@ -419,9 +440,9 @@ SECTION 6 — OTHER FILES FOR PROJECT COMPLETENESS
      • Keep existing patterns. Add project-specific ignores if needed
        (e.g., model weights, large data files).
 
-6.4  build  (one-liner build script)
-     • Update the `conan remove` line's package name from "fcpp" to the new
-       project name (Section 1).
+6.4  (retired)  the old `build` one-liner script
+     • Deleted from the template: README section 3 inlines the same commands, so
+       there is no longer a package-name or build-type literal to hand-edit.
 
 6.5  Doxyfile
      • No manual edits needed — it uses %PLACEHOLDER% tokens filled by
@@ -441,7 +462,7 @@ SECTION 6 — OTHER FILES FOR PROJECT COMPLETENESS
        .github/misc/commitlint.config.js).
 
 6.8  .github/misc/.mega-linter.yml
-     • Advisory SAST config (MegaLinter runs as non-blocking in CI).
+     • SAST config (MegaLinter also fails the build; devskim bans C functions under include/ and src/)
        Optionally adjust linter settings for your coding style preferences.
        Required quality gates (clang-format/clang-tidy/gitleaks) live in
        .github/workflows/security-linters.yml and use the configs in
@@ -469,6 +490,8 @@ Before finishing, the agent MUST verify:
   [ ] At least one unit test file exists per header in test_package/test/unit/.
   [ ] Stress test files exist for performance-critical paths in test/stress/.
   [ ] docs/doxygen/dox/mainpage.dox is rewritten for the new project.
+  [ ] docs/doxygen/dox/demos/ holds a tutorial .dox with @example, and every
+      file it @include-s exists.
   [ ] index.rst is concise (mini-paper style: background → method → quick
       start → results → license), readable in under 2 minutes.
   [ ] Long content is split into separate .rst files, not crammed in index.rst.
@@ -477,7 +500,7 @@ Before finishing, the agent MUST verify:
   [ ] docs/images/ALL_title_card.png exists (placeholder or real artwork).
   [ ] README.md is updated with new project information.
   [ ] LICENSE and NOTICE are UNCHANGED from the template.
-  [ ] build script references the correct package name.
+  [ ] No package-name literal left outside metadata.json.
   [ ] .github/misc/.releaserc.json needs no repositoryUrl edit (derived from git remote).
   [ ] If pybind11 enabled: api/python_bindings.cpp binds all public APIs.
   [ ] The whole project builds: conan create . -s build_type=Debug --build=missing

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
+import { showDetailPanel } from '../detail/host';
 
 export interface ReleaseState {
   projectName: string;
@@ -10,6 +11,11 @@ export interface ReleaseState {
   changelogExists: boolean;
   changelogHead: string;
   hasRemote: boolean;
+  /**
+   * 发布就绪判决（§F.41）：与 Preflight 面板 / L2 卡片**同一份** `summarizePreflight`
+   * 的结果。以前这里只看"开关开没开"，于是出现"预检说不能发、发布中心说能发"。
+   */
+  verdict?: { allowRelease: boolean; fact: string; next?: string; firstFail?: string };
 }
 
 export interface ReleaseDeps {
@@ -20,35 +26,31 @@ export interface ReleaseDeps {
 }
 
 export function showReleasePanel(context: vscode.ExtensionContext, deps: ReleaseDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.release',
-    'HeT DevTools — 发布中心',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'release', title: 'HeT DevTools — 发布中心' }, (panel) => {
 
-  const render = async (): Promise<void> => {
-    const state = await deps.getState();
-    panel.webview.html = buildHtml(state);
-  };
+    const render = async (): Promise<void> => {
+      const state = await deps.getState();
+      panel.webview.html = buildHtml(state);
+    };
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string }) => {
-    if (message.type === 'refresh') {
-      await render();
-    } else if (message.type === 'toggleRelease') {
-      const r = await deps.toggleRelease();
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'openCommitRelease') {
-      await deps.openCommitRelease();
-    } else if (message.type === 'openChangelog') {
-      await deps.openChangelog();
-    }
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string }) => {
+      if (message.type === 'refresh') {
+        await render();
+      } else if (message.type === 'toggleRelease') {
+        const r = await deps.toggleRelease();
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'openCommitRelease') {
+        await deps.openCommitRelease();
+      } else if (message.type === 'openChangelog') {
+        await deps.openChangelog();
+      }
+    });
+
+    void render().catch((e) => console.error('[het] release render failed', e));
+    return sub;
   });
-
-  void render().catch((e) => console.error('[het] release render failed', e));
-  return panel;
 }
 
 function buildHtml(s: ReleaseState): string {
@@ -70,6 +72,14 @@ function buildHtml(s: ReleaseState): string {
       <h1>发布中心</h1>
       <div class="sub">项目：${esc(s.projectName || '—')} · v${esc(s.version || '?')} · ${esc(s.buildType || '?')}</div>
       ${noProject ? '<div class="warn">未检测到 fcpp 项目。</div>' : ''}
+      <h2>发布就绪（与预检同源）</h2>
+      ${s.verdict
+        ? s.verdict.allowRelease
+          ? `<div class="ok-note">✓ 可以发布 · ${esc(s.verdict.fact)}</div>`
+          : `<div class="warn">✗ 还不能发布 · ${esc(s.verdict.fact)}
+              ${s.verdict.next ? `<div class="tag">${esc(s.verdict.next)}</div>` : ''}
+              ${s.verdict.firstFail ? `<div class="tag">首个红项：${esc(s.verdict.firstFail)}</div>` : ''}</div>`
+        : '<div class="tag">尚未取到预检结果（打开「发布前检查」跑一遍）。</div>'}
       <h2>发布开关</h2>
       ${releaseOff
         ? `<div class="warn">发布开关未开启（workflow_triggers.release=false）。开启后带 📦 的提交才会触发 semantic-release。
@@ -80,7 +90,8 @@ function buildHtml(s: ReleaseState): string {
       <div class="step"><span class="num">①</span><span>开启发布开关 ───── ${s.releaseOn ? '✓ 已完成' : '待开启'}</span></div>
       <div class="step"><span class="num">②</span><span>提交带 📦 标签的消息（示例：chore(:package:): bump version）
         <div class="row"><button data-action="openCommitRelease">打开提交助手并预填 📦</button></div></span></div>
-      <div class="step"><span class="num">③</span><span>推送到 GitHub → CI 自动执行（semantic-release）</span></div>
+      <div class="step"><span class="num">③</span><span>推送到 GitHub → CI 自动执行（semantic-release）
+        ${s.verdict && !s.verdict.allowRelease ? '<div class="tag">注意：发布前检查未就绪，CI 可能拦下（详见「发布前检查」）</div>' : ''}</span></div>
       <h2>版本规则（由提交前缀驱动）</h2>
       <div class="tag">feat → minor · fix/perf → patch · BREAKING CHANGE(!) → major · chore 不触发发版</div>
       <h2>CHANGELOG 预览</h2>
@@ -90,12 +101,14 @@ function buildHtml(s: ReleaseState): string {
         : '<div class="tag">本地尚无 CHANGELOG.md（由 semantic-release 在发布时自动生成）。</div>'}
     </div>
     <script>
-      (function () {
-        const vscode = acquireVsCodeApi();
-        document.querySelectorAll('button[data-action]').forEach((b) =>
-          b.addEventListener('click', () => vscode.postMessage({ type: b.getAttribute('data-action') })));
-      })();
+      // 事件委托 + pageShell 提供的全局 send()（本页不取 API，见 F.29）。
+      document.addEventListener('click', function (ev) {
+        var el = ev.target instanceof Element ? ev.target : null;
+        var btn = el && el.closest('[data-action]');
+        if (btn) { send({ type: btn.getAttribute('data-action') }); }
+      });
     </script>
     `,
   );
 }
+

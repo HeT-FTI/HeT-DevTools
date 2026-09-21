@@ -126,6 +126,30 @@ export function run(
   });
 }
 
+/**
+ * Resolve the Python interpreter **once, the same way everywhere**.
+ *
+ * Why this exists（2026-09-20 实测，同事报"系统中有 python，文档中心总是提示缺少 python"）：
+ *   · 执行路径（跑 `docs/build.py`）试的是 `python` **和** `python3`；
+ *   · 而文档面板的**探测**只 `which('python')` —— Ubuntu/Mint 从 20.04 起默认不提供
+ *     `python` 这个命令（除非装 `python-is-python3`），于是出现"Python ✗ / Sphinx ✓"
+ *     这种自相矛盾的显示，用户会以为缺 python 而去装一个已经有的东西。
+ * 一次性把语义定死：**探测与执行必须问同一个函数**，别在两处各写一遍候选名单。
+ * Windows 上还有 `py` 启动器；Linux/macOS 上 `python3` 优先。
+ */
+export async function findPython(
+  platform: NodeJS.Platform | string = process.platform,
+): Promise<string | null> {
+  const names = platform === 'win32' ? ['python', 'python3', 'py'] : ['python3', 'python'];
+  for (const n of names) {
+    const found = await which(n);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
 /** Locate an executable on PATH (respecting .exe/.cmd on Windows). */
 export async function which(command: string): Promise<string | null> {
   const pathEnv = processEnv.PATH ?? '';

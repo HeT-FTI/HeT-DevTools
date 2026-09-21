@@ -47,7 +47,7 @@ export const CURATED_PACKAGES: CuratedEntry[] = [
   { conan: 'msgpack', versions: ['7.0.0', '6.1.1'], bucket: 'cpp', note: 'MessagePack 序列化' },
   { conan: 'cereal', versions: ['1.3.2', '1.3.1'], bucket: 'cpp', note: 'C++ 序列化库（头文件）' },
   // -- 测试 / 通用基础设施 (bucket: common)
-  { conan: 'gtest', versions: ['1.15.2', '1.14.0'], bucket: 'common', note: 'GoogleTest（测试框架）' },
+  { conan: 'gtest', versions: ['1.15.2', '1.14.0'], bucket: 'infra', note: 'GoogleTest（测试框架；规则固定归 infra）' },
   { conan: 'doctest', versions: ['2.4.11'], bucket: 'common', note: '轻量单测框架（单头文件）' },
   { conan: 'catch2', versions: ['3.8.0', '2.13.10'], bucket: 'common', note: 'Catch2 测试框架' },
   { conan: 'benchmark', versions: ['1.9.1', '1.8.5'], bucket: 'common', note: 'Google Benchmark（微基准）' },

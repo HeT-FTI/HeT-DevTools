@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GTestRunSummary, GTestResult } from '../../core/gtestRunner';
 import { esc, pageShell } from '../ui';
+import { showDetailPanel } from '../detail/host';
 
 export interface TestResultsPanelDeps {
   runTests: () => void;
@@ -12,24 +13,20 @@ export function showTestResultsPanel(
   summary: GTestRunSummary,
   deps: TestResultsPanelDeps,
 ): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.testResults',
-    'HeT DevTools — 测试结果',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
-  panel.webview.html = buildHtml(summary);
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'testResults', title: 'HeT DevTools — 测试结果' }, (panel) => {
+    panel.webview.html = buildHtml(summary);
 
-  panel.webview.onDidReceiveMessage((message: { type: string; command?: string; file?: string; line?: number }) => {
-    if (message.type === 'command' && message.command === 'het.test') {
-      deps.runTests();
-    } else if (message.type === 'openfile' && message.file && typeof message.line === 'number') {
-      deps.openFile(message.file, message.line);
-    }
+    const sub = panel.webview.onDidReceiveMessage((message: { type: string; command?: string; file?: string; line?: number }) => {
+      if (message.type === 'command' && message.command === 'het.test') {
+        deps.runTests();
+      } else if (message.type === 'openfile' && message.file && typeof message.line === 'number') {
+        deps.openFile(message.file, message.line);
+      }
+    });
+
+    return sub;
   });
-
-  return panel;
 }
 
 function statusIcon(status: GTestResult['status']): string {
@@ -91,9 +88,9 @@ function buildHtml(summary: GTestRunSummary): string {
      </div>
      ${suiteHtml}
      <script>
-       const vscode = acquireVsCodeApi();
-       function post(cmd) { vscode.postMessage({ type: 'command', command: cmd }); }
-       function open(file, line) { vscode.postMessage({ type: 'openfile', file: file, line: line }); }
+       function post(cmd) { send({ type: 'command', command: cmd }); }
+       function open(file, line) { send({ type: 'openfile', file: file, line: line }); }
      </script>`,
   );
 }
+

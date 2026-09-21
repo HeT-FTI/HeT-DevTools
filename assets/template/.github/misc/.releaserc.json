@@ -7,7 +7,7 @@
         "preset": "conventionalcommits",
         "parserOpts": {
           "headerPattern": "^(\\w*)(?:\\(([^)]*)\\))?!?: (.*)$",
-          "headerCorrespondence": ["type", "scope", "subject"]
+          "headerCorrespondence": ["type", "emoji", "subject"]
         }
       }
     ],
@@ -17,7 +17,7 @@
         "preset": "conventionalcommits",
         "parserOpts": {
           "headerPattern": "^(\\w*)(?:\\(([^)]*)\\))?!?: (.*)$",
-          "headerCorrespondence": ["type", "scope", "subject"]
+          "headerCorrespondence": ["type", "emoji", "subject"]
         }
       }
     ],

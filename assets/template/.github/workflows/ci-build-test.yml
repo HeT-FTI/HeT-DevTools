@@ -1,8 +1,10 @@
 name: Build CI
 
-# This workflow can be triggered in two ways:
-# 1. Via workflow_call from ci-orchestrator.yml (recommended)
-# 2. Directly on push/pull_request (for backward compatibility)
+# Called by ci-orchestrator.yml.
+#
+# Scope: compile + link + run test_package/main.cpp on every supported platform, in the one
+# build type metadata.json declares. Keeping this half cheap is what lets it run everywhere;
+# the test suite and coverage belong to full-test-automation.yml.
 
 on:
   workflow_call:
@@ -11,28 +13,39 @@ on:
         description: 'Package name from metadata.json'
         required: true
         type: string
+      build_type:
+        description: 'Build type from metadata.json: the single source of truth for CI'
+        required: false
+        type: string
+        default: 'Debug'
 
 env:
   CONAN_HOME: ~/.conan2
 
 jobs:
   build-and-test:
-    name: Build and Test (${{ matrix.os }}, ${{ matrix.build_type }})
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      # fail-fast off: every leg must report its own result
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        build_type: [Debug, Release]
-        exclude:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # the package manager is the one genuine per-OS difference left
+          - os: ubuntu-latest
+            pkg_conf: '-c tools.system.package_manager:sudo=True'
+          - os: macos-latest
+            pkg_conf: '-c tools.system.package_manager:sudo=True'
           - os: windows-latest
-            build_type: Debug
+            pkg_conf: '-c tools.system.package_manager:tool=choco'
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -40,19 +53,6 @@ jobs:
         shell: bash
         run: |
           pip install --only-binary :all: conan==2.31.2
-
-      - name: Install jq (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          choco install jq -y
-
-      - name: Set package name from inputs
-        id: read_meta
-        shell: bash
-        run: |
-          # Use input from orchestrator (already parsed from metadata.json)
-          echo "pkg_name=${{ inputs.pkg_name }}" >> $GITHUB_OUTPUT
 
       - name: Configure Conan
         shell: bash
@@ -63,34 +63,26 @@ jobs:
       - name: System dependencies (Ubuntu)
         if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
-          sudo apt install -y libnsl-dev lcov
+          sudo apt install -y libnsl-dev
 
       - name: Cache Conan packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.CONAN_HOME }}
           key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py', 'conandata.yml', 'metadata.json') }}
           restore-keys: |
             conan-${{ runner.os }}-
 
-      - name: Build and test with conanfile
-        if: ${{ matrix.os != 'windows-latest' }}
+      - name: Build the package and run main.cpp
         shell: bash
+        # HET_CMAKE_BUILD_REQUIRE is the escape hatch for this leg alone if a runner's toolchain
+        # ever outgrows the cmake metadata.json pins: a version pins another, `none` uses PATH.
+        # The conf namespace is the template's, not the package's: renaming the project in
+        # metadata.json must never mean editing this line.
         run: |
-          conan create . -pr:b=default -pr:h=default -s build_type=${{ matrix.build_type }} --build=missing \
-          -c tools.system.package_manager:mode=install -c tools.system.package_manager:sudo=True
-        timeout-minutes: 55
-
-      - name: Build and test with conanfile (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: bash
-        # [advisory] conan create on Windows is environment-sensitive and has never
-        # passed in this repo's history. Linux legs are the required gate;
-        # root-cause needs runner log access.
-        continue-on-error: true
-        run: |
-          conan create . -pr:b=default -pr:h=default -s build_type=${{ matrix.build_type }} --build=missing \
-          -c tools.system.package_manager:mode=install -c tools.system.package_manager:tool=choco
+          conan create . -pr:b=default -pr:h=default -s build_type=${{ inputs.build_type }} --build=missing \
+          -c user.het:run_tests=False \
+          -c tools.system.package_manager:mode=install ${{ matrix.pkg_conf }}
         timeout-minutes: 55
 
       - name: Clean up test_package builds
@@ -102,4 +94,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          conan remove "${{ steps.read_meta.outputs.pkg_name }}/*" --confirm
+          conan remove "${{ inputs.pkg_name }}/*" --confirm

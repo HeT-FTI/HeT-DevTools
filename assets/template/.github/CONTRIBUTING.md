@@ -1,4 +1,4 @@
-# Contributing to fcpp（贡献指南）
+# Contributing to this project（贡献指南）
 
 ## 提交规范（Commit Conventions — canonical form）
 
@@ -38,7 +38,7 @@ npx ajv validate -s .github/misc/metadata.schema.json -d metadata.json --spec=dr
 find include src -type f \( -name '*.c' -o -name '*.h' \) -exec clang-format --dry-run --Werror --style=file:.github/misc/.clang-format-c {} +
 find include src -type f \( -name '*.cpp' -o -name '*.hpp' \) -exec clang-format --dry-run --Werror --style=file:.github/misc/.clang-format-cpp {} +
 clang-tidy --config-file=.github/misc/.clang-tidy src/*.cpp -- -std=c++17 -Iinclude
-# MegaLinter SAST（advisory，镜像 CI 的 megalinter job；需 Docker/Podman）
+# MegaLinter SAST（会拦 CI，镜像 megalinter job；需 Docker/Podman）
 # 版本已固定为 v8.8.0，与 CI action（oxsecurity/megalinter@e08c2b05...）一致
 bash .github/misc/run-megalinter.sh          # 或 npm run lint:megalinter；--fix 自动修复
 

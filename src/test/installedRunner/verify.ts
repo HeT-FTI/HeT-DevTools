@@ -18,7 +18,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 
-const HET = 'het-test-publisher.het-devtools';
+import { EXTENSION_ID as HET } from '../hostExtension';
 const phase = process.env.HET_VERIFY_PHASE ?? 'empty';
 const PROJ = process.env.HET_VERIFY_DEST ?? '';
 
@@ -83,9 +83,14 @@ export async function run(): Promise<void> {
     await hold();
     const meta = JSON.parse(readFileSync(join(PROJ, 'metadata.json'), 'utf8')) as Record<string, unknown>;
     assert.strictEqual(meta.name, 'verify_proj', 'folder basename should become the project name');
-    if (process.platform === 'win32') {
-      assert.strictEqual(meta.activate_code_coverage, false, 'coverage must default off on Windows/MSVC');
-    }
+    // T13 (E8): the coverage default follows the PROVIDER capability, not the OS
+    // name — Windows+WSL2 (coverage=full) keeps it on; MSVC / macOS default off.
+    const plan = (await vscode.commands.executeCommand('het.getProvisionPlan')) as { provider?: string; coverage?: string } | null;
+    assert.strictEqual(
+      meta.activate_code_coverage === true,
+      plan?.coverage === 'full',
+      `coverage default must follow the provider (provider=${plan?.provider ?? '?'} coverage=${plan?.coverage ?? '?'})`,
+    );
     assert.ok(existsSync(join(PROJ, '.het', 'template-ref.json')), 'marker written');
     assert.ok(existsSync(join(PROJ, 'include', 'cpptest.hpp')), 'template tree copied');
     log('[verify-installed] empty-phase OK — Explorer zero-op init on disk (no auto-open in host)');
@@ -145,8 +150,11 @@ export async function run(): Promise<void> {
     const cases: { name: string; caps: Record<string, unknown>; provider: string; coverage: string }[] = [
       { name: 'win-noWSL', caps: { platform: 'win32', arch: 'x64', wslAvailable: false, wslDefaultReady: false, virtualizationEnabled: false, isAdmin: false, msvcAvailable: false }, provider: 'win-wsl-required', coverage: 'none' },
       { name: 'win-WSL2', caps: { platform: 'win32', arch: 'x64', wslAvailable: true, wslDefaultReady: true, virtualizationEnabled: true, isAdmin: true, msvcAvailable: true }, provider: 'win-wsl2', coverage: 'full' },
-      { name: 'linux-managed', caps: { platform: 'linux', arch: 'x64', isAdmin: true, linuxApt: true, linuxAptSudo: true }, provider: 'linux-managed', coverage: 'full' },
-      { name: 'linux-native', caps: { platform: 'linux', arch: 'x64', isAdmin: true, linuxApt: true, linuxAptSudo: false }, provider: 'linux-native', coverage: 'full' },
+      { name: 'linux-managed', caps: { platform: 'linux', arch: 'x64', isAdmin: true, linuxApt: true, linuxAptSudo: true, linuxVenv: true }, provider: 'linux-managed', coverage: 'full' },
+      // ADR-8：判定看"能不能建用户级车道"，不看 sudo 时间戳 —— 常规机器（sudo 要密码）
+      // 仍然是 linux-managed，只是缺包自愈不可用。
+      { name: 'linux-managed-no-root', caps: { platform: 'linux', arch: 'x64', isAdmin: false, linuxApt: true, linuxAptSudo: false, linuxVenv: true }, provider: 'linux-managed', coverage: 'full' },
+      { name: 'linux-native', caps: { platform: 'linux', arch: 'x64', isAdmin: true, linuxApt: true, linuxAptSudo: true, linuxVenv: false }, provider: 'linux-native', coverage: 'full' },
       { name: 'macos-native', caps: { platform: 'darwin', arch: 'arm64' }, provider: 'macos-native', coverage: 'none' },
     ];
     for (const c of cases) {
@@ -160,7 +168,7 @@ export async function run(): Promise<void> {
     delete process.env.HET_FAKE_HOST;
     const st = (await vscode.commands.executeCommand('het.envStatus')) as { state: string; tools: Record<string, string> } | null;
     assert.ok(st && typeof st.state === 'string' && st.tools, 'het.envStatus must be queryable in the installed host');
-    log('[verify-installed] matrix OK — 5 virtual hosts + envStatus queryable');
+    log('[verify-installed] matrix OK — 6 virtual hosts + envStatus queryable');
   } else {
     assert.fail('unknown phase ' + phase);
   }

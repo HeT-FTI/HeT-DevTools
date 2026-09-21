@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { LocalWorkflow } from '../../core/ciStatus';
+import { showDetailPanel } from '../detail/host';
 
 export interface CiRunInfo {
   name: string;
@@ -20,6 +21,10 @@ export interface CiState {
   runs: CiRunInfo[];
   online: boolean;
   actionsUrl: string;
+  /** 拿不到远端状态时的"为什么"（§F.43：不许只说"无法访问 GitHub"）。 */
+  reason?: string;
+  /** 拿不到远端状态时的"怎么办"。 */
+  fix?: string[];
 }
 
 export interface CiDeps {
@@ -28,29 +33,25 @@ export interface CiDeps {
 }
 
 export function showCiPanel(context: vscode.ExtensionContext, deps: CiDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.ci',
-    'HeT DevTools — CI 状态',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'ci', title: 'HeT DevTools — CI 状态' }, (panel) => {
 
-  const render = async (): Promise<void> => {
-    const state = await deps.getState();
-    panel.webview.html = buildHtml(state);
-  };
+    const render = async (): Promise<void> => {
+      const state = await deps.getState();
+      panel.webview.html = buildHtml(state);
+    };
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string }) => {
-    if (message.type === 'refresh') {
-      await render();
-    } else if (message.type === 'openActions') {
-      await deps.openActions();
-    }
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string }) => {
+      if (message.type === 'refresh') {
+        await render();
+      } else if (message.type === 'openActions') {
+        await deps.openActions();
+      }
+    });
+
+    void render().catch((e) => console.error('[het] ci render failed', e));
+      return sub;
   });
-
-  void render().catch((e) => console.error('[het] ci render failed', e));
-  return panel;
 }
 
 function buildHtml(s: CiState): string {
@@ -67,9 +68,18 @@ function buildHtml(s: CiState): string {
               `<div class="row"><span class="chip ${r.conclusion === 'success' ? 'ok' : r.conclusion === 'failure' ? 'fail' : ''}">${esc(r.conclusion || r.status)}</span><span class="fname">${esc(r.name)} · ${esc(r.branch)}</span><span class="tag">${esc(r.createdAt)}</span></div>`,
           )
           .join('');
+  // §F.43（实测反馈："无法访问 github" 看不出该怎么办）：给出**原因 + 可照做的下一步**。
+  const fixList = (s.fix ?? [])
+    .map((f) => `<li>${esc(f)}</li>`)
+    .join('');
   const offlineNote = s.online
     ? ''
-    : `<div class="warn">当前无法访问 GitHub（离线或无网络代理）。CI 状态仅展示本地工作流清单；恢复网络或登录后点「🔄 刷新」拉取运行状态（能力见 D-9 矩阵：匿名=公开仓库只读）。</div>`;
+    : `<div class="warn">当前拿不到 GitHub Actions 的远端状态。
+        ${s.reason ? `<div><b>为什么：</b>${esc(s.reason)}</div>` : ''}
+        <div><b>界面里还能做什么：</b>本地工作流清单照常展示；「在 GitHub 打开 Actions」按钮不依赖登录。</div>
+        ${fixList ? `<div><b>怎么办：</b><ul>${fixList}</ul></div>` : ''}
+        <div class="tag">能力矩阵（D-9）：匿名=公开仓库只读 · 登录后=私有仓库可读 · gh 缺失=只能看本地清单。</div>
+      </div>`;
   return pageShell(
     'CI 状态',
     `
@@ -94,9 +104,8 @@ function buildHtml(s: CiState): string {
     </div>
     <script>
       (function () {
-        const vscode = acquireVsCodeApi();
         document.querySelectorAll('button[data-action]').forEach((b) =>
-          b.addEventListener('click', () => vscode.postMessage({ type: b.getAttribute('data-action') })));
+          b.addEventListener('click', () => send({ type: b.getAttribute('data-action') })));
       })();
     </script>
     `,

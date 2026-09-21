@@ -1,7 +1,7 @@
 {
   "name": "fcpp",
   "target": "auto",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "team": "HeT-FTI",
   "license": "Apache-2.0",
   "description": "The simple description in meta",
@@ -10,7 +10,7 @@
   "topics": ["build", "library", "documentation", "test"],
   "url": "https://github.com/HeT-FTI/fcpp.git",
   "homepage": "https://github.com/HeT-FTI",
-  "cmake_version": "4.0.1",
+  "cmake_version": "4.2.3",
   "build_cppstd": "17",
   "build_cstd": "11",
   "build_type": "Debug",
@@ -30,7 +30,6 @@
     "infra": {"GTest": ["gtest::gtest"], "pybind11": ["pybind11::module"]}
   },
   "baremetal_white_list": ["etl", "ArduinoJson"],
-  "graphviz_bin": "/usr/bin",
   "doc_languages": ["en", "zh"],
   "doc_versions": ["1.0", "2.0"],
   "doc_doxygen_folders": ["include", "src", "docs/doxygen/dox"],
@@ -41,8 +40,9 @@
   "workflow_triggers": {
     "build": true,
     "tests": true,
-    "release": false,
-    "docs": false,
-    "security_scan": true
+    "release": true,
+    "docs": true,
+    "security_scan": true,
+    "cross_compile": true
   }
 }

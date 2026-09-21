@@ -1,14 +1,20 @@
 /**
- * V4-6 Level-2 HUD card — pure model + HTML builder.
+ * V4-6 Level-2 HUD card —— **与单页驾驶舱共用同一套组件**（决策 6A：HUD = L1 渲染器 + ≤2 行摘要）。
  *
- * The HUD is a single-instance webview that opens when the chip is clicked:
- * rich stats (health/build/test/coverage), a provider/runtime line (V4-1),
- * env rows, and real action buttons with 1..9 keyboard shortcuts. The HTML is
- * built here (pure) so unit tests / the zero-manual harness can assert the
- * structure (buttons, gitmoji semantics, font-size injection, no triggers
- * colliding with the fcpp CI table).
+ * 这里只做"把 HUD 的模型映射到共享组件"，不再自己画一套皮肤：
+ * - 顶部状态条 = `singlepage/shell › l1Html`（与驾驶舱 L1 同一渲染器、同一 token）；
+ * - 环境行 = `singlepage/shell › cardRowHtml`（同一张卡片的样子，`path` 落到卡片的次级行）；
+ * - CSS = `singlepage/tokens › hudCss`（只有我们自己的 `--het-*` / VS Code 变量，无色值字面量）；
+ * - 外壳 = `pageShell`（一个文档只取一次 API + 全局 `send/post`），交互走**事件委托**。
+ *
+ * 保留的原因与边界：HUD 仍有自己的消息协议（`command`/`close`/`snooze`/`hideHud`）与
+ * 快捷键（1–9 / Esc）—— 那是它的**功能**，不是"另一套皮"。模型仍是纯函数，可单测。
  */
-import { esc } from '../ui';
+import { esc, pageShell } from '../ui';
+import { hudCss } from '../cockpit/singlepage/tokens';
+import { cardRowHtml, l1Html } from '../cockpit/singlepage/shell';
+import { hudKeyHint } from './keys';
+import type { CardRow, CardState, L1Item } from '../cockpit/singlepage/model';
 
 export type Tone = 'ok' | 'warn' | 'fail' | 'plain';
 
@@ -39,6 +45,8 @@ export interface HudModel {
   title: string;
   health: number | null;
   running: string | null;
+  /** 正在跑的动作 id（§F.35）：HUD 与 chip 用同一份仓库级状态。 */
+  runningAction?: string | null;
   lastBuildOk: boolean | null;
   test: { passed: number; failed: number; skipped: number } | null;
   coverage: number | null;
@@ -67,165 +75,129 @@ export function defaultHudActions(): HudAction[] {
   ];
 }
 
-function toneClass(t: Tone): string {
-  return t === 'ok' ? 'ok' : t === 'fail' ? 'fail' : t === 'warn' ? 'warn' : 'plain';
+function toneToState(t: Tone): CardState {
+  return t === 'ok' ? 'ok' : t === 'fail' ? 'fail' : t === 'warn' ? 'warn' : 'na';
 }
 
-/** Build the HUD card HTML (self-contained, theme-aware, font-size from model). */
+/** HUD 的环境行 → 共享卡片模型（视觉语言与单页一致；`path` 落到卡片的次级行）。 */
+export function envCardOf(r: HudEnvRow, index: number): CardRow {
+  return {
+    id: `env-${index}-${r.label}`,
+    tab: 'overview',
+    label: r.label,
+    state: toneToState(r.tone),
+    fact: r.value,
+    ...(r.path ? { next: r.path } : {}),
+    ...(r.action
+      ? { action: { id: r.action, label: r.actionLabel ?? '打开', kind: 'action' as const } }
+      : {}),
+    stage: 'inline',
+    lazy: false,
+  };
+}
+
+/**
+ * HUD 顶部状态条 = 共享 L1 组件（五项：健康 · 构建 · 测试 · 覆盖率 · 环境）。
+ * 值与单页 L1 保持同一种写法（`92/100`、`7/8`、`87%`）—— 两处看到的数字应该是同一个说法。
+ */
+export function hudL1(m: HudModel): L1Item[] {
+  const health: CardState =
+    m.health === null ? 'idle' : m.health >= 80 ? 'ok' : m.health >= 50 ? 'warn' : 'fail';
+  const build: CardState = m.lastBuildOk === null ? 'idle' : m.lastBuildOk ? 'ok' : 'fail';
+  const test: CardState = m.test ? (m.test.failed > 0 ? 'fail' : 'ok') : 'idle';
+  const cov: CardState = m.coverage === null ? 'idle' : 'ok';
+  const env: CardState = m.provider
+    ? m.provider.coverage === 'full'
+      ? 'ok'
+      : m.provider.coverage === 'partial'
+        ? 'warn'
+        : 'fail'
+    : 'idle';
+  return [
+    { id: 'health', label: '健康', value: m.health === null ? '—' : `${m.health}/100`, state: health },
+    {
+      id: 'build',
+      label: '构建',
+      value: m.lastBuildOk === null ? '未运行' : m.lastBuildOk ? '成功' : '失败',
+      state: build,
+    },
+    {
+      id: 'test',
+      label: '测试',
+      value: m.test ? `${m.test.passed}/${m.test.passed + m.test.failed + m.test.skipped}` : '—',
+      state: test,
+    },
+    { id: 'coverage', label: '覆盖率', value: m.coverage === null ? '—' : `${m.coverage}%`, state: cov },
+    { id: 'env', label: '环境', value: m.provider?.label ?? m.runtime ?? '—', state: env },
+  ];
+}
+
+/**
+ * HUD 卡片 HTML。
+ *
+ * 结构固定为：共享 L1 条 → **≤2 行摘要** → 环境卡片（共享卡片渲染器）→ 动作 → 快捷键提示。
+ * 摘要行数是硬约束（6A 的原话），由门禁数出来（`hud-line` 元素 ≤ 2）。
+ */
 export function hudHtml(m: HudModel, fontSize: number): string {
-  const health = m.health === null ? '—' : `${m.health}/100`;
-  const healthTone: Tone = m.health === null ? 'plain' : m.health >= 80 ? 'ok' : m.health >= 50 ? 'warn' : 'fail';
-  const buildTxt = m.lastBuildOk === null ? '未运行' : m.lastBuildOk ? '成功' : '失败';
-  const buildTone: Tone = m.lastBuildOk === null ? 'plain' : m.lastBuildOk ? 'ok' : 'fail';
-  const covTxt = m.coverage === null ? '—' : `${m.coverage}%`;
-  const testTxt = m.test ? `${m.test.passed}/${m.test.passed + m.test.failed + m.test.skipped}` : '—';
-  const testTone: Tone = m.test ? (m.test.failed > 0 ? 'fail' : 'ok') : 'plain';
-  const provTone: Tone = m.provider ? (m.provider.coverage === 'full' ? 'ok' : m.provider.coverage === 'partial' ? 'warn' : 'fail') : 'plain';
-
-  const stat = (icon: string, label: string, value: string, tone: Tone, sub = ''): string => `
-    <div class="stat">
-      <div class="stat-icon">${icon}</div>
-      <div class="stat-body"><div class="stat-value ${toneClass(tone)}">${esc(value)}</div>
-      <div class="stat-label">${esc(label)}</div>${sub ? `<div class="stat-sub">${esc(sub)}</div>` : ''}</div>
-    </div>`;
-
-  const envRows = m.env
-    .map(
-      (r) => `<div class="env-row">
-        <span class="dot ${toneClass(r.tone)}">${r.tone === 'ok' ? '✓' : r.tone === 'fail' ? '✗' : r.tone === 'warn' ? '!' : '·'}</span>
-        <div class="env-body">
-          <div class="env-line"><span class="env-label">${esc(r.label)}</span><span class="env-value">${esc(r.value)}</span></div>
-          ${r.path ? `<div class="env-path">${esc(r.path)}</div>` : ''}
-        </div>
-        ${r.action ? `<button class="link" data-action="${esc(r.action)}">${esc(r.actionLabel ?? '打开')}</button>` : ''}
-      </div>`,
-    )
-    .join('');
-
+  // 'command' 协议：HUD 的脚本把 `data-action` 的值直接当命令 post（它的 env 行本来就是命令 id）
+  const envCards = m.env.map((r, i) => cardRowHtml(envCardOf(r, i), 'command')).join('');
   const actions = m.actions
     .map(
-      (a) => `<button class="act" data-action="${esc(a.cmd)}" title="${esc(a.detail ?? '')}">
-          ${a.digit ? `<span class="key">${a.digit}</span>` : ''}<span class="act-icon">${a.icon}</span>${esc(a.label)}
-        </button>`,
+      (a) =>
+        `<button class="hud-act" data-action="${esc(a.cmd)}"${a.digit ? ` data-key="${a.digit}"` : ''} title="${esc(a.detail ?? '')}">` +
+        `${a.digit ? `<span class="hud-key">${a.digit}</span>` : ''}<span class="ic">${a.icon}</span>${esc(a.label)}</button>`,
     )
     .join('');
-
-  const badges = [
-    `<span class="badge ${toneClass(healthTone)}">❤️ 健康 ${healthTone === 'ok' ? health : healthTone === 'warn' ? health : health}</span>`,
-    `<span class="badge ${toneClass(buildTone)}">🏗️ ${buildTxt}${m.buildAgo ? ` · ${m.buildAgo}` : ''}</span>`,
-    `<span class="badge ${toneClass(testTone)}">🍺 测试 ${testTxt}</span>`,
-  ].join(' ');
-
-  const footer = m.templateBehind > 0 ? `📖 模板可更新 ${m.templateBehind} 个提交 · ` : '📖 模板一致 · ';
-  const covBadge = m.coverage === null ? '' : `📊 覆盖率 ${covTxt} · `;
-
-  return `<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body {
-    font-family: var(--vscode-font-family);
-    font-size: ${Math.max(10, Math.min(20, fontSize))}px;
-    color: var(--vscode-foreground);
-    background: var(--vscode-editorWidget-background);
-    margin: 0 auto; padding: 16px;
-    border: 1px solid var(--vscode-widget-border, #333);
-    border-radius: 12px;
-    /* V5-7 (issue-4): responsive width — fill the window like a markdown doc,
-       cap at a readable width and centre on very wide windows. */
-    width: 100%; max-width: min(780px, calc(100vw - 32px));
-  }
-  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .head h1 { font-size: 1.25em; margin: 0; flex: 1; }
-  .open-dash { font-size: .8em; }
-  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-  .badge { border-radius: 10px; padding: 2px 10px; font-size: .78em; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-  .badge.ok { background:#388a34; color:#fff; } .badge.fail { background:#a1260d; color:#fff; } .badge.warn { background:#b8954a; color:#fff; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
-  .stat { display: flex; gap: 8px; align-items: center; background: var(--vscode-editor-background); border-radius: 8px; padding: 8px 10px; }
-  .stat-icon { font-size: 1.5em; }
-  .stat-value { font-weight: 700; font-size: 1.05em; }
-  .stat-label { opacity: .7; font-size: .72em; }
-  .stat-sub { opacity: .6; font-size: .68em; }
-  .ok { color:#89d185; } .warn { color:#e2c08d; } .fail { color:#f14c4c; } .plain { opacity:.85; }
-  h2 { font-size: .72em; text-transform: uppercase; letter-spacing: .5px; opacity: .7; margin: 14px 0 6px; }
-  .env { background: var(--vscode-editor-background); border-radius: 8px; padding: 4px 10px; }
-  .env-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
-  .dot { width: 14px; text-align:center; flex: none; }
-  .env-body { flex: 1; min-width: 0; }
-  .env-line { display: flex; align-items: center; gap: 8px; }
-  .env-label { flex: 1; }
-  .env-value { opacity: .85; font-size: .9em; }
-  .env-path { opacity: .55; font-size: .72em; margin-top: 1px; word-break: break-all; }
-  .provider { display:flex; align-items:center; gap:6px; margin-top:8px; font-size:.82em; }
-  .acts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px; }
-  button.act {
-    display:flex; align-items:center; gap:6px; justify-content:flex-start;
-    background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-    border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: .85em;
-  }
-  button.act:hover { opacity: .9; }
-  .key { font-size: .72em; opacity: .6; border:1px solid currentColor; border-radius: 4px; padding: 0 4px; }
-  .act-icon { font-size: 1.1em; }
-  button.link { background:none; border:none; color: var(--vscode-textLink-foreground); cursor:pointer; font-size:.8em; padding:0; }
-  .foot { margin-top: 10px; font-size: .72em; opacity: .65; display:flex; justify-content: space-between; flex-wrap: wrap; gap:4px; }
-  .prefs { margin-top: 8px; display:flex; gap: 12px; flex-wrap: wrap; }
-  .hint kbd { font-family: var(--vscode-font-family); border:1px solid currentColor; border-radius:3px; padding:0 3px; }
-</style>
-</head>
-<body>
-  <div class="head">
-    <h1>◇ ${esc(m.title)}</h1>
-    <button class="act open-dash" data-action="het.dashboard">🏠 仪表盘</button>
-  </div>
-  <div class="badges">${badges}</div>
-  <div class="stats">
-    ${stat('❤️', '健康', health, healthTone)}
-    ${stat('🏗️', '构建', buildTxt, buildTone, m.buildAgo ?? '')}
-    ${stat('🍺', '测试', testTxt, testTone)}
-  </div>
-  <h2>环境与工具链</h2>
-  <div class="env">${envRows || '<div class="env-row"><span class="env-value">未就绪</span></div>'}</div>
-  ${m.provider ? `<div class="provider"><span class="dot ${toneClass(provTone)}">${provTone === 'ok' ? '✓' : provTone === 'warn' ? '!' : '✗'}</span><span>${esc(m.provider.label)}</span></div>` : ''}
-  <h2>动作</h2>
-  <div class="acts">${actions}</div>
-  <div class="prefs">
-    <button class="link" id="btn-snooze">👁 暂时隐藏监控 chip 5 分钟</button>
-    <button class="link" id="btn-hide-hud">用快捷列表替代 HUD</button>
-    <button class="link" id="btn-open-env">⚙️ 打开环境与工具链</button>
-  </div>
-  <div class="foot">
-    <span class="hint">按键 <kbd>1</kbd>–<kbd>9</kbd> 直达 · <kbd>Esc</kbd> 关闭</span>
-    <span>${covBadge}${footer}${esc(m.runtime ?? '')}</span>
+  const behind = m.templateBehind > 0 ? `模板可更新 ${m.templateBehind} 个提交` : '模板一致';
+  const inner = `
+  <div class="hud" style="font-size: ${Math.max(10, Math.min(20, fontSize))}px">
+    <div class="hud-head">
+      <h1>◇ ${esc(m.title)}</h1>
+      <button class="hud-act" data-action="het.dashboard">🏠 仪表盘</button>
+    </div>
+    <header class="l1" data-l1>${l1Html(hudL1(m), m.running)}</header>
+    <div class="hud-lines">
+      <div class="hud-line">${esc(m.provider ? m.provider.label : '环境车道：未知（点「一键体检」看看）')}</div>
+      <div class="hud-line">${esc(`${behind}${m.coverage === null ? '' : ` · 覆盖率 ${m.coverage}%`}${m.runtime ? ` · ${m.runtime}` : ''}`)}</div>
+    </div>
+    <h2 class="hud-h2">环境与工具链</h2>
+    <div class="cards">${envCards || '<div class="card st-na"><span class="ic">·</span><span class="nm">未就绪</span><span class="fact">先准备环境</span></div>'}</div>
+    <h2 class="hud-h2">动作</h2>
+    <div class="hud-acts">${actions}</div>
+    <div class="hud-prefs">
+      <button class="hud-link" id="btn-snooze">👁 暂时隐藏监控 chip 5 分钟</button>
+      <button class="hud-link" id="btn-hide-hud">用快捷列表替代 HUD</button>
+      <button class="hud-link" data-action="het.dashboard">⚙️ 打开环境与工具链</button>
+    </div>
+    <div class="hud-foot">
+      <span>${esc(hudKeyHint())}</span>
+      <span>快捷键与驾驶舱共用同一套状态色</span>
+    </div>
   </div>
   <script>
     (function () {
-      const vscode = acquireVsCodeApi();
-      function post(cmd) { vscode.postMessage({ type: 'command', command: cmd }); }
-      document.querySelectorAll('button[data-action]').forEach((b) =>
-        b.addEventListener('click', () => post(b.getAttribute('data-action'))));
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { vscode.postMessage({ type: 'close' }); return; }
+      // 交互一律事件委托（F.29/F.30 纪律）：页面只取一次 API（pageShell 的 <head>），
+      // 片段里不再自己 acquireVsCodeApi()。
+      document.addEventListener('click', function (ev) {
+        var el = ev.target instanceof Element ? ev.target : null;
+        if (!el) { return; }
+        var b = el.closest('[data-action]');
+        if (b) { post(b.getAttribute('data-action')); }
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { send({ type: 'close' }); return; }
         if (/^[1-9]$/.test(e.key)) {
-          const btn = document.querySelector('button.act .key');
-          // digit → action order (1..9 are the first nine actions)
-          const all = Array.from(document.querySelectorAll('button.act[data-action]'))
-            .filter((b) => b.querySelector('.key'));
-          const target = all[Number(e.key) - 1];
-          if (target) { target.click(); }
+          var t = document.querySelector('[data-key="' + e.key + '"]');
+          if (t) { t.click(); }
         }
       });
-      // Snooze / preferences buttons
-      document.getElementById('btn-snooze').addEventListener('click', () => vscode.postMessage({ type: 'snooze' }));
-      document.getElementById('btn-hide-hud').addEventListener('click', () => vscode.postMessage({ type: 'hideHud' }));
-      document.getElementById('btn-open-env').addEventListener('click', () => post('het.dashboard'));
+      var sn = document.getElementById('btn-snooze');
+      if (sn) { sn.addEventListener('click', function () { send({ type: 'snooze' }); }); }
+      var hd = document.getElementById('btn-hide-hud');
+      if (hd) { hd.addEventListener('click', function () { send({ type: 'hideHud' }); }); }
     })();
-  </script>
-</body>
-</html>`;
+  </script>`;
+  return pageShell('HeT 监控卡', `${hudCss()}${inner}`);
 }
 
 /** Pure: value used by the host to disable the HUD (falls back to QuickPick). */

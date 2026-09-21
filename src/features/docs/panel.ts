@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
+import { showDetailPanel } from '../detail/host';
 
 export interface DocToolStatus {
   name: string;
@@ -31,63 +32,59 @@ export interface DocsDeps {
 }
 
 export function showDocsPanel(context: vscode.ExtensionContext, deps: DocsDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.docs',
-    'HeT DevTools — 文档中心',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'docs', title: 'HeT DevTools — 文档中心' }, (panel) => {
 
-  // V5-6: visible busy state while docs build (spinner in-panel, like chip).
-  let busy = false;
-  const render = async (): Promise<void> => {
-    const state = await deps.getState();
-    panel.webview.html = buildHtml(state, busy);
-  };
+    // V5-6: visible busy state while docs build (spinner in-panel, like chip).
+    let busy = false;
+    const render = async (): Promise<void> => {
+      const state = await deps.getState();
+      panel.webview.html = buildHtml(state, busy);
+    };
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string; rel?: string; family?: string }) => {
-    if (message.type === 'refresh') {
-      await render();
-    } else if (message.type === 'runDocs') {
-      busy = true;
-      await render();
-      const r = await deps.runDocs();
-      busy = false;
-      const st = await deps.getState();
-      const hasSph = st.artifacts.some((a) => a.rel.startsWith('docs/sphinx/'));
-      const hasDox = st.artifacts.some((a) => a.rel.startsWith('docs/doxygen/'));
-      const buttons: string[] = [];
-      if (hasSph) {
-        buttons.push('打开 Sphinx 文档');
-      }
-      if (hasDox) {
-        buttons.push('打开 Doxygen 文档');
-      }
-      if (r.ok && buttons.length > 0) {
-        const pick = await vscode.window.showInformationMessage(r.message, ...buttons);
-        if (pick === '打开 Sphinx 文档') {
-          void vscode.commands.executeCommand('het.openDocsArtifact', 'sphinx');
-        } else if (pick === '打开 Doxygen 文档') {
-          void vscode.commands.executeCommand('het.openDocsArtifact', 'doxygen');
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string; rel?: string; family?: string }) => {
+      if (message.type === 'refresh') {
+        await render();
+      } else if (message.type === 'runDocs') {
+        busy = true;
+        await render();
+        const r = await deps.runDocs();
+        busy = false;
+        const st = await deps.getState();
+        const hasSph = st.artifacts.some((a) => a.rel.startsWith('docs/sphinx/'));
+        const hasDox = st.artifacts.some((a) => a.rel.startsWith('docs/doxygen/'));
+        const buttons: string[] = [];
+        if (hasSph) {
+          buttons.push('打开 Sphinx 文档');
         }
-      } else {
+        if (hasDox) {
+          buttons.push('打开 Doxygen 文档');
+        }
+        if (r.ok && buttons.length > 0) {
+          const pick = await vscode.window.showInformationMessage(r.message, ...buttons);
+          if (pick === '打开 Sphinx 文档') {
+            void vscode.commands.executeCommand('het.openDocsArtifact', 'sphinx');
+          } else if (pick === '打开 Doxygen 文档') {
+            void vscode.commands.executeCommand('het.openDocsArtifact', 'doxygen');
+          }
+        } else {
+          void vscode.window.showInformationMessage(r.message);
+        }
+        await render();
+      } else if (message.type === 'fixGraphviz') {
+        const r = await deps.fixGraphviz();
         void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'openArtifact' && message.rel) {
+        await deps.openArtifact(message.rel);
+      } else if (message.type === 'openFamily' && message.family) {
+        await vscode.commands.executeCommand('het.openDocsArtifact', message.family);
       }
-      await render();
-    } else if (message.type === 'fixGraphviz') {
-      const r = await deps.fixGraphviz();
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'openArtifact' && message.rel) {
-      await deps.openArtifact(message.rel);
-    } else if (message.type === 'openFamily' && message.family) {
-      await vscode.commands.executeCommand('het.openDocsArtifact', message.family);
-    }
-  });
+    });
 
-  void render().catch((e) => console.error('[het] docs render failed', e));
-  return panel;
+    void render().catch((e) => console.error('[het] docs render failed', e));
+    return sub;
+  });
 }
 
 function buildHtml(state: DocsState, busy = false): string {
@@ -176,16 +173,15 @@ sudo apt install doxygen graphviz make python3-sphinx</pre></div></div>`
     </div>
     <script>
       (function () {
-        const vscode = acquireVsCodeApi();
         document.querySelectorAll('button[data-action]').forEach((b) =>
           b.addEventListener('click', () => {
             const act = b.getAttribute('data-action');
             if (act === 'openArtifact') {
-              vscode.postMessage({ type: 'openArtifact', rel: b.getAttribute('data-rel') });
+              send({ type: 'openArtifact', rel: b.getAttribute('data-rel') });
             } else if (act === 'openFamily') {
-              vscode.postMessage({ type: 'openFamily', family: b.getAttribute('data-family') });
+              send({ type: 'openFamily', family: b.getAttribute('data-family') });
             } else {
-              vscode.postMessage({ type: act });
+              send({ type: act });
             }
           }));
       })();
@@ -193,3 +189,4 @@ sudo apt install doxygen graphviz make python3-sphinx</pre></div></div>`
     `,
   );
 }
+

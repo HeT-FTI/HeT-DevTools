@@ -5,7 +5,7 @@
 每个需要上板测试的 run_id 根目录必须保存一份 Markdown 报告：
 
 ```text
-/home/lgq/WorkProject/fcpp_board_ci/<run_id>/benchmark-report.md
+/path/to/<repo>_board_ci/<run_id>/benchmark-report.md
 ```
 
 报告是离线审计文件，用于回答三个问题：
@@ -29,7 +29,7 @@ benchmark-report.md
 报告建议包含以下章节：
 
 ```text
-# fcpp Benchmark 运行报告
+# Benchmark 运行报告
 1. 报告元信息
 2. 产物接收状态
 3. Benchmark 构建配置
@@ -50,13 +50,13 @@ benchmark-report.md
 | report_version | 报告格式版本 | v0.1 |
 | generated_at | 报告生成时间 | 2026-06-16 20:30:00 +0800 CST |
 | run_id | GitHub Actions run id | 27321189218 |
-| repo | 仓库 | HeT-FTI/fcpp |
-| package_ref | Conan 包引用 | fcpp/1.0.0 |
+| repo | 仓库 | <org>/<repo> |
+| package_ref | Conan 包引用 | <pkg>/<version> |
 | build_kind | 构建类型 | linux |
 | target_key | 目标 key | linux-armv7 |
 | toolchain_version | 工具链版本 | 11.3.rel1 |
 | source_branch | 源码分支 | fcpp-dev |
-| report_path | 报告绝对路径 | /home/lgq/.../benchmark-report.md |
+| report_path | 报告绝对路径 | /path/to/<repo>_board_ci/<run_id>/benchmark-report.md |
 
 ## 5. 产物接收状态
 
@@ -144,13 +144,13 @@ interp_present=yes
 优先使用：
 
 ```bash
-ldd /tmp/fcpp_benchmark_fcpp/benchmark
+ldd /tmp/<pkg>_benchmark/benchmark
 ```
 
 如果板端没有 `ldd`，使用：
 
 ```bash
-/lib/ld-linux-armhf.so.3 --list /tmp/fcpp_benchmark_fcpp/benchmark
+/lib/ld-linux-armhf.so.3 --list /tmp/<pkg>_benchmark/benchmark
 ```
 
 通过条件：

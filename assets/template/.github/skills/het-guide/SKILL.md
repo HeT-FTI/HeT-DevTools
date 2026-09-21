@@ -34,14 +34,14 @@ user-invocable: true
 | Tests（测试） | `test(:beer:): ...` | GTest + coverage |
 | Release（发版） | `chore(:package:): ...` | Auto release + version bump |
 | Docs（文档） | `docs(:book:): ...` | Bilingual docs |
-| Quality / security（质量/安全） | `ci(:shield:): ...` | Native gates (format/tidy/gitleaks) + advisory SAST |
+| Quality / security（质量/安全） | `ci(:shield:): ...` | Native gates (format/tidy/gitleaks) + MegaLinter SAST — both block |
 | Board（上板） | `feat(:fire:): ...` | Cross-compile + board transfer |
 
-> Canonical form: `type(:emoji:): description`. Prerequisite: the matching `workflow_triggers.*` must be `true` in `metadata.json`. 规范格式 `type(:emoji:): 描述`；前提是对应开关为 true（模板默认 build/tests/security_scan 已开启，release/docs 需自行打开）。
+> Canonical form: `type(:emoji:): description`. Prerequisite: the matching `workflow_triggers.*` must be `true` in `metadata.json`. 规范格式 `type(:emoji:): 描述`；前提是对应开关为 true（模板默认 build/tests/docs/security_scan/cross_compile 已开启，release 需自行打开；cross_compile 可单独用 `:hammer_and_wrench:` 触发）。
 
 ## Newbie 3 Steps（新手三步走：从零到发版）
 
-1. Open `metadata.json`, adjust `workflow_triggers.*` (build/tests/security are on by default; enable release/docs when needed). 按需调整开关（build/tests/security 默认开启）。
+1. Open `metadata.json`, adjust `workflow_triggers.*` (build/tests/docs/security/cross_compile are on by default; enable release when needed). 按需调整开关（build/tests/docs/security 默认开启）。
 2. Write code, commit with `feat(:building_construction:): description`. 用规范格式提交。
 3. Check the GitHub **Actions** page; artifacts are in the bottom **Artifacts** area. 看 Actions 页，产物在 Artifacts。
 

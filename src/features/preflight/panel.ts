@@ -1,20 +1,25 @@
 import * as vscode from 'vscode';
-import { esc, pageShell } from '../ui';
+import { pageShell } from '../ui';
+import { showDetailPanel } from '../detail/host';
+import {
+  PREFLIGHT_STYLE,
+  itemsHtml,
+  preflightInnerHtml,
+  verdictHtml,
+  verdictOf,
+  type PreflightItem,
+  type PreflightState,
+} from './html';
 
-export interface PreflightItem {
-  label: string;
-  ok: boolean | undefined; // undefined = 未运行/不可判定
-  detail?: string;
-  required: boolean;
-}
+export type { PreflightItem, PreflightState };
 
-export interface PreflightState {
-  projectName: string;
-  items: PreflightItem[];
-  passed: number;
-  total: number;
-  allowRelease: boolean;
+const EMPTY_STATE: PreflightState = { projectName: '', items: [], passed: 0, total: 0, allowRelease: false };
+
+function stamp(at: Date = new Date()): string {
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${p(at.getHours())}:${p(at.getMinutes())}:${p(at.getSeconds())}`;
 }
+export { verdictOf };
 
 export interface PreflightDeps {
   getState: () => Promise<PreflightState>;
@@ -23,81 +28,94 @@ export interface PreflightDeps {
   openRelease: () => Promise<void>;
 }
 
+/**
+ * 发布前检查（L3）。
+ *
+ * §F.40（实测反馈：「按了重新检查，并不重新检查」）—— 三条硬规矩：
+ *
+ * 1. **整页只渲染一次**。刷新不再整页重写 HTML，而是发消息**局部替换**
+ *    `#items` / `#verdict`（整页重载会丢滚动位置、闪一下，还会让人以为「点空了」）。
+ * 2. **必须有可见反馈**：刷完在 `#note` 写一行带时间戳的结果 —— 结论与上次相同
+ *    （很常见）时，否则用户只能靠「界面有没有变」猜按钮是否工作。
+ * 3. **错误不许吞**：取数失败要把原因写回页面，而不是只留在 console。
+ */
 export function showPreflightPanel(context: vscode.ExtensionContext, deps: PreflightDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.preflight',
-    'HeT DevTools — 发布前检查',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'preflight', title: 'HeT DevTools — 发布前检查' }, (panel) => {
+    /** 只回"可变部分"（列表 + 结论 + 提示），页面脚本按锚点替换。 */
+    const push = async (note?: string): Promise<void> => {
+      try {
+        const state = await deps.getState();
+        void panel.webview.postMessage({
+          type: 'render',
+          itemsHtml: itemsHtml(state.items),
+          verdictHtml: verdictHtml(state),
+          note: note ?? '',
+        });
+      } catch (err) {
+        void panel.webview.postMessage({
+          type: 'render',
+          itemsHtml: '',
+          verdictHtml: '',
+          note: `检查失败：${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    };
 
-  const render = async (): Promise<void> => {
-    const state = await deps.getState();
-    panel.webview.html = buildHtml(state);
-  };
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string }) => {
+      if (message.type === 'refresh') {
+        await push(`已重新检查 · ${stamp()} · 逐项重跑（结论与上次相同也不代表按钮没生效）`);
+      } else if (message.type === 'runTests') {
+        const r = await deps.runTests();
+        void vscode.window.showInformationMessage(r.message);
+        await push(`已重跑构建并测试 · ${stamp()} · ${r.message}`);
+      } else if (message.type === 'openQuality') {
+        await deps.openQuality();
+      } else if (message.type === 'openRelease') {
+        await deps.openRelease();
+      }
+    });
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string }) => {
-    if (message.type === 'refresh') {
-      await render();
-    } else if (message.type === 'runTests') {
-      const r = await deps.runTests();
-      void vscode.window.showInformationMessage(r.message);
-      await render();
-    } else if (message.type === 'openQuality') {
-      await deps.openQuality();
-    } else if (message.type === 'openRelease') {
-      await deps.openRelease();
-    }
+    // 首帧：整页一次（之后只走 push）。
+    void (async (): Promise<void> => {
+      try {
+        const state = await deps.getState();
+        panel.webview.html = buildHtml(state);
+      } catch (err) {
+        panel.webview.html = buildHtml(
+          EMPTY_STATE,
+          `检查失败：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    })();
+    return sub;
   });
-
-  void render().catch((e) => console.error('[het] preflight render failed', e));
-  return panel;
 }
 
-function buildHtml(s: PreflightState): string {
-  const rows = s.items
-    .map((it) => {
-      const mark =
-        it.ok === true
-          ? '<span class="chip ok">✓</span>'
-          : it.ok === false
-            ? '<span class="chip fail">✗</span>'
-            : '<span class="chip">·</span>';
-      return `<div class="row item">
-        ${mark}<span class="title">${esc(it.label)}</span>
-        ${it.required ? '' : '<span class="tag">建议项</span>'}
-        ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ''}
-      </div>`;
-    })
-    .join('');
+/** 首帧页面（之后 `#items` / `#verdict` / `#note` 由消息局部刷新）。 */
+export function buildHtml(s: PreflightState, note = ''): string {
   return pageShell(
     '发布前检查',
-    `
-    <style>
-      .item { border-bottom: 1px solid var(--vscode-widget-border,#333); padding: 4px 0; flex-wrap: wrap; }
-      .warn { background: rgba(226,192,141,.12); border: 1px solid #e2c08d; border-radius: 6px;
-        padding: 8px 10px; margin: 6px 0; font-size: 12px; }
-    </style>
-    <div class="card">
-      <h1>发布前检查（Preflight）</h1>
-      <div class="sub">项目：${esc(s.projectName || '—')} · 与 CI 门禁一致：本地绿 = 推送后绿</div>
-      <div id="items">${rows || '<div class="warn">未检测到 fcpp 项目。</div>'}</div>
-      <div class="row">
-        <button data-action="refresh">🔄 重新检查</button>
-        <button data-action="runTests" class="secondary">▶ 运行构建并测试</button>
-        <button data-action="openQuality" class="secondary">质量门禁</button>
-      </div>
-      <h2>结果</h2>
-      ${s.passed}/${s.total} 通过 · 允许发布：${s.allowRelease ? '是' : '否'}
-      <div class="row"><button data-action="openRelease" ${s.allowRelease ? '' : 'disabled'} class="primary">🚀 去发布中心</button></div>
-    </div>
+    `${PREFLIGHT_STYLE}
+    ${preflightInnerHtml(s, note)}
     <script>
-      (function () {
-        const vscode = acquireVsCodeApi();
-        document.querySelectorAll('button[data-action]').forEach((b) =>
-          b.addEventListener('click', () => vscode.postMessage({ type: b.getAttribute('data-action') })));
-      })();
+      // §F.29/F.30：本页只有这一段脚本（pageShell 已在 <head> 取过 API）；交互走委托，
+      // 刷新走**局部锚点替换**，不再整页重载。
+      document.addEventListener('click', function (ev) {
+        var el = ev.target instanceof Element ? ev.target : null;
+        var btn = el && el.closest('[data-action]');
+        if (btn && !btn.disabled) { send({ type: btn.getAttribute('data-action') }); }
+      });
+      window.addEventListener('message', function (ev) {
+        var m = ev.data || {};
+        if (m.type !== 'render') { return; }
+        var note = document.getElementById('note');
+        if (note) { note.textContent = m.note || ''; }
+        var items = document.getElementById('items');
+        if (items && typeof m.itemsHtml === 'string' && m.itemsHtml) { items.innerHTML = m.itemsHtml; }
+        var verdict = document.getElementById('verdict');
+        if (verdict && typeof m.verdictHtml === 'string' && m.verdictHtml) { verdict.innerHTML = m.verdictHtml; }
+      });
     </script>
     `,
   );

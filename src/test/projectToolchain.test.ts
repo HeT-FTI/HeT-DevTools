@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { gcManagedEnv, managedLayout, removeManagedEnv, writeMarker } from '../core/managedEnv';
 import {
+  localBuildType,
   parseProjectToolchain,
   projectToolchainLabel,
   withProjectToolchain,
@@ -53,6 +54,15 @@ describe('V4-8 projectToolchain (metadata semantics)', () => {
   it('constants match the plan vocabulary', () => {
     assert.strictEqual(TOOLCHAIN_MANAGED, 'managed');
     assert.strictEqual(TOOLCHAIN_SYSTEM, 'system');
+  });
+
+  it('T12: local build type follows metadata.build_type, but coverage runs stay Debug', () => {
+    assert.strictEqual(localBuildType(undefined), 'Debug');
+    assert.strictEqual(localBuildType({}), 'Debug');
+    assert.strictEqual(localBuildType({ build_type: 'Debug' }), 'Debug');
+    assert.strictEqual(localBuildType({ build_type: 'Release' }), 'Release');
+    assert.strictEqual(localBuildType({ build_type: 'RelWithDebInfo' }), 'Debug', 'unknown values fall back to Debug');
+    assert.strictEqual(localBuildType({ build_type: 'Release', activate_code_coverage: true }), 'Debug', 'instrumentation is Debug-only');
   });
 });
 

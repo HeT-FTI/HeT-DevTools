@@ -5,7 +5,7 @@
   "publisher": "het-test-publisher",
   "description": "Loads the INSTALLED het-devtools extension from an isolated extensions dir and drives it via commands — zero manual interaction.",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.134.0"
   },
   "main": "./extension.js",
   "activationEvents": [

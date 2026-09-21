@@ -1,7 +1,6 @@
 name: CI Orchestrator
 
-# Main entry point for all CI workflows
-# Analyzes metadata.json once and triggers downstream workflows conditionally
+# Entry point: reads metadata.json once, then calls the downstream workflows
 
 on:
   push:
@@ -20,24 +19,18 @@ concurrency:
   group: orchestrator-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Least-privilege: NO workflow-level permissions block. Each job that needs the
-# GITHUB_TOKEN declares its own scoped permissions; every other job uses the
-# default read-only token. Release is a standalone workflow (semver-release.yml)
-# so it can carry its own write permissions without broadening this orchestrator.
+# least privilege: no workflow-level permissions block; each job scopes its own token
 
 jobs:
   # Step 1: Call the metadata controller to analyze metadata.json
   controller:
     name: Analyze Metadata
-    # Template instantiation pushes the generated "Initial commit"; the
-    # template CI is already validated upstream, so a fresh repo skips every
-    # pipeline on its first run. Real pushes run the full pipeline as usual.
+    # skip every pipeline on the template instantiation push ("Initial commit")
     if: ${{ github.event_name != 'push' || github.event.commits[0].message != 'Initial commit' }}
     uses: ./.github/workflows/metadata-controller.yml
     with:
       event_name: ${{ github.event_name }}
-      # For push events, join commit messages. For PRs, use an empty string.
-      # workflow_dispatch can simulate emoji triggers via input.
+      # push: join commit messages; PR: empty string; workflow_dispatch can simulate emojis
       commit_messages: ${{ github.event_name == 'push' && join(github.event.commits.*.message, '\n') || (github.event_name == 'workflow_dispatch' && github.event.inputs.commit_messages) || '' }}
 
   # Step 2: Log the decisions (for debugging)
@@ -63,6 +56,7 @@ jobs:
           echo "  📦 Release:    ${{ needs.controller.outputs.trigger_release }}"
           echo "  📚 Docs:       ${{ needs.controller.outputs.trigger_docs }}"
           echo "  🛡️  Security:  ${{ needs.controller.outputs.trigger_security }}"
+          echo "  🛠️  Cross compile: ${{ needs.controller.outputs.trigger_cross_compile }}"
           echo ""
           echo "⚙️  Test Configuration:"
           echo "  Save Logs: ${{ needs.controller.outputs.saving_tests_log }}"
@@ -81,12 +75,12 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 'lts/*'
 
@@ -122,10 +116,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 'lts/*'
 
@@ -144,6 +138,7 @@ jobs:
     uses: ./.github/workflows/ci-build-test.yml
     with:
       pkg_name: ${{ needs.controller.outputs.pkg_name }}
+      build_type: ${{ needs.controller.outputs.build_type }}
 
   tests:
     name: Tests
@@ -154,10 +149,9 @@ jobs:
       pkg_name: ${{ needs.controller.outputs.pkg_name }}
       saving_tests_log: ${{ needs.controller.outputs.saving_tests_log }}
       activate_code_coverage: ${{ needs.controller.outputs.activate_code_coverage }}
+      build_type: ${{ needs.controller.outputs.build_type }}
 
-  # Release is NOT triggered here. It runs as its own workflow
-  # (semver-release.yml) on push to main so it can hold scoped write
-  # permissions, keeping this orchestrator least-privilege.
+  # Release is not called here: it is standalone so it can hold write permissions
 
   docs:
     name: Documentation
@@ -172,4 +166,12 @@ jobs:
     uses: ./.github/workflows/security-linters.yml
     with:
       validate_all_codebase: ${{ github.event_name == 'push' && 'true' || 'false' }}
+
+  cross-compile:
+    name: Cross Compile
+    needs: controller
+    if: needs.controller.outputs.trigger_cross_compile == 'true'
+    uses: ./.github/workflows/cross-compile.yml
+    with:
+      pkg_name: ${{ needs.controller.outputs.pkg_name }}
 

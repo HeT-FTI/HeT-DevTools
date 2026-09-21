@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local MegaLinter runner for the fcpp template.
+# Local MegaLinter runner for this template.
 # Mirrors the `megalinter` job of .github/workflows/security-linters.yml:
 # same config file (.github/misc/.mega-linter.yml), same full `all` image, and
 # the SAME MegaLinter version as the pinned CI action.

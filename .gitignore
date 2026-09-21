@@ -4,3 +4,8 @@ out/
 .vscode-test/
 *.vsix
 *.log
+.vscode/
+
+# _archive/：旧代码/被替换的实现（dead scope）
+# 不参与编译、测试、打包，也不进 git；见 _archive/ARCHIVE.md
+_archive/

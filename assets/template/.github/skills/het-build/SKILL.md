@@ -19,24 +19,25 @@ user-invocable: true
 **Scenario A: build only（只要构建）**
 1. `metadata.json`: `workflow_triggers.build = true`
 2. Commit with `feat(:building_construction:): ...`
-3. Actions → `Build CI` workflow → `Build and Test` job
+3. Actions → `Build CI` → the three `Build (<os>)` jobs: compile + link + run `main.cpp` only, in the build type metadata declares
 
 **Scenario B: build + tests + coverage（构建 + 测试 + 覆盖率）**
 1. `metadata.json`: `trigger_tests = true`、`activate_code_coverage = true`、`workflow_triggers.tests = true`
-2. Keep `build_type = Debug` (tests only run in Debug)
+2. `build_type` decides the config this chain builds — nothing else does
 3. Commit with `test(:beer:): ...`
-4. Download `Coverage-report-*` artifact → open `coverage_report/index.html`
+4. Actions → `Tests` → both `Auto Testing (<os>)` legs run in parallel; download the canonical `Coverage-report` artifact → `coverage_report/index.html`, but read rates from `coverage_summary.json`（不是 HTML）。`Coverage-report-<os>-<ts>` 是各腿原始证据，`Reconcile coverage` 才是一致性门禁
 
 **Scenario C: verify locally first (recommended)（本地先验证，推荐）**
 ```bash
-conan create . -s build_type=Debug --build=missing
+conan create . -s build_type=Debug --build=missing                              # full test chain
+conan create . -s build_type=Debug --build=missing -c user.het:run_tests=False # build chain only
 ```
 
 ## Related Metadata Switches（相关开关）
 
 | Switch（开关） | Purpose（作用） | Default（模板默认） |
 |------|------|------|
-| `build_type` | Debug runs tests | Debug |
+| `build_type` | The single build type every CI leg builds — gates nothing | Debug |
 | `trigger_tests` | Run GTest | false |
 | `activate_code_coverage` | Coverage report | false |
 | `saving_tests_log` | Save test log | false |
@@ -44,8 +45,8 @@ conan create . -s build_type=Debug --build=missing
 
 ## Self-Help When Red（失败自救：红了先看 4 步）
 
-1. Actions → red job → `Build and test with conanfile` step. 点红 job 看日志。
-2. Common failures: dependency fetch / Windows shared fallback / 55-min timeout. 常见失败：依赖拉不到、Windows shared 回退、超时。
+1. Actions → red job → `Build the package and run main.cpp`（构建链）或 `Build and test with Conan`（测试链）。点红 job 看日志。
+2. Common failures: dependency fetch / MSVC-vs-CMake generator floor / 55-min timeout. 常见失败：依赖拉不到、生成器版本不匹配、超时。
 3. Fix and retry: push again or `Re-run failed jobs`. 改完重跑。
 4. Deep troubleshooting → `het-fix-ci` (S6). 详细排障转交 S6。
 

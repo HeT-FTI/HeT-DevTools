@@ -15,7 +15,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 
-const EXTENSION_ID = 'het-test-publisher.het-devtools';
+import { EXTENSION_ID } from '../hostExtension';
 const phase = process.env.HET_C4_PHASE ?? 'init';
 const NEW_PROJECT = process.env.HET_C4_DEST ?? '';
 const TPL = process.env.HET_TEMPLATE_LOCAL ?? '';

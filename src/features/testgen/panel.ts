@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { esc } from '../ui';
+import { showDetailPanel } from '../detail/host';
 
 export interface DiscoveredModule {
   name: string;
@@ -36,43 +37,39 @@ export interface TestgenDeps {
 }
 
 export function showTestgenPanel(context: vscode.ExtensionContext, deps: TestgenDeps): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel(
-    'het.testgen',
-    'HeT DevTools — 生成测试',
-    vscode.ViewColumn.Active,
-    { enableScripts: true, localResourceRoots: [context.extensionUri] },
-  );
-  panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+  // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
+  return showDetailPanel(context, { id: 'testgen', title: 'HeT DevTools — 生成测试' }, (panel) => {
 
-  const render = async (): Promise<void> => {
-    const modules = await deps.listModules();
-    panel.webview.html = buildHtml(modules);
-  };
+    const render = async (): Promise<void> => {
+      const modules = await deps.listModules();
+      panel.webview.html = buildHtml(modules);
+    };
 
-  panel.webview.onDidReceiveMessage(async (message: { type: string; moduleName?: string; input?: ModeBInput }) => {
-    if (message.type === 'preview' && message.moduleName) {
-      const p = await deps.preview(message.moduleName);
-      panel.webview.postMessage({
-        type: 'previewResult',
-        ok: p.ok,
-        issues: p.issues,
-        relPath: p.relPath,
-        content: p.content,
-      });
-    } else if (message.type === 'create' && message.moduleName) {
-      const r = await deps.create(message.moduleName);
-      void vscode.window.showInformationMessage(r.message);
-    } else if (message.type === 'planB' && message.input) {
-      const p = await deps.planModeB(message.input);
-      panel.webview.postMessage({ type: 'planBResult', preview: p });
-    } else if (message.type === 'createB' && message.input) {
-      const r = await deps.createModeB(message.input);
-      void vscode.window.showInformationMessage(r.message);
-    }
+    const sub = panel.webview.onDidReceiveMessage(async (message: { type: string; moduleName?: string; input?: ModeBInput }) => {
+      if (message.type === 'preview' && message.moduleName) {
+        const p = await deps.preview(message.moduleName);
+        panel.webview.postMessage({
+          type: 'previewResult',
+          ok: p.ok,
+          issues: p.issues,
+          relPath: p.relPath,
+          content: p.content,
+        });
+      } else if (message.type === 'create' && message.moduleName) {
+        const r = await deps.create(message.moduleName);
+        void vscode.window.showInformationMessage(r.message);
+      } else if (message.type === 'planB' && message.input) {
+        const p = await deps.planModeB(message.input);
+        panel.webview.postMessage({ type: 'planBResult', preview: p });
+      } else if (message.type === 'createB' && message.input) {
+        const r = await deps.createModeB(message.input);
+        void vscode.window.showInformationMessage(r.message);
+      }
+    });
+
+    void render().catch((e) => console.error('[het] testgen render failed', e));
+    return sub;
   });
-
-  void render().catch((e) => console.error('[het] testgen render failed', e));
-  return panel;
 }
 
 function buildHtml(modules: DiscoveredModule[]): string {
@@ -159,7 +156,6 @@ class ETL {
 
     <script>
       (function () {
-        const vscode = acquireVsCodeApi();
         const $ = (s) => document.querySelector(s);
         const escH = (s) => String(s).replace(/[&<>"']/g, function (c) {
           return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
@@ -172,15 +168,15 @@ class ETL {
             $('#panelB').classList.toggle('on', onB);
           }));
 
-        $('#previewBtn').addEventListener('click', () => vscode.postMessage({ type: 'preview', moduleName: $('#mod').value }));
-        $('#createBtn').addEventListener('click', () => vscode.postMessage({ type: 'create', moduleName: $('#mod').value }));
+        $('#previewBtn').addEventListener('click', () => send({ type: 'preview', moduleName: $('#mod').value }));
+        $('#createBtn').addEventListener('click', () => send({ type: 'create', moduleName: $('#mod').value }));
         const collectB = () => ({
           moduleName: $('#modB').value.trim(),
           blueprint: $('#bp').value,
           title: $('#titleB').value.trim(),
         });
-        $('#planBBtn').addEventListener('click', () => vscode.postMessage({ type: 'planB', input: collectB() }));
-        $('#createBBtn').addEventListener('click', () => vscode.postMessage({ type: 'createB', input: collectB() }));
+        $('#planBBtn').addEventListener('click', () => send({ type: 'planB', input: collectB() }));
+        $('#createBBtn').addEventListener('click', () => send({ type: 'createB', input: collectB() }));
 
         window.addEventListener('message', (e) => {
           const m = e.data;
@@ -204,3 +200,4 @@ class ETL {
       })();
     </script>`;
 }
+

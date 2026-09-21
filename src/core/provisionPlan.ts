@@ -16,6 +16,17 @@
  * the `HET_FAKE_HOST` JSON override used by both tests and the host adapter.
  */
 
+import { laneDistroBaseName, laneImportCostText } from './wslDistro';
+
+/** T17：`win-wsl2-pending` 时由托管车道**自建**发行版（一键），而不是让用户自己去装。 */
+export interface LaneSetup {
+  kind: 'wsl-import';
+  /** 建议的发行版名（真实名字在执行时按同名冲突规则确定）。 */
+  distro: string;
+  /** 给人看的代价（下载/磁盘/预计时间）。 */
+  costText: string;
+}
+
 export type ProviderId =
   | 'linux-native'
   | 'linux-managed'
@@ -68,18 +79,34 @@ export interface HostCapabilities {
   linuxApt: boolean;
   /** uid 0 or passwordless `sudo -n` — can run root apt self-heal non-interactively. */
   linuxAptSudo: boolean;
+  /**
+   * Linux：**用户级**车道可行吗（`python3` 在 PATH 上）。
+   *
+   * 2026-09-16（ADR-8）：车道的本体（私有 venv + 私有 CONAN_HOME + 生成的 profile）是**用户级**的，
+   * 不需要 root；root 只决定"缺系统包时能不能自动 apt 装"。所以判定是否走 managed 看的是**这个**字段，
+   * 而不是 `linuxAptSudo` —— 否则常规开发机（sudo 要密码）永远到不了隔离车道。
+   * 缺 venv 模块（Ubuntu 需 `python3-venv`）由车道 ensure 的退出码 3 兜住并给出手动命令。
+   */
+  linuxVenv: boolean;
 }
 
 export interface ProviderDecision {
   provider: ProviderId;
   /** Human reason (zh) shown on the dashboard env block. */
   reason: string;
+  /** T17：托管车道可**自建**宿主（目前只有 Windows 自建 WSL2 发行版）。 */
+  setup?: LaneSetup;
   /** Coverage semantic this provider guarantees. */
   coverage: CoverageSemantic;
   /** The manifest slice this provider must satisfy. */
   manifest: ToolchainManifest;
   /** Extra human note (zh), e.g. how to upgrade to full semantics. */
   note: string;
+  /**
+   * 缺**系统包**时能否自动 apt 安装（Linux：取决于免密 root；Windows/WSL：恒为可用的
+   * `wsl -u root`，平台原生免密）。`ok:false` 时 `reason` 必须给出人话原因（ADR-8）。
+   */
+  selfHeal?: { ok: boolean; reason?: string };
 }
 
 const MAN = TOOLCHAIN_MANIFEST;
@@ -96,6 +123,15 @@ const PROVIDER_LABEL: Record<ProviderId, string> = {
 
 export function providerLabel(id: ProviderId): string {
   return PROVIDER_LABEL[id];
+}
+
+/**
+ * T19: providers that stand for a MANAGED LANE we own and can prepare (as
+ * opposed to "use whatever the host has" / "no lane at all"). The lifecycle
+ * phase uses this to tell "waiting for the user" apart from "blocked".
+ */
+export function isManagedLaneProvider(id: ProviderId): boolean {
+  return id === 'linux-managed' || id === 'win-wsl2' || id === 'win-wsl2-pending' || id === 'macos-native';
 }
 
 /** Minimal free-disk guidance (MB) before we warn about provisioning. */
@@ -119,7 +155,7 @@ export function parseFakeHost(json?: string): Partial<HostCapabilities> {
     if (typeof raw.arch === 'string') {
       out.arch = raw.arch;
     }
-    for (const k of ['wslAvailable', 'wslDefaultReady', 'virtualizationEnabled', 'isAdmin', 'msvcAvailable', 'linuxApt', 'linuxAptSudo'] as const) {
+    for (const k of ['wslAvailable', 'wslDefaultReady', 'virtualizationEnabled', 'isAdmin', 'msvcAvailable', 'linuxApt', 'linuxAptSudo', 'linuxVenv'] as const) {
       if (typeof raw[k] === 'boolean') {
         out[k] = raw[k];
       }
@@ -144,9 +180,12 @@ function lowDisk(caps: HostCapabilities): boolean {
  * Provider preferences (reserved for future user toggles).
  * Kept as an opaque bag so future keys do not ripple through signatures.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface ProvisionPrefs {
-  // (empty — MinGW fallback removed; add future toggles here)
+  /**
+   * 用户级偏好（`het.env.mode`）：`auto`（默认，倾向隔离车道）/ `managed` / `native`。
+   * 优先级：项目 `metadata.toolchain` **>** 这个偏好 **>** auto 判定（ADR-8）。
+   */
+  mode?: 'auto' | 'managed' | 'native';
 }
 
 /**
@@ -170,30 +209,46 @@ export interface ProvisionPrefs {
  */
 export function resolveProviderDecision(caps: HostCapabilities, _prefs?: ProvisionPrefs): ProviderDecision {
   if (caps.platform === 'linux') {
-    if (caps.linuxApt && caps.linuxAptSudo) {
-      // Derived-first: the host can self-provision the isolated managed lane.
+    // ADR-8（2026-09-16）：判定换轴 —— 能否建**用户级**车道，而不是能否免密 root。
+    // root 只决定"自愈能力"（缺系统包时能否自动 apt 安装），并如实写进注记/契约。
+    const mode = _prefs?.mode ?? 'auto';
+    const selfHeal = caps.linuxApt && caps.linuxAptSudo;
+    const selfHealReason = selfHeal
+      ? undefined
+      : caps.linuxApt
+        ? '无免密 root（uid0 或 `sudo -n`）：缺编译器/lcov/文档工具时不会自动 apt 安装，会给出手动执行的命令。'
+        : '未检测到 apt：缺系统包时无法自动安装，会给出平台化的指引。';
+    const laneViable = caps.linuxApt && caps.linuxVenv;
+    if (mode !== 'native' && laneViable) {
       return {
         provider: 'linux-managed',
         reason: 'Linux：隔离 managed lane（派生优先，不 touch 系统环境）',
         coverage: 'full',
         manifest: MAN,
+        selfHeal: { ok: selfHeal, ...(selfHealReason ? { reason: selfHealReason } : {}) },
         note: lowDisk(caps)
           ? '磁盘空间偏低，准备环境可能需要 ≥2 GB。'
-          : '托管 lane 位于 ~/.het-fti/managed-env（私有 venv + CONAN_HOME + gcc-13/lcov 免密自愈）；设 metadata.toolchain=system 可显式回本机原生。',
+          : '托管 lane 位于 ~/.het-fti/managed-env（私有 venv + CONAN_HOME + 生成的 profile）。' +
+            (selfHealReason ? `${selfHealReason}` : '免密 root 可用：缺包会自动装。') +
+            ' 想用本机工具链：设 metadata.toolchain=system 或把 het.env.mode 设为 native。',
       };
     }
-    // No self-provisioning path → native system gcc (explicit, honest note).
-    const why = caps.linuxApt
-      ? '检测到 apt 但无免密 root（uid0 或 `sudo -n`）；托管 lane 的 root 自愈需要其一。'
-      : '未检测到 apt（托管 lane 需 Debian/Ubuntu 系 apt 自愈）。';
+    // Native：用户显式选的，或真的建不了用户级车道（缺 apt / 缺 python3）。
+    const why =
+      mode === 'native'
+        ? '按你的设置 het.env.mode=native 使用本机工具链。'
+        : !caps.linuxApt
+          ? '未检测到 apt（托管 lane 需 Debian/Ubuntu 系 apt 装 conan/cmake/ninja 的宿主依赖）。'
+          : '未检测到可用的 python3 —— 用户级车道要用它建私有 venv（装 conan/cmake/ninja）与 CONAN_HOME。';
     return {
       provider: 'linux-native',
       reason: 'Linux：系统内核 + 本机 gcc（未隔离）',
       coverage: 'full',
       manifest: MAN,
+      selfHeal: { ok: selfHeal, ...(selfHealReason ? { reason: selfHealReason } : {}) },
       note: lowDisk(caps)
         ? '磁盘空间偏低，准备环境可能需要 ≥2 GB。'
-        : `${why} 设 metadata.toolchain=system 用本机 gcc；或提供免密 root 后重开工作区以启用派生 managed。`,
+        : `${why} 用本机 gcc + PATH 上的 conan；想启用隔离车道：装好 python3（必要时 python3-venv）后把 het.env.mode 设为 auto/managed。`,
     };
   }
   if (caps.platform === 'darwin') {
@@ -209,7 +264,7 @@ export function resolveProviderDecision(caps: HostCapabilities, _prefs?: Provisi
     if (caps.wslAvailable && caps.wslDefaultReady) {
       return {
         provider: 'win-wsl2',
-        reason: 'Windows：经 WSL2 托管 distro（het-fcpp）执行，与 Linux 构造性同语义',
+        reason: 'Windows：经 WSL2 托管 distro 执行（发行版内的隔离车道），与 Linux 构造性同语义',
         coverage: 'full',
         manifest: MAN,
         note: caps.virtualizationEnabled
@@ -224,7 +279,10 @@ export function resolveProviderDecision(caps: HostCapabilities, _prefs?: Provisi
         reason: 'Windows：检测到 WSL2，但尚无可用发行版',
         coverage: 'partial',
         manifest: MAN,
-        note: '在 dashboard「托管环境」创建/安装一个 WSL2 发行版（如 `wsl --install -d Ubuntu-24.04`）后即为全语义（gcc + lcov）；或设 metadata.toolchain=system 走本机兼容模式。',
+        setup: { kind: 'wsl-import', distro: laneDistroBaseName(), costText: laneImportCostText() },
+        note:
+          '可直接「一键自建私有发行版」（' + laneImportCostText() + '），不会改动你已有的发行版；' +
+          '也可自行安装官方发行版（`wsl --install -d Ubuntu-24.04`），或设 metadata.toolchain=system 走本机兼容模式。',
       };
     }
     // No usable WSL2 → explicit guidance only (no silent gcc-style fallback;

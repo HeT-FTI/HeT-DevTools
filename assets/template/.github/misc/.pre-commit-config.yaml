@@ -1,5 +1,4 @@
-# Local first-line gates (CI mirrors the same rules in ci-orchestrator.yml).
-# Install: pip install pre-commit && pre-commit install
+# Local first-line gates (CI mirrors them); pip install pre-commit && pre-commit install
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

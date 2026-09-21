@@ -358,9 +358,9 @@ jobs:
         config: [board_m0.json, board_m4.json, board_a7.json]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -370,7 +370,7 @@ jobs:
         working-directory: benchmark
         run: python3 script/run_bench.py --config ${{ matrix.config }} --no-flash
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: benchmark-${{ matrix.config }}
           # Cortex-M 上传 .bin；Cortex-A 上传 ELF
@@ -385,8 +385,8 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           name: benchmark-board_m0.json
           path: benchmark/build/Release/
@@ -400,8 +400,8 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           name: benchmark-board_a7.json
           path: benchmark/build/Release/

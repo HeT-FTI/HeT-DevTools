@@ -25,6 +25,11 @@ export interface ChipModel {
   projectName: string;
   health: number | null;
   running: string | null;
+  /**
+   * 正在跑的动作 id（§F.35）：悬停卡据此把所属域的"上一次结果"换成"进行中"，
+   * 否则构建中会看到 `$(error) 构建 失败` —— 观感上等于"还没跑完就报失败"。
+   */
+  runningAction?: string | null;
   lastBuildOk: boolean | null;
   test: ChipTest | null;
   templateBehind: number;
@@ -55,6 +60,8 @@ export interface ChipSpec {
   command?: string;
   color?: string;
 }
+
+import { busyDomainOf, chipStatusText } from '../core/status';
 
 /** Visual glyphs (pure-visual never collide with fcpp trigger semantics). */
 const G_BUILD = '🏗️';
@@ -109,7 +116,8 @@ function testCell(m: ChipModel): string {
 
 function docsCell(m: ChipModel): string {
   const state = m.docs ?? 'none';
-  if (state === 'running') {
+  // §F.35：构建中 → 显示"进行中"，别让上一次的 `✗ 失败` 当结论（观感上等于咒它失败）。
+  if (state === 'running' || busyDomainOf(m.runningAction ?? null) === 'docs') {
     return '$(sync~spin) 构建中';
   }
   if (state === 'ok') {
@@ -168,16 +176,28 @@ export function chipSpec(m: ChipModel): ChipSpec | null {
   if (!m.projectName) {
     return null;
   }
-  const run = m.running && m.running !== 'env' ? '$(sync~spin)' : '$(pulse)';
-  const score = m.health === null ? '·' : String(m.health);
-  const text = `${run} HeT ${score}`;
+  // §F.35：忙 = 图标 + **进行中文字**（`⟳ HeT 构建中`）。绝不在忙的时候显示上次的
+  // 分数或上次的失败 —— "正在跑"和"结果"是两件事，chip 只答前者。
+  const busyText = m.running && m.running !== 'env' ? m.running : null;
+  const run = busyText ? '$(sync~spin)' : '$(pulse)';
+  const text = `${run} HeT ${busyText ?? chipStatusText(null, m.health)}`;
+  const busyDom = busyDomainOf(m.runningAction ?? null);
+  const busyTxt = '进行中';
 
-  const healthIcon = m.health === null ? '$(question)' : m.health >= 80 ? '$(smiley)' : m.health >= 50 ? '$(warning)' : '$(error)';
+  const healthIcon = m.health === null ? '$(question)' : m.health >= 80 ? '$(smi​ley)' : m.health >= 50 ? '$(warning)' : '$(error)';
   const healthTxt = m.health === null ? '未体检' : `${m.health}/100`;
-  const buildIcon = m.lastBuildOk === null ? '$(circle-outline)' : m.lastBuildOk ? '$(pass)' : '$(error)';
-  const buildTxt = m.lastBuildOk === null ? '未运行' : m.lastBuildOk ? '成功' : '失败';
-  const testIcon = m.test ? (m.test.failed > 0 ? '$(error)' : '$(pass)') : '$(circle-outline)';
-  const testTxt = m.test ? `${m.test.passed}/${m.test.passed + m.test.failed + m.test.skipped}` : '—';
+  const buildBusy = busyDom === 'build';
+  const buildIcon = buildBusy
+    ? '$(sync~spin)'
+    : m.lastBuildOk === null
+      ? '$(circle-outline)'
+      : m.lastBuildOk
+        ? '$(pass)'
+        : '$(error)';
+  const buildTxt = buildBusy ? busyTxt : m.lastBuildOk === null ? '未运行' : m.lastBuildOk ? '成功' : '失败';
+  const testBusy = busyDom === 'test';
+  const testIcon = testBusy ? '$(sync~spin)' : m.test ? (m.test.failed > 0 ? '$(error)' : '$(pass)') : '$(circle-outline)';
+  const testTxt = testBusy ? busyTxt : m.test ? `${m.test.passed}/${m.test.passed + m.test.failed + m.test.skipped}` : '—';
 
   const badges = [`${healthIcon} 健康 ${healthTxt}`, `${buildIcon} 构建 ${buildTxt}`, `${testIcon} 测试 ${testTxt}`].join('   ');
 
@@ -226,6 +246,8 @@ export function chipSpec(m: ChipModel): ChipSpec | null {
     text,
     tooltip,
     command: 'het.chipOverview',
-    color: m.lastBuildOk === false ? 'statusBarItem.errorBackground' : undefined,
+    // §F.35：**忙的时候绝不红**。红色只表达"跑完了、失败了"这个结论；
+    // 把"正在构建"染成红底，是实测反馈里最刺眼的一处误读（"看着像已经炸了"）。
+    color: !busyText && m.lastBuildOk === false ? 'statusBarItem.errorBackground' : undefined,
   };
 }

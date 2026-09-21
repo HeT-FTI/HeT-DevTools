@@ -2,13 +2,70 @@
 // so packaged vsix installs can create new projects fully offline.
 // Excludes version-control + build noise only (template is ~2 MB).
 // Usage: node scripts/build-template-asset.mjs   (also run by `npm run package`)
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normalizeLfInPlace } from './lf.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = join(root, 'workspace', 'fcpp');
 const dest = join(root, 'assets', 'template');
+
+/**
+ * 产物确定性：不管检出/打包机的行尾配置是什么，进 vsix 的模板一律是 LF。
+ * 2026-09-15 实测：`.gitattributes`（`text eol=lf`）与 `git config --global core.autocrlf false`
+ * 都没能挡住 Windows runner 把模板检出成 CRLF（155/158 个文件），三份 vsix 因此逐字节不同。
+ * 与其跟构建机的 git 配置搏斗，不如在打包前把这件事做死（见 `lf.mjs`）。
+ */
+/**
+ * 清掉"跑过就出现"的产物杂质（`__pycache__` / `*.pyc`）。
+ * 理由与 `lf.mjs` 同一类：**打包内容不能取决于打包前这台机器跑过什么**。
+ * （它同时兜住"沿用已提交快照"那条分支：本地 `assets/template` 里的杂物也不许进包。）
+ */
+const pruneJunk = (dir) => {
+  let removed = 0;
+  const walk = (d) => {
+    let entries = [];
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const abs = join(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name === '__pycache__') {
+          rmSync(abs, { recursive: true, force: true });
+          removed += 1;
+          continue;
+        }
+        walk(abs);
+      } else if (e.isFile() && e.name.endsWith('.pyc')) {
+        rmSync(abs, { force: true });
+        removed += 1;
+      }
+    }
+  };
+  walk(dir);
+  if (removed > 0) {
+    console.warn(`[asset] 清掉 ${removed} 个 python 缓存产物（__pycache__/*.pyc）——它们不该进包`);
+  }
+  return removed;
+};
+
+const applyLf = (dir) => {
+  const { changed, stats } = normalizeLfInPlace(dir);
+  // **每次都打**：下次行尾再出问题，日志里直接有"是什么形态"，不用再猜一轮。
+  console.log(
+    `[asset] 行尾检查：${stats.files} 个文件（二进制 ${stats.binary}）；` +
+      `CRLF ${stats.crlf}、反向 LFCR ${stats.lfcr}、单独 CR ${stats.loneCr} → 归一 ${changed.length} 个`,
+  );
+  if (changed.length > 0) {
+    console.warn('[asset] 已把上述文件从 CR 归一为 LF（本机检出的行尾设置不对；产物已由我们自己保证一致）');
+    console.warn(`[asset]   例：${changed.slice(0, 3).join('、')}`);
+  }
+  return changed.length;
+};
 
 if (!existsSync(join(src, 'metadata.json'))) {
   // workspace/fcpp is the maintainer's local reference copy (gitignored — the
@@ -17,6 +74,8 @@ if (!existsSync(join(src, 'metadata.json'))) {
   if (existsSync(join(dest, 'metadata.json'))) {
     console.warn('[asset] workspace/fcpp 源缺失（CI/浅克隆）→ 沿用已提交的内置模板 assets/template。');
     console.warn('[asset] 注意：本地改动 workspace/fcpp 后需运行 npm run asset 并提交 assets/template 以保持同步。');
+    pruneJunk(dest);
+    applyLf(dest);
     process.exit(0);
   }
   console.error(`[asset] template source missing: ${src}`);
@@ -32,12 +91,17 @@ const excludedPath = (p) => {
     norm.includes('/.git/') ||
     norm.includes('/.vscode-test/') ||
     norm.includes('/node_modules/') ||
+    // 2026-09-16：`__pycache__` 是**本地跑过 python 就会出现的**杂物。它不是"CI 事实"，
+    // 而是"这台机器跑过什么"——留着它，打出来的 vsix 会因机器而异（与 F.21/F.23 同一类问题：
+    // 交付物不得依赖打包机状态）。
+    norm.includes('/__pycache__/') ||
+    norm.endsWith('/__pycache__') ||
     norm.includes('/docs/sphinx/build/') ||
     norm.includes('/docs/doxygen/build/') ||
     norm.includes('/benchmark/build/')
   );
 };
-const excludedBase = new Set(['out', 'build', '.git', '.vscode-test', 'node_modules']);
+const excludedBase = new Set(['out', 'build', '.git', '.vscode-test', 'node_modules', '__pycache__']);
 
 cpSync(src, dest, {
   recursive: true,
@@ -54,4 +118,6 @@ if (!existsSync(join(dest, 'metadata.json'))) {
   console.error('[asset] bundled template missing metadata.json after copy');
   process.exit(1);
 }
+pruneJunk(dest);
+applyLf(dest);
 console.log('[asset] bundled template ready at ' + dest);

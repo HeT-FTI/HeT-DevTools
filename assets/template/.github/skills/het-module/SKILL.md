@@ -63,5 +63,6 @@ void mymod_vec_add_f32(...) { ... }
 
 1. Module silently not generated: check `@exporter` inside a **multi-line Doxygen comment** and 2 blank lines. 检查注解与空行。
 2. Header not scanned: confirm under `include/`, suffix `.h`/`.hpp`. 确认位置与后缀。
-3. Baremetal OS-dep error: dep not in `baremetal_white_list`. 检查裸机白名单。
+3. Wrong tree: `.dox`/`.cxx` are doc-only and belong in `docs/doxygen/dox/`, never in `include/`/`src/`. 文档专属后缀放错目录。
+4. Baremetal OS-dep error: dep not in `baremetal_white_list`. 检查裸机白名单。
 

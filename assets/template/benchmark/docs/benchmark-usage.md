@@ -12,7 +12,7 @@
 进入仓库：
 
 ```bash
-cd /home/lgq/WorkProject/fcpp
+cd /path/to/<repo>
 git status -sb
 ```
 
@@ -55,8 +55,8 @@ Linux armv7 RK3506 推荐配置：
   "compiler_version": "11",
   "toolchain_package_version": "11.3.rel1",
   "deploy_tool": "ssh",
-  "remote_path": "/tmp/fcpp_benchmark_fcpp/benchmark",
-  "ssh_host": "root@192.168.0.10",
+  "remote_path": "/tmp/<pkg>_benchmark/benchmark",
+  "ssh_host": "root@<board-ip>",
   "timeout": 30
 }
 ```
@@ -74,7 +74,7 @@ CI 临时配置可由 CI 脚本生成，不要求提交到仓库。
 只构建，不部署：
 
 ```bash
-cd /home/lgq/WorkProject/fcpp/benchmark
+cd /path/to/<repo>/benchmark
 python3 script/run_bench.py --config platform/bench_config_linux.json --no-flash
 ```
 
@@ -88,7 +88,7 @@ build/Release/benchmark
 
 - `--no-flash` 不应要求串口设备。
 - `pyserial` 只在裸机串口采集阶段需要。
-- 如果报 `fcpp/1.0.0` 找不到，说明本机 Conan cache/remote 尚未准备好目标包。
+- 如果报 `<pkg>/<version>` 找不到，说明本机 Conan cache/remote 尚未准备好目标包。
 
 ## 5. CI 构建产物检查
 
@@ -96,7 +96,7 @@ CI 产物目录：
 
 ```bash
 RUN_ID=<run_id>
-RUN_DIR=/home/lgq/WorkProject/fcpp_board_ci/$RUN_ID/build/HeT-FTI/fcpp/linux-armv7-11.3.rel1
+RUN_DIR=/path/to/<repo>_board_ci/$RUN_ID/build/<org>/<repo>/linux-armv7-11.3.rel1
 ```
 
 检查文件：
@@ -153,7 +153,7 @@ interp_present=yes
 如果 `ldd` 不存在，可以用：
 
 ```bash
-/lib/ld-linux-armhf.so.3 --list /tmp/fcpp_benchmark_fcpp/benchmark
+/lib/ld-linux-armhf.so.3 --list /tmp/<pkg>_benchmark/benchmark
 ```
 
 ## 7. SSH 部署运行
@@ -161,15 +161,15 @@ interp_present=yes
 板端网络可达时：
 
 ```bash
-ssh root@192.168.0.10 'mkdir -p /tmp/fcpp_benchmark_fcpp'
-scp "$RUN_DIR/artifacts/benchmark-linux-armv7-11.3.rel1" root@192.168.0.10:/tmp/fcpp_benchmark_fcpp/benchmark
-ssh root@192.168.0.10 'chmod +x /tmp/fcpp_benchmark_fcpp/benchmark && /tmp/fcpp_benchmark_fcpp/benchmark'
+ssh root@<board-ip> 'mkdir -p /tmp/<pkg>_benchmark'
+scp "$RUN_DIR/artifacts/benchmark-linux-armv7-11.3.rel1" root@<board-ip>:/tmp/<pkg>_benchmark/benchmark
+ssh root@<board-ip> 'chmod +x /tmp/<pkg>_benchmark/benchmark && /tmp/<pkg>_benchmark/benchmark'
 ```
 
-如果 `192.168.0.10` 不可达，尝试：
+如果板端地址不可达，尝试：
 
 ```bash
-ssh root@192.168.1.10 'uname -a'
+ssh root@<board-ip> 'uname -a'
 ```
 
 ## 8. 串口部署运行
@@ -179,28 +179,28 @@ ssh root@192.168.1.10 'uname -a'
 本机生成 base64：
 
 ```bash
-base64 "$RUN_DIR/artifacts/benchmark-linux-armv7-11.3.rel1" > /tmp/fcpp-benchmark.b64
+base64 "$RUN_DIR/artifacts/benchmark-linux-armv7-11.3.rel1" > /tmp/<pkg>-benchmark.b64
 ```
 
 板端执行：
 
 ```bash
-mkdir -p /tmp/fcpp_benchmark_fcpp
-cat > /tmp/fcpp_benchmark_fcpp/benchmark.b64 <<'EOF'
-# 粘贴 /tmp/fcpp-benchmark.b64 内容
+mkdir -p /tmp/<pkg>_benchmark
+cat > /tmp/<pkg>_benchmark/benchmark.b64 <<'EOF'
+# 粘贴 /tmp/<pkg>-benchmark.b64 内容
 EOF
-base64 -d /tmp/fcpp_benchmark_fcpp/benchmark.b64 > /tmp/fcpp_benchmark_fcpp/benchmark
-chmod +x /tmp/fcpp_benchmark_fcpp/benchmark
-sha256sum /tmp/fcpp_benchmark_fcpp/benchmark
-/lib/ld-linux-armhf.so.3 --list /tmp/fcpp_benchmark_fcpp/benchmark
-/tmp/fcpp_benchmark_fcpp/benchmark
+base64 -d /tmp/<pkg>_benchmark/benchmark.b64 > /tmp/<pkg>_benchmark/benchmark
+chmod +x /tmp/<pkg>_benchmark/benchmark
+sha256sum /tmp/<pkg>_benchmark/benchmark
+/lib/ld-linux-armhf.so.3 --list /tmp/<pkg>_benchmark/benchmark
+/tmp/<pkg>_benchmark/benchmark
 echo $?
 ```
 
-为避免与 `oven_CXX` 等其他项目冲突，fcpp 统一使用：
+为避免与 `oven_CXX` 等其他项目冲突，本项目统一使用：
 
 ```text
-/tmp/fcpp_benchmark_fcpp
+/tmp/<pkg>_benchmark
 ```
 
 ## 9. 结果判断
@@ -230,7 +230,7 @@ echo $?
 每个需要 benchmark 的 run 根目录应生成：
 
 ```text
-/home/lgq/WorkProject/fcpp_board_ci/<run_id>/benchmark-report.md
+/path/to/<repo>_board_ci/<run_id>/benchmark-report.md
 ```
 
 报告内容按照 `benchmark-report-spec.md` 执行。

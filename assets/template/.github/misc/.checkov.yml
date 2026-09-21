@@ -1,13 +1,6 @@
-# Checkov policy for the advisory MegaLinter layer (see security-linters.yml).
-# Rationale for each skip is documented below; the REQUIRED gates remain the
-# native quality-gates job (clang-format/clang-tidy/gitleaks) and SonarCloud.
+# Checkov skips for the MegaLinter layer (it blocks when it reports); the native gates are the baseline
 skip-check:
-  # Permissions are declared per job (least privilege) as required by SonarCloud
-  # S8264 ("move permissions to the job level"). Re-adding a workflow-level
-  # `permissions: contents: read` would regress the SonarCloud security gate,
-  # while the repository's default GITHUB_TOKEN is already read-only.
+  # Job-level permissions satisfy SonarCloud S8264 -- do not re-add workflow-level
   - CKV2_GHA_1
-  # workflow_dispatch inputs let operators select build targets for the board
-  # matrix (het-board skill). The values are allow-listed inside the workflow
-  # and the dispatch is a manual, logged operation.
+  # workflow_dispatch inputs select board targets; values are allow-listed in the workflow
   - CKV_GHA_7

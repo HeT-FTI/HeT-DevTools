@@ -1,19 +1,18 @@
 /**
- * Cockpit state machine (gui-rework-plan §5).
- * Pure reducer — no VS Code imports. Drives which regions of the integrated
- * workspace are visible: current page, top status strip, bottom drawer
- * (log / issues / wizard), running state.
+ * Cockpit top-strip state（新 UI）。
+ *
+ * 纯粹的一个 reducer，无 vscode 依赖。旧 UI 的"当前页 / 抽屉 / 向导"已经归档
+ * （`_archive/`）—— 新 UI 里 L1 只需要：项目名 · 健康分 · 忙点 · 模板落后，
+ * 外加构建结果与问题计数（供卡片复用）。
  */
 
-import { CockpitPage } from './layout';
-
-export type DrawerKind = 'none' | 'log' | 'issues' | 'wizard';
+export type DrawerKind = 'none' | 'log' | 'issues';
 
 export interface CockpitDrawer {
   kind: DrawerKind;
   expanded: boolean;
   title: string;
-  /** log/wizard lines (streamed, capped at 200). */
+  /** log lines (streamed, capped at 200). */
   lines: string[];
 }
 
@@ -24,23 +23,14 @@ export interface CockpitTop {
   templateBehind: number;
 }
 
-/** P-G4 onboarding wizard overlay state (five steps). */
-export interface CockpitWizard {
-  step: number;
-  error?: string;
-}
-
 export interface CockpitState {
-  page: CockpitPage;
   top: CockpitTop;
   drawer: CockpitDrawer;
   lastBuildOk: boolean | null;
   issueCount: number;
-  wizard: CockpitWizard | null;
 }
 
 export type CockpitEvent =
-  | { type: 'navigate'; page: CockpitPage }
   | { type: 'drawer:toggle'; expand: boolean }
   | { type: 'log:start'; title: string }
   | { type: 'log:append'; line: string }
@@ -48,28 +38,21 @@ export type CockpitEvent =
   | { type: 'issue:summary'; count: number }
   | { type: 'template:update'; behind: number }
   | { type: 'health'; score: number }
-  | { type: 'project'; name: string }
-  | { type: 'wizard:open' }
-  | { type: 'wizard:close' }
-  | { type: 'wizard:step'; step: number; error?: string };
+  | { type: 'project'; name: string };
 
 const LOG_CAP = 200;
 
 export function initialCockpitState(): CockpitState {
   return {
-    page: 'overview',
     top: { projectName: '', health: null, running: null, templateBehind: 0 },
     drawer: { kind: 'none', expanded: false, title: '', lines: [] },
     lastBuildOk: null,
     issueCount: 0,
-    wizard: null,
   };
 }
 
 export function reduceCockpit(state: CockpitState, event: CockpitEvent): CockpitState {
   switch (event.type) {
-    case 'navigate':
-      return { ...state, page: event.page };
     case 'drawer:toggle':
       return { ...state, drawer: { ...state.drawer, expanded: event.expand } };
     case 'log:start':
@@ -111,12 +94,6 @@ export function reduceCockpit(state: CockpitState, event: CockpitEvent): Cockpit
       return { ...state, top: { ...state.top, health: event.score } };
     case 'project':
       return { ...state, top: { ...state.top, projectName: event.name } };
-    case 'wizard:open':
-      return { ...state, wizard: { step: 1 } };
-    case 'wizard:close':
-      return { ...state, wizard: null };
-    case 'wizard:step':
-      return { ...state, wizard: { step: event.step, error: event.error } };
     default:
       return state;
   }

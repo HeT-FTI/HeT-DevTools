@@ -19,20 +19,20 @@ def require_tool(tool_name):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--binary", required=True, help="本地二进制/ELF路径")
-    p.add_argument("--remote", default="/tmp/main", help="板端目标路径")
+    p.add_argument("--binary", required=True, help="local binary/ELF path")
+    p.add_argument("--remote", default="/tmp/main", help="target path on the board")
     p.add_argument("--mode", choices=["adb", "ssh", "openocd", "pyocd", "jlink"], required=True)
-    p.add_argument("--host", help="ssh 目标地址，如 root@192.168.77.2")
-    p.add_argument("--run", action="store_true", help="传输后立即执行")
-    p.add_argument("--addr", default="0x08000000", help="MCU 烧录起始地址（.bin 常用）")
-    p.add_argument("--interface", default="interface/stlink.cfg", help="openocd 接口配置")
-    p.add_argument("--target", help="openocd target cfg（openocd 模式必填）或 pyocd target name")
-    p.add_argument("--transport", choices=["swd", "jtag"], default="swd", help="openocd 传输协议（默认 swd）")
-    p.add_argument("--probe", help="pyocd 探针ID（如 69613170 或 jlink:69613170）")
-    p.add_argument("--device", help="J-Link 目标器件名（jlink 模式必填），如 BAT32G157GK64FB")
-    p.add_argument("--speed", default="4000", help="J-Link 接口速度(kHz)，默认 4000")
-    p.add_argument("--no-verify", action="store_true", help="MCU 烧录后不做 verify")
-    p.add_argument("--cmsis-vid-pid", help="非标准 CMSIS-DAP 探针的 VID:PID如沩恒 WCH-Link），格式 0x1a86:0x8012")
+    p.add_argument("--host", help="ssh destination, e.g. root@192.168.77.2")
+    p.add_argument("--run", action="store_true", help="execute right after transferring")
+    p.add_argument("--addr", default="0x08000000", help="MCU flash start address (usual for .bin)")
+    p.add_argument("--interface", default="interface/stlink.cfg", help="openocd interface config")
+    p.add_argument("--target", help="openocd target cfg (required in openocd mode) or pyocd target name")
+    p.add_argument("--transport", choices=["swd", "jtag"], default="swd", help="openocd transport (default swd)")
+    p.add_argument("--probe", help="pyocd probe id (e.g. 69613170 or jlink:69613170)")
+    p.add_argument("--device", help="J-Link device name (required in jlink mode), e.g. BAT32G157GK64FB")
+    p.add_argument("--speed", default="4000", help="J-Link interface speed in kHz, default 4000")
+    p.add_argument("--no-verify", action="store_true", help="skip verify after flashing the MCU")
+    p.add_argument("--cmsis-vid-pid", help="VID:PID of a non-standard CMSIS-DAP probe (e.g. WCH-Link), format 0x1a86:0x8012")
     args = p.parse_args()
 
     if not os.path.isfile(args.binary):
@@ -48,7 +48,7 @@ def main():
 
     elif args.mode == "ssh":
         if not args.host:
-            print("ssh 模式需要 --host，例如 root@192.168.77.2")
+            print("--host is required in ssh mode, e.g. root@192.168.77.2")
             sys.exit(1)
         run(["scp", args.binary, f"{args.host}:{args.remote}"])
         run(["ssh", args.host, "chmod", "+x", args.remote])
@@ -57,7 +57,7 @@ def main():
 
     elif args.mode == "openocd":
         if not args.target:
-            print("openocd 模式需要 --target，例如 target/stm32f4x.cfg")
+            print("--target is required in openocd mode, e.g. target/stm32f4x.cfg")
             sys.exit(1)
         require_tool("openocd")
 
@@ -66,20 +66,17 @@ def main():
         if ext in (".bin", ".img"):
             program_cmd = f"program {args.binary} {args.addr}{verify_part} reset exit"
         else:
-            # ELF/HEX 由 openocd 根据文件元信息处理地址
+            # openocd derives the address for ELF/HEX from the file metadata
             program_cmd = f"program {args.binary}{verify_part} reset exit"
 
-        # ST-Link 走 HLA（High-Level Adapter）私有协议，interface cfg 已固定 transport，
-        # 需要用 hla_swd/hla_jtag 前缀，显式再选 swd/jtag 会与其冲突报错。
-        # CMSIS-DAP 等标准适配器走普通 swd/jtag，不带 hla_ 前缀。
+        # ST-Link needs the HLA prefix (hla_swd/hla_jtag); passing swd/jtag too errors
         transport = args.transport
         if "stlink" in args.interface.lower():
             transport = f"hla_{args.transport}"
 
         cmd = ["openocd", "-f", args.interface]
         if args.cmsis_vid_pid:
-            # 非 ARM 官方 VID/PID（如沩恒 WCH-Link 的 0x1a86:0x8012）不在 openocd 内置白名单中，
-            # 即使协议兼容也会报 "unable to find a matching CMSIS-DAP device"，需显式白名单。
+            # Non-ARM VID/PID probes are not in openocd's allow-list; an explicit entry is required
             vid, pid = args.cmsis_vid_pid.split(":")
             cmd += ["-c", f"cmsis_dap_vid_pid {vid} {pid}"]
         cmd += [
@@ -93,11 +90,11 @@ def main():
 
     elif args.mode == "pyocd":
         if not args.target:
-            print("pyocd 模式需要 --target，例如 stm32f407vg")
+            print("--target is required in pyocd mode, e.g. stm32f407vg")
             sys.exit(1)
         require_tool("pyocd")
 
-        # J-Link CE + pyocd 在 non_interactive=true 时可能出现 open(serial) 失败。
+        # J-Link CE + pyocd can fail with open(serial) when non_interactive=true
         cmd = [sys.executable, "-m", "pyocd", "flash", args.binary, "-t", args.target,
                "-O", "jlink.non_interactive=false"]
         if args.probe:
@@ -111,20 +108,19 @@ def main():
 
     elif args.mode == "jlink":
         if not args.device:
-            print("jlink 模式需要 --device，例如 BAT32G157GK64FB")
+            print("--device is required in jlink mode, e.g. BAT32G157GK64FB")
             sys.exit(1)
 
         jlink_exe = shutil.which("JLinkExe")
         if jlink_exe is None:
-            print("未找到命令: JLinkExe，请先安装 SEGGER J-Link 软件包")
+            print("command not found: JLinkExe -- install the SEGGER J-Link package first")
             sys.exit(1)
 
         ext = os.path.splitext(args.binary)[1].lower()
         jlink_binary_path = args.binary
         temp_bin_path = None
 
-        # J-Link Commander does not recognize custom extensions like .img,
-        # even with an explicit address. Convert to a temporary .bin path.
+        # J-Link Commander ignores extensions like .img; convert to a temporary .bin
         if ext == ".img":
             with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f_bin:
                 temp_bin_path = f_bin.name
@@ -135,8 +131,7 @@ def main():
             load_cmd = f"loadfile {jlink_binary_path} {args.addr}"
             verify_cmd = f"verifybin {jlink_binary_path} {args.addr}"
         else:
-            # HEX/ELF/AXF 使用文件内地址信息。
-            # J-Link 的 loadfile 已包含下载后校验，无需额外 verify 命令。
+            # HEX/ELF/AXF carry their own addresses; loadfile already verifies
             load_cmd = f"loadfile {args.binary}"
             verify_cmd = None
 

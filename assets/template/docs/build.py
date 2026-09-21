@@ -137,12 +137,47 @@ def _clean_doxygen_build(root: str):
 
 
 def _file_collector(folders: list[str], obj: list[str]) -> list[tuple[str, str]]:
+    """Collect ``(folder_root, relative_path)`` for every suffix hit.
+
+    Keeping the path relative to its configured folder is what lets the caller mirror the
+    source layout instead of flattening it.
+    """
     res = []
     for folder in folders:
         entry = Path(folder)
         for _obj in obj:
-            res.extend(list(entry.rglob(f"*.{_obj}")))
-    return [(os.path.dirname(str(file)), os.path.basename(str(file))) for file in res]
+            for file in entry.rglob(f"*.{_obj}"):
+                # relative paths stay POSIX internally: downstream compares them as strings
+                # (tutorial location, Doxyfile injection, messages) and pathlib yields '\' here
+                res.append((folder, str(file.relative_to(entry)).replace(sep, '/')))
+    return res
+
+
+def _walk_files(root: str) -> list[str]:
+    """Relative paths of every file under ``root``."""
+    res = []
+    for _dir, _, _names in os.walk(root):
+        for _name in _names:
+            # same POSIX normalization as _file_collector: consumers compare these strings
+            res.append(os.path.relpath(_dir + sep + _name, root).replace(sep, '/'))
+    return res
+
+
+def _mirror_roots(folders: list[str]) -> dict[str, str]:
+    """Top-level name each configured doc folder gets inside the generated mirror.
+
+    ``include`` -> ``include``, ``src`` -> ``src``, ``docs/doxygen/dox`` -> ``dox``. Two
+    folders sharing a basename would silently collide, so that is a hard error.
+    """
+    res, _seen = {}, {}
+    for folder in folders:
+        _key = os.path.basename(folder.rstrip(sep))
+        if _key in _seen:
+            raise RuntimeError(f"doc_doxygen_folders entries '{_seen[_key]}' and '{folder}' "
+                               f"both map to the mirror folder '{_key}'")
+        _seen[_key] = folder
+        res[folder] = _key
+    return res
 
 
 def _ver_should_include(x: str, ref_ver: str) -> bool:
@@ -190,7 +225,7 @@ def _generate_docs_index(languages: list[str], versions: list[str], lib: str) ->
 
     version_groups = ""
     for version in sorted(versions, reverse=True):
-        group = f'    <!-- 版本 {version} -->\n'
+        group = f'    <!-- version {version} -->\n'
         group += '    <div class="version-group">\n'
         group += f'      <h2 class="version-title">Version {version}</h2>\n'
         group += '      <ul class="lang-links">\n'
@@ -298,10 +333,18 @@ def _generate_docs_index(languages: list[str], versions: list[str], lib: str) ->
 
 
 def _capture_escape_files(x: list[str]) -> list[str]:
-    _tmp = [_.split('.') for _ in x]
-    _suffix = [_pair_capture.get(_[1]) for _ in _tmp]
-    _tmp1 = [v1[0] + '.' + v2 for v1, v2 in zip(_tmp, _suffix)]
-    return list(set(x + _tmp1))
+    """A version-dropped file drags its paired suffix along (``.h`` <-> ``.c`` etc.).
+
+    splitext keeps a dotted directory name from confusing the pairing, and suffixes with
+    no pair (``.dox``/``.cxx``) are skipped instead of inventing a name.
+    """
+    res = set(x)
+    for _rel in x:
+        _stem, _ext = os.path.splitext(_rel)
+        _pair = _pair_capture.get(_ext.lstrip('.'))
+        if _pair:
+            res.add(f'{_stem}.{_pair}')
+    return list(res)
 
 
 class AutomationDoc:
@@ -319,6 +362,7 @@ class AutomationDoc:
         self.sphinx_automation()
 
     def doxygen_automation(self):
+        self._validate_doc_sources()
         self._doxygen_scripts_from_sources_to_langs()
         self._doxygen_scripts_from_langs_to_vers()
         self._doxygen_config_injection()
@@ -343,8 +387,7 @@ class AutomationDoc:
         subprocess.run(["make", "-C", _path, "html"])
 
     def _copy_images_for_doxygen_and_sphinx(self):
-        # # customize prefix syntax here
-        # # IN: => doxygen; OUT: => sphinx; ALL: => both
+        # prefix syntax: IN: doxygen; OUT: sphinx; ALL: both
 
         # clean if exists
         _no_recursive_clean_img(self._images_doxygen_destination)
@@ -380,18 +423,21 @@ class AutomationDoc:
             for _ver in self.meta.get('doc_versions'):
                 os.mkdir(_lang_folder + sep + f'v{_ver}')
 
-        # move filtered docstring files
-        _files = _file_collector([self._root + sep + _ for _ in self.meta.get('doc_doxygen_folders')],
-                                 self.meta.get('doc_doxygen_suffix'))
-        for (k, v) in _files:
-            _f = k + sep + v
-            with open(_f, 'r', encoding='utf-8') as f:
+        # move filtered docstring files, mirroring each source folder rather than flattening
+        # it: the tree keeps include/ src/ dox/ apart, so the published docs get real
+        # directory pages and two same-named files can no longer overwrite each other
+        _folders = [self._root + sep + _ for _ in self.meta.get('doc_doxygen_folders')]
+        _mirror = _mirror_roots(_folders)
+        _files = _file_collector(_folders, self.meta.get('doc_doxygen_suffix'))
+        for (_folder, _rel) in _files:
+            with open(_folder + sep + _rel, 'r', encoding='utf-8') as f:
                 _tmp = f.readlines()
             for _lang in self.meta.get('doc_languages'):
                 _tmp_filtered = _language_filter(_tmp, self.meta.get('doc_languages'), _lang)
-
-                with open(_build_folder + sep + _lang + sep + f'_{_lang}_docstrings' + sep + v,
-                          'w', encoding='utf-8') as f:
+                _dst = (_build_folder + sep + _lang + sep + f'_{_lang}_docstrings'
+                        + sep + _mirror[_folder] + sep + _rel)
+                os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                with open(_dst, 'w', encoding='utf-8') as f:
                     f.write(''.join(_tmp_filtered))
 
     def _doxygen_scripts_from_langs_to_vers(self):
@@ -406,32 +452,35 @@ class AutomationDoc:
 
         _f_in = _f_out + sep + f'v{_ver}'
         _docstrings = f'_{_lang}_v{_ver}_docstrings'
+        _f_src = _f_out + sep + f'_{_lang}_docstrings'
 
         if _docstrings in os.listdir(_f_in):  # remove if exists
-            shutil.rmtree(_docstrings)
+            shutil.rmtree(_f_in + sep + _docstrings)
 
         _f_final = _f_in + sep + _docstrings
         os.mkdir(_f_final)
 
-        should_be_escape = self._filter_docstring_files(_f_out, _lang, _ver, _f_final)
+        should_be_escape = self._filter_docstring_files(_f_src, _ver, _f_final)
 
         _escape_files = _capture_escape_files(should_be_escape)  # remove unmatched version files
-        for file in os.listdir(_f_out + sep + f'_{_lang}_docstrings'):
-            if file in _escape_files:
-                os.remove(_f_final + sep + file)
+        for _rel in _walk_files(_f_src):
+            if _rel in _escape_files:
+                os.remove(_f_final + sep + _rel)
 
-    def _filter_docstring_files(self, _f_out, _lang, _ver, _f_final):
+    def _filter_docstring_files(self, _f_src, _ver, _f_final):
 
         should_be_escape = []
-        for file in os.listdir(_r := _f_out + sep + f'_{_lang}_docstrings'):
-            with open(_r + sep + file, 'r', encoding='utf-8') as f:
+        for _rel in _walk_files(_f_src):
+            with open(_f_src + sep + _rel, 'r', encoding='utf-8') as f:
                 _tmp = f.readlines()
 
             _tmp, _file_ver = _ver_filter(_tmp, _ver)
             if _file_ver and not _ver_should_include(_file_ver, _ver):
-                should_be_escape.append(file)
+                should_be_escape.append(_rel)
 
-            with open(_f_final + sep + file, 'w', encoding='utf-8') as f:
+            _dst = _f_final + sep + _rel
+            os.makedirs(os.path.dirname(_dst), exist_ok=True)
+            with open(_dst, 'w', encoding='utf-8') as f:
                 f.write('\n\n\n'.join(_tmp))
         return should_be_escape
 
@@ -443,7 +492,8 @@ class AutomationDoc:
         _meta_config = _meta_config.replace("%LIB_NAME%", self.meta.get('name'))
         _meta_config = _meta_config.replace("%PATTERNS%",
                                             ' '.join([f'*.{_}' for _ in self.meta.get('doc_doxygen_suffix')]))
-        _meta_config = _meta_config.replace("%GRAPHVIZ_BIN%", self.meta.get('graphviz_bin'))
+        _meta_config = _meta_config.replace("%GRAPHVIZ_BIN%",
+                                            self.meta.get('graphviz_bin') or '')   # absent = dot from PATH (downstream contract)
 
         _build_folder = self._doxygen_root + sep + 'build'
         for _lang in self.meta.get('doc_languages'):
@@ -453,6 +503,12 @@ class AutomationDoc:
                 _meta = _meta_config.replace("%LAN%", _lang)
                 _meta = _meta.replace("%VER%", _ver)
                 _meta = _meta.replace("%FULL_LAN%", language_map.get(_lang))
+                # @example only matches files sitting DIRECTLY under EXAMPLE_PATH (unlike
+                # @include it ignores EXAMPLE_RECURSIVE), so the directories that actually
+                # hold a tutorial have to be listed, plus the mirror root for @include
+                _meta = _meta.replace("%EXAMPLE_DIRS%", ' '.join(
+                    f"./_{_lang}_v{_ver}_docstrings/" + (f"{_}/" if _ else '')
+                    for _ in self._example_dirs).strip())
 
                 with open(_f_in + sep + DOXYFILE_IN, 'w', encoding='utf-8') as f:
                     f.write(_meta)
@@ -463,8 +519,102 @@ class AutomationDoc:
         for _lang in self.meta.get('doc_languages'):
             _f_out = _build_folder + sep + _lang
             for _ver in self.meta.get('doc_versions'):
-                subprocess.run(["doxygen", DOXYFILE_IN], cwd=Path(_f_out + sep + f'v{_ver}'))
+                _leaf = _f_out + sep + f'v{_ver}'
+                # check=True: a doxygen that dies must fail the build. It used to print
+                # "successfully generated" whatever the exit status was.
+                subprocess.run(["doxygen", DOXYFILE_IN], cwd=Path(_leaf), check=True)
+                self._validate_doxygen_output(_leaf, _lang, _ver)
                 print(f"Doxygen build system: Documentation of [{_lang}, v{_ver}] successfully generated")
+
+    def _validate_doc_sources(self):
+        """Completeness of the hand-written doc sources: landing page + tutorial.
+
+        Deliberately asserts properties, not paths -- ``doc_doxygen_folders`` alone decides
+        where documentation may live, so moving a file around inside the scanned tree stays
+        green. Only a broken property fails.
+        """
+        _folders = [self._root + sep + _ for _ in self.meta.get('doc_doxygen_folders')]
+        _files = _file_collector(_folders, self.meta.get('doc_doxygen_suffix'))
+        _mirror = _mirror_roots(_folders)
+        _rels = {_rel for _, _rel in _files}
+        _names = {os.path.basename(_rel) for _rel in _rels}
+        _problems, _mainpages, _tutorials, _sections = [], [], [], []
+
+        for (_folder, _rel) in _files:
+            if not _rel.lower().endswith('.dox'):
+                continue
+            with open(_folder + sep + _rel, 'r', encoding='utf-8') as f:
+                _text = f.read()
+            _here = _mirror[_folder] + '/' + _rel
+            if '@mainpage' in _text:
+                _mainpages.append(_here)
+                _sections.extend(re.findall(r'@section\s+([A-Za-z0-9_]+)', _text))
+            if '@example' in _text:
+                _tutorials.append(_here)
+
+        if not any(_rel.lower().endswith('.dox') for _rel in _rels):
+            _problems.append('no .dox file under the scanned doc folders: check '
+                             'doc_doxygen_folders covers where the docs live')
+        if not _mainpages:
+            _problems.append('no @mainpage found: the documentation has no landing page')
+        elif len(_mainpages) > 1:
+            _problems.append('more than one @mainpage (doxygen silently keeps whichever it '
+                             'scans first): ' + ', '.join(sorted(_mainpages)))
+        if not _tutorials:
+            _problems.append('no @example page found: the documentation does not teach its own use')
+        for _t in _tutorials:
+            if '/demos/' not in f'/{_t}':
+                _problems.append(f'{_t}: the tutorial belongs in demos/')
+
+        for (_folder, _rel) in _files:
+            with open(_folder + sep + _rel, 'r', encoding='utf-8') as f:
+                _text = f.read()
+            for _cmd in ('@include', '@example'):
+                for _ref in re.findall(rf'{re.escape(_cmd)}\s+([^\s*]+)', _text):
+                    if _ref not in _rels and os.path.basename(_ref) not in _names:
+                        _problems.append(f'{_mirror[_folder]}/{_rel}: {_cmd} {_ref} does not '
+                                         f'resolve inside the scanned tree')
+
+        if _problems:
+            raise RuntimeError('documentation completeness check failed:\n  - '
+                               + '\n  - '.join(_problems))
+
+        # what the generated leaves have to prove they consumed
+        self._mainpage_sections = sorted(set(_sections))
+        self._mainpage_pages = [f"{os.path.splitext(os.path.basename(_p))[0]}_8"
+                                f"{os.path.splitext(os.path.basename(_p))[1].lstrip('.')}.html"
+                                for _p in _mainpages]
+        self._example_dirs = sorted({''} | {os.path.dirname(_t) for _t in _tutorials})
+
+    def _validate_doxygen_output(self, _leaf, _lang, _ver):
+        """Prove a generated leaf consumed both the landing page and the tutorial."""
+        _html = _leaf + sep + 'build_sub' + sep + 'html'
+        _problems = []
+        _index = _html + sep + 'index.html'
+
+        if not os.path.isfile(_index):
+            _problems.append('no index.html')
+        else:
+            with open(_index, 'r', encoding='utf-8') as f:
+                _text = f.read()
+            if self._mainpage_sections:
+                # @section ids survive the language and version filtering, so they mark the
+                # landing page no matter which language or version is being built
+                for _sec in self._mainpage_sections:
+                    if _sec not in _text:
+                        _problems.append(f'landing page lost mainpage section "{_sec}"')
+            else:
+                for _page in self._mainpage_pages:
+                    if not os.path.isfile(_html + sep + _page):
+                        _problems.append(f'mainpage source "{_page}" was not rendered')
+
+        if not os.path.isdir(_html) or not [n for n in os.listdir(_html)
+                                            if n.endswith('-example.html')]:
+            _problems.append('no *-example.html: the tutorial page was not generated')
+
+        if _problems:
+            raise RuntimeError(f'doxygen output for [{_lang}, v{_ver}] is incomplete:\n  - '
+                               + '\n  - '.join(_problems))
 
     def _doxygen_export_navigation(self):
         _tmp = _generate_docs_index(self.meta.get('doc_languages'), self.meta.get('doc_versions'),
@@ -492,12 +642,15 @@ class AutomationDoc:
            must be included when create;
         6. internalization support is available, use [lang] to note; no [lang]
            component is of global;
-        7. images can be stored in ./docs/_images, prefix 'IN_' for doxygen
+        7. images can be stored in ./docs/images, prefix 'IN_' for doxygen
            system, 'OUT_' for sphinx system, and 'ALL_' for both;
-        8. ./include/dox/ for .dox files, syntax use multi-lined /*! ... */
+        8. ./docs/doxygen/dox/ for .dox files, syntax use multi-lined /*! ... */
            commands;
-        9. ./include/dox/demos/ for demos, *.dox for tutorial files with
+        9. ./docs/doxygen/dox/demos/ for demos, *.dox for tutorial files with
            pure /*! ... @example ... */ inside; and *.cxx for example files;
+       10. .dox and .cxx are doc-only suffixes: they live only under
+           ./docs/doxygen/dox/ and never under ./include/ or ./src/, which hold
+           .h/.c/.hpp/.cpp only;
         ============================== Guide Over ==============================
         """
         print(_content)

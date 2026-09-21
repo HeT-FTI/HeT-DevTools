@@ -38,7 +38,22 @@ export interface DependencyEditResult {
   issues: string[];
   nextMetadata?: FcppMetadata;
   nextConandataText?: string;
+  /** 实际落盘的桶（可能与输入不同：规则固定桶会覆盖）。 */
+  appliedBucket?: DepBucket;
+  /** 是否被"规则固定桶"改写了归属（回执要如实说明，不许静默）。 */
+  coerced?: boolean;
 }
+
+/**
+ * **规则固定桶**（模板硬规则）：这些包只能落在指定桶里。
+ *
+ * 单一来源：`data/conanIndex.ts` 的索引条目与 `addDependency` 的写入都读这里 ——
+ * 以前索引写 `gtest → common`、写入却强行改 `infra`，于是面板预选的值是错的。
+ */
+export const FORCED_BUCKET: Readonly<Record<string, DepBucket>> = {
+  gtest: 'infra',
+  pybind11: 'infra',
+};
 
 /** conandata.yml package name → metadata.json display key. */
 const KEY_BY_CONAN: Record<string, string> = {
@@ -105,13 +120,13 @@ export function addDependency(
   const issues: string[] = [];
   const conanName = input.conanName.trim();
   const lower = conanName.toLowerCase();
-  const bucket = lower === 'gtest' || lower === 'pybind11' ? 'infra' : input.bucket;
+  const forced = FORCED_BUCKET[lower];
+  const bucket = forced ?? input.bucket;
+  // 被规则改桶时**不静默**：回执里会说"已按规则归到 X 桶"（调用方从 appliedBucket 取）。
+  const coerced = forced !== undefined && input.bucket !== forced;
 
   if (!conanName || !input.version) {
     return { ok: false, issues: ['缺少包名或版本'] };
-  }
-  if (lower === 'gtest' && bucket !== 'infra') {
-    issues.push('GTest 只能放在 infra 桶（主机测试设施）');
   }
   if (lower === 'pybind11' && meta.enable_python_bindings !== true) {
     issues.push('需要先开启 enable_python_bindings = true 才能引入 pybind11');
@@ -129,7 +144,7 @@ export function addDependency(
   const targets = input.targets && input.targets.length > 0 ? input.targets : defaultTargets(conanName);
   const nextMetadata = withBucket(meta, bucket, (group) => ({ ...group, [displayKey]: targets }));
   const nextConandataText = upsertRequirement(conandataText, conanName, input.version).text;
-  return { ok: true, issues: [], nextMetadata, nextConandataText };
+  return { ok: true, issues: [], nextMetadata, nextConandataText, appliedBucket: bucket, coerced };
 }
 
 /** Remove a dependency from metadata.json + conandata.yml. */

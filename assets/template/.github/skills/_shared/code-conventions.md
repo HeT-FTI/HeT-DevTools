@@ -7,6 +7,7 @@
 1. **Pairing（配对约定）**: every `.h` ↔ `.c`, `.hpp` ↔ `.cpp` one-to-one. 一一对应。
 2. **Suffix roles（后缀分工）**: `.h/.c` = C, `.hpp/.cpp` = C++, `.dox` = pure docs, `.cxx` = examples. 后缀分工。
 3. Public headers in `include/`, implementations in `src/`, Python bindings in `api/python_bindings.cpp`.
+4. **Doc-only suffixes（文档专属后缀）**: `.dox` and `.cxx` belong to the documenting system only. They live **exclusively** under `docs/doxygen/dox/` (`mainpage.dox`, `demos/*.dox`, `demos/*.cxx`) as hand-written standalone files, and are **never** written as a docstring inside a file under `include/` or `src/` — those two trees carry `.h/.c/.hpp/.cpp` only. `mainpage`/`demo` have no `include/`-or-`src/` counterpart by design. A complete doc set is a landing page plus a tutorial; one `.dox` may pull in 0..N `.cxx`, no pairing required (`het-docs`). 文档专属后缀只放 `docs/doxygen/dox/`，`include/`、`src/` 里不得出现；完备 = 主页 + 教程。
 
 ## Module Annotations（模块生成注解）
 

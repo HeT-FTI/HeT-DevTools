@@ -8,6 +8,17 @@
  */
 
 /** Distro name the provisioner creates when it owns the lane (V4-3/V4-8). */
+/**
+ * `wsl.exe` 的位置：默认走 PATH，可被 `HET_WSL_EXE` 覆盖 ——
+ *   · 非标准安装（wsl.exe 不在 PATH）；
+ *   · harness/CI：指向一个**桩**，以便在非 Windows 上验证"决定链 + 0 侵入断言"
+ *     （托管 Windows runner 无嵌套虚拟化：import 能建不能启动，见计划附录 G.6）。
+ */
+export function wslExePath(): string {
+  const override = process.env.HET_WSL_EXE?.trim();
+  return override && override.length > 0 ? override : 'wsl.exe';
+}
+
 export const MANAGED_DISTRO = 'het-fcpp';
 
 /**
@@ -85,6 +96,7 @@ export interface WslToolSnapshot {
   gcc?: string;
   cmake?: string;
   conan?: string;
+  ninja?: string;
   lcov?: string;
 }
 
@@ -105,7 +117,7 @@ export function parseWslToolReport(output: string): WslToolSnapshot {
       continue;
     }
     const key = m[1] as keyof WslToolSnapshot;
-    if (key === 'gcc' || key === 'cmake' || key === 'conan' || key === 'lcov') {
+    if (key === 'gcc' || key === 'cmake' || key === 'conan' || key === 'ninja' || key === 'lcov') {
       out[key] = value;
     }
   }
