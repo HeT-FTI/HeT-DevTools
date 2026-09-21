@@ -22,6 +22,7 @@ const c4 = args.includes('--c4');
 const c5 = args.includes('--c5');
 const c6 = args.includes('--c6');
 const c7 = args.includes('--c7');
+const c8 = args.includes('--c8');
 const real = args.includes('--real');
 
 /** @type {import('esbuild').BuildOptions} */
@@ -147,6 +148,15 @@ function buildOptions() {
       ...common,
       entryPoints: [join(srcDir, 'test', 'integration', 'c7.ts')],
       outfile: join(outDir, 'test-integration', 'c7.js'),
+    });
+  }
+
+  // 10b) C8 one-tab / slot check (§6-A: 页签恒为 1 + 页内 Slot 互斥，0 人工)
+  if (c8) {
+    options.push({
+      ...common,
+      entryPoints: [join(srcDir, 'test', 'integration', 'c8.ts')],
+      outfile: join(outDir, 'test-integration', 'c8.js'),
     });
   }
 

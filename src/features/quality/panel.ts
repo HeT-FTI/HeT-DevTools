@@ -8,7 +8,7 @@ import {
   qualityRowsHtml,
 } from './qualityHtml';
 import type { GateRowStatus, QualityRow, QualityRunResult } from './qualityHtml';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 // F.29：页面 HTML 全部搬到 ./qualityHtml（纯函数、可单测）；这里只做面板生命周期与
 // 消息路由。类型照旧从这里导出，调用方不受影响。
@@ -21,7 +21,7 @@ export interface QualityDeps {
   openIssue: (file: string, line?: number) => void;
 }
 
-export function showQualityPanel(context: vscode.ExtensionContext, deps: QualityDeps): vscode.WebviewPanel {
+export function showQualityPanel(context: vscode.ExtensionContext, deps: QualityDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'quality', title: 'HeT DevTools — 质量与安全' }, (panel) => {
 

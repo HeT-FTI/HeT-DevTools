@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { HealthReport } from '../../core/healthCheck';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 import { healthBodyHtml, healthPageHtml } from './html';
 
 export interface HealthPanelDeps {
@@ -28,7 +28,7 @@ export interface HealthPanelDeps {
 export function showHealthReportPanel(
   context: vscode.ExtensionContext,
   deps: HealthPanelDeps,
-): vscode.WebviewPanel {
+): SlotPanel {
   return showDetailPanel(
     context,
     { id: 'health', title: 'HeT DevTools — 工程健康明细' },

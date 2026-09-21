@@ -1,5 +1,6 @@
 import { isAbsolute, join, dirname, delimiter } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as vscode from 'vscode';
 import { LOG_CHANNEL_NAME, log, setOutputChannel } from './constants';
@@ -22,7 +23,7 @@ import { QualityRow, QualityRunResult, showQualityPanel } from './features/quali
 import { CommitRequest, CommitState, showCommitPanel } from './features/commit/panel';
 import { ReleaseState, showReleasePanel } from './features/release/panel';
 import { PreflightState, PreflightItem, showPreflightPanel } from './features/preflight/panel';
-import { pinCurrentDetail } from './features/detail/host';
+import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './features/slots/host';
 import { openCockpitPanel, emitCockpitEvent, getCockpitState, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
@@ -46,7 +47,7 @@ import { localGateSummary, toolRowsFromPresence } from './core/toolMatrix';
 import { statSync } from 'node:fs';
 import { pathExists, readText, writeText } from './utils/fs';
 import { fcppStyleStringify } from './core/metadataText';
-import { findPython, run, which } from './utils/exec';
+import { findPython, run, which, type ExecResult } from './utils/exec';
 import { docsOptions, graphvizMismatch } from './core/docsService';
 import { currentStatus, runWithBusy, type BusyHost } from './core/busy';
 import { cleanupStaleInjection } from './core/injectedFiles';
@@ -91,6 +92,7 @@ import {
   writeEnvPhaseRecord,
 } from './core/envPhase';
 import { docsFailureHint } from './core/docsHints';
+import { DEADLINE_SETTING, withDeadline, type DeadlineOverrides } from './core/deadlines';
 import { LaneMirror, laneMirrorOf, mirrorSummary } from './core/laneMirror';
 import { NetPlan, mirrorLabel, netDecisionLine, netPlanFor, netSummaryLine, rootfsCandidatesFor } from './core/netProfile';
 import type { AptMirrorRef } from './core/laneAptMirror';
@@ -98,6 +100,11 @@ import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArc
 import { prependPath } from './core/envPath';
 import { closeHudPanel, hudPanelOpen, openHudPanel, pressHudKey, type HudDeps } from './features/hud/panel';
 import { HUD_CLOSE_COMMAND, hudKeyCommands } from './features/hud/keys';
+
+/** §3.5 / G2：长动作的阈值只有一处默认值（`core/deadlines.ts`），这里只负责读设置覆盖。 */
+function deadlineOverrides(): DeadlineOverrides {
+  return vscode.workspace.getConfiguration().get<Record<string, number>>(DEADLINE_SETTING) ?? {};
+}
 import { HudEnvRow, HudModel, defaultHudActions, hudEnabled } from './features/hud/hudModel';
 import { TEMPLATE_REPO, TEMPLATE_REF, TEMPLATE_SNAPSHOT_VERSION, TEMPLATE_TAG, TEMPLATE_TARBALL_BYTES, TEMPLATE_TARBALL_SHA256 } from './core/templateDefaults';
 import * as os from 'node:os';
@@ -452,6 +459,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('het.cockpit', () => openCockpitPanel(context)),
     vscode.commands.registerCommand('het.getCockpitState', () => getCockpitState()),
     vscode.commands.registerCommand('het.getChipState', () => lastChip),
+    // A 块探针：当前页内 Slot + 丢弃消息数（集成测试用，也便于现场排查"消息没人接"）
+    vscode.commands.registerCommand('het.getSlotState', () => ({
+      open: currentDetailView() ?? null,
+      dropped: slotHostDiagnostics().droppedCount,
+      tabs: vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => String((t.input as { viewType?: string } | undefined)?.viewType ?? '').startsWith('het.')).length,
+    })),
     vscode.commands.registerCommand('het.getConanRuntime', async () => ensureConanRuntime()),
     vscode.commands.registerCommand('het.getEnvRows', async () => ensureToolDiscovery()),
     vscode.commands.registerCommand('het.getHostCapabilities', async (force?: boolean) => getHostCapabilities(!!force)),
@@ -614,8 +627,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }),
     ),
     // §D 逃生门：想把当前细节视图固定成独立页签（并排看两个视图）时用
-    vscode.commands.registerCommand('het.detail.pin', () => pinCurrentDetail()),
-    vscode.commands.registerCommand('het.getBuildOk', () => lastBuildOk ?? null),
+    vscode.commands.registerCommand('het.detail.close', () => closeCurrentDetail()),    vscode.commands.registerCommand('het.getBuildOk', () => lastBuildOk ?? null),
     vscode.commands.registerCommand('het.getLastBuildError', () => lastBuildError),
     vscode.commands.registerCommand('het.getTestSummary', () =>
       lastTestSummary
@@ -1519,13 +1531,26 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     const docsEnv = prependPath({ ...process.env }, pyDir, delimiter);
     channel?.appendLine(`[docs] PATH += ${pyDir}`);
     emitCockpitEvent({ type: 'log:start', title: `docs/build.py（本机）` });
-    const result = await run(python, ['docs/build.py'], {
-      cwd: root,
-      env: docsEnv,
-      onStdout: stream,
-      onStderr: stream,
-      timeoutMs: 0,
-    });
+    // §3.5 / F.41：文档是典型长动作，但**必须有界**（曾经 timeoutMs: 0 → 挂死就转两小时）
+    let result: ExecResult;
+    try {
+      result = await withDeadline('编译文档', 'docs', (timeoutMs) =>
+        run(python, ['docs/build.py'], {
+          cwd: root,
+          env: docsEnv,
+          onStdout: stream,
+          onStderr: stream,
+          timeoutMs,
+        }),
+        deadlineOverrides(),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(`[docs] aborted: ${message}`);
+      emitCockpitEvent({ type: 'log:done', ok: false });
+      finish(false);
+      return { ok: false, message };
+    }
     const artifacts = await locateArtifacts(root);
     const ok = result.code === 0;
     log(`[docs] finished ok=${ok} artifacts=${artifacts.length}`);
@@ -1735,9 +1760,16 @@ function openQualityPanel(context: vscode.ExtensionContext): void {
       if (files.length === 0) {
         return { rowId, status: 'pass', summary: '无 C++ 源文件', issues: [], errors: [] };
       }
-      const res = await run(tool, [`--config-file=${join(root, '.github/misc/.clang-tidy')}`, ...files, '--', '-std=c++17', '-Iinclude'], {
-        cwd: root,
-        timeoutMs: 0,
+      const res = await withDeadline('静态检查', 'quality', (timeoutMs) =>
+        run(tool, [`--config-file=${join(root, '.github/misc/.clang-tidy')}`, ...files, '--', '-std=c++17', '-Iinclude'], {
+          cwd: root,
+          timeoutMs,
+        }),
+        deadlineOverrides(),
+      ).catch((err: unknown) => {
+        // 超时不是“通过”：直接给一条 fail 行 + 人话原因（含下一步），不隐式当成功
+        const message = err instanceof Error ? err.message : String(err);
+        return { code: 1, stdout: '', stderr: message, signal: null } as ExecResult;
       });
       const issues = parseClangTidyOutput(`${res.stdout}\n${res.stderr}`);
       if (issues.length > 0 || res.code !== 0) {
@@ -2383,7 +2415,10 @@ function openBenchPanel(context: vscode.ExtensionContext): void {
       busyHost(),
       'board',
       '上板构建（--no-flash）',
-      () => run(python, [script, '--no-flash'], { cwd: root, onStdout: (c) => channel?.append(c), onStderr: (c) => channel?.append(c), timeoutMs: 0 }),
+      () => withDeadline('上板构建', 'board', (timeoutMs) =>
+        run(python, [script, '--no-flash'], { cwd: root, onStdout: (c) => channel?.append(c), onStderr: (c) => channel?.append(c), timeoutMs }),
+        deadlineOverrides(),
+      ),
       `${python} ${script} --no-flash`,
     );
     if (busy.status === 'skipped') {
@@ -4370,7 +4405,8 @@ async function runEnvDump(): Promise<{ ok: boolean; path?: string; message: stri
       },
       redactRoots(),
     );
-    const dir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ctx.globalStorageUri.fsPath;
+    const dir = ctx.globalStorageUri.fsPath;
+    await mkdir(dir, { recursive: true });
     const file = join(dir, dumpFileName());
     await writeText(file, `${JSON.stringify(doc, null, 2)}\n`);
     try {
@@ -4676,22 +4712,28 @@ async function runConanOnce(project: FcppProject): Promise<{ ok: boolean; stdout
   }
 
   emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · ${project.metadata?.name ?? project.root}` });
-  const summary = await runConanCreate(
-    conanExe,
-    project.root,
-    { buildType, profiles },
-    {
-      onStdout: (c) => {
-        channel?.append(c);
-        emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-      },
-      onStderr: (c) => {
-        channel?.append(c);
-        emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-      },
-      timeoutMs: 0,
-      env: cmakePlan.env,
-    },
+  const summary = await withDeadline(
+    '编译打包',
+    'build',
+    (timeoutMs) =>
+      runConanCreate(
+        conanExe,
+        project.root,
+        { buildType, profiles },
+        {
+          onStdout: (c) => {
+            channel?.append(c);
+            emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+          },
+          onStderr: (c) => {
+            channel?.append(c);
+            emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+          },
+          timeoutMs,
+          env: cmakePlan.env,
+        },
+      ),
+    deadlineOverrides(),
   );
   lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
   channel?.appendLine('');

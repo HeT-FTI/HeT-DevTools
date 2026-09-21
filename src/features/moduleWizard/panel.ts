@@ -6,7 +6,7 @@ import {
   wizardPageHtml,
   wizardPreviewHtml,
 } from './wizardHtml';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 // F.30：页面 HTML 全部搬到 ./wizardHtml（纯函数、可单测）。**页面只生成一次**，
 // 之后只往 `#preview` 推片段 —— 任何整页重渲染都会把用户填的表单冲回默认值。
@@ -27,7 +27,7 @@ export interface ModuleWizardDeps {
   create: (input: ModulePanelInput) => Promise<{ ok: boolean; message: string }>;
 }
 
-export function showModuleWizardPanel(context: vscode.ExtensionContext, deps: ModuleWizardDeps): vscode.WebviewPanel {
+export function showModuleWizardPanel(context: vscode.ExtensionContext, deps: ModuleWizardDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'moduleWizard', title: 'HeT DevTools — 新增模块向导' }, (panel) => {
 

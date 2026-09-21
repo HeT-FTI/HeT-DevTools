@@ -10,7 +10,6 @@
   "cmd.commitRelease": "HeT DevTools: 提交助手（预填发版 📦）",
   "cmd.coverage": "HeT DevTools: 覆盖率视图",
   "cmd.dashboard": "HeT DevTools: 打开仪表盘",
-  "cmd.detailPin": "HeT DevTools: 把这个细节视图固定成独立页签（想并排看两个视图时用）",
   "cmd.docs": "HeT DevTools: 文档中心",
   "cmd.docsRun": "HeT DevTools: 编译文档（出 HTML 产物）",
   "cmd.envCheck": "HeT DevTools: 检查开发环境",
@@ -72,5 +71,6 @@
   "config.netProfile.global": "global —— 只用官方源（等同未配置）",
   "config.telemetryEnabled": "可选匿名遥测（默认关闭）：仅在本机统计激活/功能使用次数。不含代码、个人数据，本版本不对外发送任何数据。",
   "description": "C/C++ 工程面板（面向 fcpp 模板库）：构建、测试、依赖、文档、质量门禁、发布与上板基准一键可视化。",
-  "displayName": "HeT DevTools"
+  "displayName": "HeT DevTools",
+  "cmd.detailClose": "HeT DevTools: 关闭细节视图（回到只有卡片）"
 }

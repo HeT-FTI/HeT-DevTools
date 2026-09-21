@@ -95,7 +95,7 @@ describe('按钮可达性（F.31：发射端 ↔ 处理端契约）', () => {
   });
 
   it('驾驶舱：分支要的参数一个都不能少（toggle/jump 必须有 data-section，act 必须有 data-act）', () => {
-    const known = new Set(['toggle', 'jump', 'act']);
+    const known = new Set(['toggle', 'jump', 'act', 'slot-close']);
     for (const t of clickableTags(cockpit)) {
       const action = attrOf(t, 'data-action');
       if (action === undefined) {
