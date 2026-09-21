@@ -15,11 +15,10 @@
  * Run with:  npm run test:c8
  */
 import * as assert from 'node:assert';
-import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import * as vscode from 'vscode';
 
 import { EXTENSION_ID } from '../hostExtension';
+import { assertHostIsTrustworthy, logProvenance, writeEvidence } from './support/hostProvenance';
 
 interface SlotState {
   open: { id: string; title: string } | null;
@@ -89,6 +88,9 @@ const VIEWS: readonly { command: string; slot: string }[] = [
 
 export async function run(): Promise<void> {
   console.log('[c8] starting — 页签恒为 1 + 页内 Slot 互斥');
+  // 宿主自证：远端宿主 / web 宿主 / 别的扩展目录 → 结论无意义，直接红。
+  const provenance = assertHostIsTrustworthy({ tag: 'c8', workspaceContains: ['c8'] });
+  logProvenance('c8', provenance);
   const seen: string[] = [];
   const ext = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(ext, 'extension must be discovered');
@@ -151,11 +153,7 @@ export async function run(): Promise<void> {
   assert.strictEqual(hetTabs().length, 1, '关掉 Slot 不许连带关掉驾驶舱');
   console.log(`[c8] 关闭 OK — 页签 = 1 · 丢弃消息数 ${closed.dropped}`);
   // 证据落盘：驱动脚本据此判定"用例真的跑过"——否则 VS Code CLI 忽略参数、退出码 0
-  // 也会被当成通过（假绿）。
-  writeFileSync(
-    join(__dirname, '..', 'c8-evidence.txt'),
-    [`tabs=1`, ...seen, `dropped=${closed.dropped}`, `end=${new Date().toISOString()}`].join('\n') + '\n',
-    'utf8',
-  );
+  // 也会被当成通过（假绿）。宿主上下文一并写入，供驱动回验版本。
+  writeEvidence('c8', [`tabs=1`, ...seen, `dropped=${closed.dropped}`], provenance);
   console.log('[c8] OK');
 }

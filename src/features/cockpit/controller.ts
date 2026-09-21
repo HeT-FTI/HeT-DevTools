@@ -42,6 +42,14 @@ let singlePageFacts: SinglePageFacts = EMPTY_FACTS;
 let foldedSections: SectionId[] | undefined;
 /** 懒加载：已经请求过正文的段（§6 `section:open`）。 */
 const openedSections = new Set<SectionId>();
+/**
+ * 最近一次深链解析出来的段（旧 tab id → 段）。
+ *
+ * 为什么存起来：新 UI 没有“当前页”这个概念（旧 `state.page` 已归档），
+ * 但深链（`het.dashboard ['deps']`、“打开依赖管理器”等旧链接）必须继续能用 ——
+ * 于是“它到底定位到哪一段、那一段可不可见”就成了**可验收**的事实。
+ */
+let lastFocus: SectionId | null = null;
 /** 忙语义宿主（§7）：Output 通道 + 通知 + 忙点，全部走 `core/busy` 那一套。 */
 let busyHost: BusyHost | undefined;
 /** §8.1 铁律 2 的闸门（同一入口 1.5s 内只当一次）。 */
@@ -110,6 +118,16 @@ export function getSinglePageFacts(): SinglePageFacts {
 
 export function getCockpitState(): CockpitState {
   return cockpitState;
+}
+
+/**
+ * 单页**视图状态**（可观测）：深链定位到哪一段、哪些段已加载/已折叠。
+ *
+ * 给集成测试与现场排查用 —— 它回答的是“用户点完那条链接后，真能看到那一段吗”：
+ * 旧链接（tab id）不能静默失效（那会变成“点了没反应”）。
+ */
+export function getCockpitView(): { focus: SectionId | null; folded: SectionId[]; opened: SectionId[] } {
+  return { focus: lastFocus, folded: [...(foldedSections ?? readFolded())], opened: [...openedSections] };
 }
 
 /**
@@ -358,7 +376,11 @@ export function emitCockpitEvent(event: CockpitEvent): void {
 import { isSlotMessage, slotFieldOf } from '../slots/protocol';
 import { requestSlotClose, routeSlotMessage } from '../slots/registry';
 
-export function openCockpitPanel(context: vscode.ExtensionContext, focus?: string): vscode.WebviewPanel {  const target = resolveFocus(focus);
+export function openCockpitPanel(context: vscode.ExtensionContext, focus?: string): vscode.WebviewPanel {
+  const target = resolveFocus(focus);
+  if (target) {
+    lastFocus = target;
+  }
   if (cockpitPanel) {
     cockpitPanel.reveal(vscode.ViewColumn.One);
     if (target) {
