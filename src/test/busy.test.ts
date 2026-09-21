@@ -193,7 +193,17 @@ describe('长耗时动作的统一语义（§7）', () => {
       '两张表必须同一批动作 id（否则"登记了但没人用"会重新长出来）',
     );
     // ① 显式接线：这些是用户直接点的入口，必须逐条在源码里找到
-    const explicit = ['build', 'test', 'envCheck', 'envPrepare', 'envRemove', 'docsBuild', 'board'];
+    const explicit = [
+      'build',
+      'test',
+      'envCheck',
+      'envPrepare',
+      'envRemove',
+      'docsBuild',
+      'board',
+      'cacheClean',
+      'targetSwitch',
+    ];
     const notWired = explicit.filter((id) => !wired(id));
     assert.deepStrictEqual(notWired, [], `这些长动作没接忙语义：${notWired.join('、')}`);
     // ② 动态接线：Copilot 四个走控制器里的 `runWithBusy(host(), def.action, …)`

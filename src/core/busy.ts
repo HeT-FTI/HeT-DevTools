@@ -50,6 +50,8 @@ const DEADLINE_KIND_FOR_ACTION: Readonly<Record<string, DeadlineKind>> = {
   testgenCopilot: 'misc',
   setupCopilot: 'misc',
   moduleCopilot: 'misc',
+  cacheClean: 'cacheClean',
+  targetSwitch: 'switchTarget',
 };
 
 export function deadlineKindForAction(action: string): DeadlineKind {

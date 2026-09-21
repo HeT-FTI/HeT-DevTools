@@ -2,6 +2,7 @@ import * as assert from 'node:assert';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { HUD_CLOSE_COMMAND, HUD_DIGITS, digitCommand } from '../features/hud/keys';
+import { stripCommentsCode } from './support/htmlFacts';
 
 /**
  * **manifest ↔ 代码 的对账门禁**（§F.47）。
@@ -26,8 +27,20 @@ interface Manifest {
 const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as Manifest;
 const declared = new Set(pkg.contributes.commands.map((c) => c.command));
 
-const strip = (t: string): string =>
-  t.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|[^:])\/\/[^\n]*/gu, '$1');
+/**
+ * 剥注释用**共享的字符串感知**实现（`support/htmlFacts`）。
+ * 踩过的坑：产品代码里有 conan 包模式 `fmt/*:*`，旧的非字符串感知实现会把它当块注释开始，
+ * 把后面整段代码吃掉 —— 门禁因此漏检过 7 个命令。
+ */
+const strip = (t: string): string => stripCommentsCode(t);
+
+// 自证：字符串里的 `/*` 不许影响后续扫描
+{
+  const probe = strip("const pat = 'fmt/<版本>:*';\nregisterCommand('het.probe', () => 1);");
+  if (!probe.includes("'het.probe'")) {
+    throw new Error('stripComments 把字符串里的 `/*` 当成了注释 → 门禁会漏检');
+  }
+}
 
 /** src 下的非测试源码（扩展本体）。 */
 function sourceFiles(): string[] {
@@ -81,6 +94,8 @@ const INTERNAL_COMMANDS: Readonly<Record<string, string>> = {
   'het.getChipState': '集成测试读 chip 状态',
   'het.getSlotState': 'c8 集成测试读"当前页内 Slot + 页签数"（页签恒为 1 的运行时证据）',
   'het.getTasks': 'B 块集成测试/现场排查读任务状态（在跑什么、最近成不成、能否取消）',
+  'het.getCacheReport': 'K.1 集成测试/现场排查读缓存报表（分区与按架构体积）',
+  'het.getBuildMatrix': 'K.1 集成测试读目标矩阵（证明目标只来自 .hetai/build-matrix.yml）',
   'het.getConanRuntime': '安装后校验读 conan 运行时',
   'het.getEnvRows': '集成测试读环境行',
   'het.envGc': '托管环境 GC（README/CHANGELOG 里说明的内部动作）',

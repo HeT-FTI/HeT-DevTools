@@ -73,5 +73,8 @@
   "description": "A plain-language engineering cockpit for fcpp-based C/C++ libraries: build, test, dependencies, docs, quality gates, release and board benchmarks — all one click.",
   "displayName": "HeT DevTools",
   "cmd.detailClose": "HeT DevTools: Close the detail view",
-  "cmd.taskCancel": "HeT DevTools: Cancel the running task"
+  "cmd.taskCancel": "HeT DevTools: Cancel the running task",
+  "cmd.cacheUsage": "HeT DevTools: Show Conan cache usage (by area / architecture)",
+  "cmd.cacheClean": "HeT DevTools: Clean build cache (build dirs / temp / packages)",
+  "cmd.targetSwitch": "HeT DevTools: Switch cross-compile target (profile + ledger)"
 }

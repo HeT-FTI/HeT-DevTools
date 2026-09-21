@@ -73,5 +73,8 @@
   "description": "C/C++ 工程面板（面向 fcpp 模板库）：构建、测试、依赖、文档、质量门禁、发布与上板基准一键可视化。",
   "displayName": "HeT DevTools",
   "cmd.detailClose": "HeT DevTools: 关闭细节视图（回到只有卡片）",
-  "cmd.taskCancel": "HeT DevTools: 取消正在执行的任务"
+  "cmd.taskCancel": "HeT DevTools: 取消正在执行的任务",
+  "cmd.cacheUsage": "HeT DevTools: 查看 conan 缓存占用（分区 / 架构）",
+  "cmd.cacheClean": "HeT DevTools: 清理构建缓存（构建目录 / 临时 / 按包）",
+  "cmd.targetSwitch": "HeT DevTools: 切换交叉编译目标（生成 profile 与账本）"
 }
