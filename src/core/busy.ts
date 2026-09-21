@@ -1,46 +1,119 @@
 /**
- * 长耗时动作的统一语义（计划 §7，repo-level 硬规则）。
+ * 长耗时动作的统一语义（计划 §7 + V2 §3.2/§3.3 的落地）
  *
  * 一条规则：凡是可能 >1s 的动作，都必须同时具备 5 件事（缺一不算完成）：
- * 1. 触发处转圈 + 禁用（webview 侧）+ **同一动作进行中重复点击直接忽略**（本文件的注册表）
+ * 1. 触发处转圈 + 禁用（webview 侧）+ **同一动作进行中重复点击直接忽略**（本文
+ *    件的注册表）
  * 2. 输出通道有字（开始行含真实命令、阶段行、结束行含耗时与结论）
  * 3. L1 忙点（host 通过 `notifyBusy` 告知 webview）
  * 4. 完成通知（成功静默刷新 + 轻提示；失败 toast + tail）
  * 5. 可复盘（通道保留最近一次；失败给"下一步"）
  *
- * 本文件是**纯逻辑**（不 import vscode）：真正的 OutputChannel / 通知由 `BusyHost` 注入，
- * 因此可以在没有 VS Code 的环境里单测（无人值守测试的前提）。
+ * **V2 B 块的改动**：内部不再是"一张 `Map<action, 开始时间>`"，而是 `core/tasks.ts`
+ * 的 Task 状态机 —— 于是"在跑"这件事第一次有了 owner / deadline / 心跳 / 确定出口。
+ * 公开 API 全部保持不变（`beginBusy/endBusy/isBusy/busyActions/busyEntries/currentStatus/
+ * runWithBusy`），所以 15 个动作的调用点**一行不用改**就获得状态机。
+ *
+ * 本文件仍是**纯逻辑**（不 import vscode）：OutputChannel / 通知 / 时钟由 `BusyHost`
+ * 注入，因此可以在无人值守环境里把超时/取消/恢复全跑一遍。
  */
 import { channelDef, nextStepHint } from './outputChannels';
 import { pickActiveStatus, type ActiveStatus } from './status';
+import type { DeadlineKind } from './deadlines';
+import { TaskStore, type Task, type TaskSnapshot } from './tasks';
+
+/** single writer：整个扩展只有这一份 Task 仓库（UI 与功能模块只读）。 */
+const store = new TaskStore();
+
+/** 诊断与集成测试读同一份（`het.getTasks`）。 */
+export function taskStore(): TaskStore {
+  return store;
+}
+
+/**
+ * 长动作 → §3.5 阈值类别。**每个 busy action 都必须显式登记**（门禁会逼你登记，
+ * 不许悄悄落进兜底档：兜底 10min 对"环境准备"这种是错的）。
+ */
+const DEADLINE_KIND_FOR_ACTION: Readonly<Record<string, DeadlineKind>> = {
+  build: 'build',
+  clean: 'build',
+  test: 'test',
+  docsBuild: 'docs',
+  docsCopilot: 'docs',
+  quality: 'quality',
+  envPrepare: 'envPrepare',
+  envRemove: 'envPrepare',
+  envCheck: 'misc',
+  wslImport: 'envPrepare',
+  board: 'board',
+  commitCopilot: 'misc',
+  testgenCopilot: 'misc',
+  setupCopilot: 'misc',
+  moduleCopilot: 'misc',
+};
+
+export function deadlineKindForAction(action: string): DeadlineKind {
+  return DEADLINE_KIND_FOR_ACTION[action] ?? 'misc';
+}
+
+export function deadlineKindsForActions(): Readonly<Record<string, DeadlineKind>> {
+  return DEADLINE_KIND_FOR_ACTION;
+}
+
+/**
+ * 执行上下文（给动作实现用）：
+ *   · `signal` —— 用户取消或 reconcile 判超时时会被 abort，动作应转给子进程；
+ *   · `heartbeat()` —— 保证"心跳不超 10s"（长动作里打点，否则会被判僵死）；
+ *   · `progress()` —— 可写百分比，悬停/页内可用。
+ */
+export interface TaskRunContext {
+  signal: AbortSignal | undefined;
+  heartbeat(message?: string): void;
+  progress(pct: number, message?: string): void;
+}
 
 /** 幂等注册表：同一动作进行中，后续调用一律**跳过**（不是排队）。 */
-const inflight = new Map<string, number>();
-
 export function beginBusy(action: string, now: number = Date.now()): boolean {
-  if (inflight.has(action)) {
+  store.useClock(() => now);
+  const decision = store.dispatch({
+    action,
+    label: action,
+    owner: 'card',
+    deadlineKind: deadlineKindForAction(action),
+  });
+  if (decision.kind !== 'accepted' || !decision.task) {
     return false;
   }
-  inflight.set(action, now);
+  store.start(decision.task.id);
   return true;
 }
 
 export function endBusy(action: string): boolean {
-  return inflight.delete(action);
+  const task = store.get(action);
+  if (!task || (task.state !== 'running' && task.state !== 'queued')) {
+    return false;
+  }
+  store.cancel(action, '已结束（外部调用）');
+  return true;
 }
 
 export function isBusy(action: string): boolean {
-  return inflight.has(action);
+  const task = store.get(action);
+  return !!task && (task.state === 'running' || task.state === 'queued');
 }
 
 /** 正在跑的动作（按开始时间排序，供 L1 展示）。 */
 export function busyActions(): string[] {
-  return [...inflight.entries()].sort((a, b) => a[1] - b[1]).map(([a]) => a);
+  return store
+    .active()
+    .map((t) => ({ action: t.id, at: t.startedAt ?? t.createdAt }))
+    .sort((a, b) => a.at - b.at)
+    .map((e) => e.action);
 }
 
 /** 正在跑的动作 + 开始时间（"仓库级状态"要从这里取，别自己各记一份）。 */
 export function busyEntries(): Array<{ action: string; startedAt: number }> {
-  return [...inflight.entries()].map(([action, startedAt]) => ({ action, startedAt }));
+  return store.active().map((t) => ({ action: t.id, startedAt: t.startedAt ?? t.createdAt }));
 }
 
 /**
@@ -51,9 +124,48 @@ export function currentStatus(): ActiveStatus | null {
   return pickActiveStatus(busyEntries());
 }
 
-/** 测试用：清空注册表（生产代码不得调用）。 */
+/** 正在跑/排队的 Task（UI 只读）。 */
+export function activeTasks(): Task[] {
+  return store.active();
+}
+
+/** 打心跳（长动作里定期调；超过 10s 不打点会被 reconciler 判超时）。 */
+export function heartbeatBusy(action: string, message?: string): void {
+  store.heartbeat(action, undefined, message);
+}
+
+/** 用户取消：abort 信号 + 落 `cancelled`（不留半成品是执行层的责任）。 */
+export function cancelBusy(action: string, reason?: string): boolean {
+  try {
+    store.cancel(action, reason);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** **对账**（§3.3 Reconciler）：把超 deadline / 心跳断了的任务收敛成 `timedOut`。 */
+export function reconcileBusy(): Task[] {
+  return store.reconcile();
+}
+
+/** 持久化快照（`globalStorage/tasks.json`）。 */
+export function busySnapshot(): TaskSnapshot {
+  return store.snapshot();
+}
+
+/**
+ * 重启恢复：`running/queued` 一律记为 `cancelled` 并说明原因 ——
+ * **绝不留一个"永久进行中"**（返回被收敛的任务，host 负责写日志/提示）。
+ */
+export function restoreBusy(snapshot: TaskSnapshot | undefined): Task[] {
+  return store.restore(snapshot);
+}
+
+/** 测试用：清空注册表与状态机（生产代码不得调用）。 */
 export function resetBusy(): void {
-  inflight.clear();
+  store.reset();
+  store.useClock(() => Date.now());
 }
 
 /** host 需要提供的最小能力（VS Code 适配层在 `features/busyHost.ts`）。 */
@@ -66,6 +178,8 @@ export interface BusyHost {
   notifyDone(action: string, ok: boolean, message: string): void;
   /** 当前时间（注入便于单测）。 */
   now?(): number;
+  /** 谁发起的这次执行（问责用）。缺省 = 'card'。 */
+  owner?(): string;
 }
 
 export type BusyStatus = 'done' | 'skipped' | 'failed';
@@ -97,15 +211,28 @@ export async function runWithBusy<T>(
   host: BusyHost,
   action: string,
   label: string,
-  fn: () => Promise<T>,
+  fn: (ctx: TaskRunContext) => Promise<T>,
   detail?: string,
 ): Promise<BusyResult<T>> {
   const def = channelDef(action);
   const shown = label || def?.label || action;
-  if (!beginBusy(action)) {
-    const msg = `正在执行：${shown}（已忽略重复点击）`;
-    return { status: 'skipped', durationMs: 0, message: msg };
+  store.useClock(host.now ?? (() => Date.now()));
+  const decision = store.dispatch({
+    action,
+    label: shown,
+    owner: host.owner?.() ?? 'card',
+    deadlineKind: deadlineKindForAction(action),
+  });
+  if (decision.kind === 'duplicate') {
+    return { status: 'skipped', durationMs: 0, message: `正在执行：${shown}（已忽略重复点击）` };
   }
+  if (decision.kind === 'rejected' || !decision.task) {
+    // 拒绝也要**显式回执**（不静默丢弃：用户点了就得知道为什么没跑）
+    const message = `${shown} 未启动：${decision.reason ?? '前置条件不满足'}`;
+    host.notifyDone(action, false, message);
+    return { status: 'skipped', durationMs: 0, message };
+  }
+  const taskId = decision.task.id;
   const now = host.now?.() ?? Date.now();
   const channel = def?.channel ? host.outputChannel(def.channel) : null;
   const line = (text: string): void => {
@@ -113,26 +240,55 @@ export async function runWithBusy<T>(
   };
   channel?.show?.();
   line(`[${ts(now)}] ▶ ${shown}${detail ? ` — ${detail}` : ''}`);
+  store.start(taskId);
   host.notifyBusy(action, true);
+
+  const ctx: TaskRunContext = {
+    signal: store.signalFor(taskId),
+    heartbeat: (message?: string) => {
+      try {
+        store.heartbeat(taskId, undefined, message);
+      } catch {
+        /* 已经结束的任务再心跳：忽略（可能是刚被取消） */
+      }
+    },
+    progress: (pct: number, message?: string) => {
+      try {
+        store.heartbeat(taskId, pct, message);
+      } catch {
+        /* 同上 */
+      }
+    },
+  };
+
   try {
-    const out = await fn();
+    const out = await fn(ctx);
     const end = host.now?.() ?? Date.now();
     const durationMs = Math.max(0, end - now);
     line(`[${ts(end)}] ✓ ${shown} 完成（${(durationMs / 1000).toFixed(1)}s）`);
     const message = `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`;
+    store.succeed(taskId, { message });
     host.notifyDone(action, true, message);
     return { status: 'done', out, durationMs, message };
   } catch (err) {
     const end = host.now?.() ?? Date.now();
     const durationMs = Math.max(0, end - now);
     const error = err instanceof Error ? err : new Error(String(err));
-    line(`[${ts(end)}] ✗ ${shown} 失败（${(durationMs / 1000).toFixed(1)}s）：${error.message}`);
-    line(`        下一步：${nextStepHint(action)}`);
-    const message = `${shown}失败：${error.message}`;
+    // 取消/超时是**不同的出口**（语义不同，UI 也要分开显示）：这里不再重复落状态
+    const state = store.get(taskId)?.state;
+    const cancelled = state === 'cancelled' || state === 'timedOut';
+    const word = state === 'timedOut' ? '超时' : state === 'cancelled' ? '已取消' : '失败';
+    line(`[${ts(end)}] ${cancelled ? '–' : '✗'} ${shown} ${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`);
+    if (!cancelled) {
+      line(`        下一步：${nextStepHint(action)}`);
+    }
+    const message = `${shown}${word}：${error.message}`;
+    if (!cancelled) {
+      store.fail(taskId, { message, errorTail: error.message, nextStep: nextStepHint(action) });
+    }
     host.notifyDone(action, false, message);
     return { status: 'failed', error, durationMs, message };
   } finally {
-    endBusy(action);
     host.notifyBusy(action, false);
   }
 }

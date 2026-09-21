@@ -306,6 +306,10 @@
         "title": "%cmd.detailClose%"
       },
       {
+        "command": "het.task.cancel",
+        "title": "%cmd.taskCancel%"
+      },
+      {
         "command": "het.envCheck",
         "title": "%cmd.envCheck%"
       },
