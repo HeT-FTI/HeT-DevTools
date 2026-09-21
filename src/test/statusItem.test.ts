@@ -114,7 +114,9 @@ describe('C. StatusItem（三档同源 / 预算 / 投影）', () => {
     assert.ok(md.includes('| 项目 | 状态 |'));
     assert.ok(md.indexOf('━━━ 快捷操作') > md.indexOf('| 项目 | 状态 |'));
     assert.ok(md.indexOf('━━━ 打开') > md.indexOf('━━━ 快捷操作'));
-    assert.ok(md.includes('**$(package) HeT DevTools · demo**'));
+    // §5.3：悬停里只写项目名（品牌名只允许在唯一页签标题与通道名上）
+    assert.ok(md.includes('**$(package) demo**'));
+    assert.ok(!md.includes('HeT DevTools'), '悬停不署品牌名 —— 它只该在唯一页签标题上');
   });
 
   it('超时/取消是不同的出口（图标不同，语义不能混）', () => {

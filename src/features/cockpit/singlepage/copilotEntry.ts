@@ -98,8 +98,13 @@ export const COPILOT_ENTRIES: readonly CopilotEntryDef[] = [
     command: '/het-module',
     action: 'moduleCopilot',
     card: 'moduleAgent',
-    expect: '预期：PRD → 接口设计 → 骨架计划 → diff 预览',
-    hint: '我要给这个库加模块：先跟我把 PRD/接口定下来（配对命名、ImportStart/End、双语注释），给出 include/ + src/ 的骨架计划与 diff 预览，**我确认后再写盘**，并告诉我该补哪些 GTest。',
+    expect: '预期：设计稿 → 接口设计 → 骨架计划 → diff 预览（不自动落盘）',
+    // §5.1 / C6：模块入口 = **AI 框架设计&实现**（输入 PRD + 设计框图 → 主导核心架构实现）。
+    // 所以预填必须**带设计稿维度的回填 tag**：没有设计稿就当场问，而不是凭名字猜架构。
+    hint:
+      '我要给这个库加模块：先读设计稿（PRD + PlantUML 框图：`[workspace/design/*.md]`，没有就先问我要素），' +
+      '把接口定下来（配对命名、ImportStart/End、双语注释），给出 include/ + src/ 骨架计划与 diff 预览，' +
+      '**我确认后再写盘**，并告诉我该补哪些 GTest。',
   },
   {
     command: '/het-setup',

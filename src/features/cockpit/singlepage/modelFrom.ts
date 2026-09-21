@@ -113,32 +113,29 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
     });
   }
   if (f.build) {
-    // 段 1 是**只读摘要**、段 2 才是执行区（§F.38）——结果要同时喂给两张卡，
-    // 否则执行卡永远显示 `—`，用户就会以为"构建没生效"。
-    const patch: Partial<CardRow> = {
+    // E 块删掉了"只读摘要段"里那张同名卡：结果现在**只喂给执行卡**（一个事实一个地方），
+    // 否则用户会看到两张卡一个说"通过"一个还停在 `—`。
+    put('buildTest', {
       state: f.build.ok === true ? 'ok' : f.build.ok === false ? 'fail' : 'idle',
-      fact: f.build.ok === true ? `${f.build.ago ?? '最近'} · ${f.build.buildType ?? 'Release'}` : f.build.ok === false ? '上次失败' : '—',
-    };
-    put('build', patch);
-    put('buildTest', patch);
+      fact:
+        f.build.ok === true
+          ? `${f.build.ago ?? '最近'} · ${f.build.buildType ?? 'Release'}`
+          : f.build.ok === false
+            ? '上次失败'
+            : '—',
+    });
   }
   if (f.test) {
     const failed = f.test.failed ?? 0;
-    const patch: Partial<CardRow> = {
+    put('testFull', {
       state: failed > 0 ? 'fail' : typeof f.test.passed === 'number' ? 'ok' : 'idle',
       fact:
         typeof f.test.passed === 'number'
           ? `${f.test.passed}/${f.test.passed + failed} · ${failed} failed`
           : '—',
-    };
-    put('test', patch);
-    put('testFull', patch);
+    });
   }
   if (f.coverage) {
-    put('coverage', {
-      state: f.coverage.pct == null ? 'idle' : 'ok',
-      fact: f.coverage.pct == null ? '—' : `${pct(f.coverage.pct)} · 行覆盖`,
-    });
     put('coverageDetail', {
       state: f.coverage.pct == null ? 'idle' : 'ok',
       fact: f.coverage.pct == null ? '—' : `${pct(f.coverage.pct)} · ${f.coverage.at ?? '上次构建'}`,
@@ -146,14 +143,10 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
   }
   if (f.docs) {
     const missing = f.docs.missingTool;
-    put('docs', {
+    put('docsBuild', {
       state: missing ? 'warn' : f.docs.pages == null ? 'idle' : 'ok',
       fact: missing ? `缺 ${missing}` : f.docs.pages == null ? '—' : `${f.docs.pages} 页 · ${f.docs.at ?? '已生成'}`,
       ...(missing ? { next: `需要你执行：安装 ${missing}（或在托管车道里一键准备）` } : {}),
-    });
-    put('docsBuild', {
-      state: missing ? 'warn' : f.docs.pages == null ? 'idle' : 'ok',
-      fact: missing ? `缺 ${missing}` : f.docs.pages == null ? '—' : `${f.docs.pages} 页`,
     });
   }
   if (f.quality) {
@@ -212,10 +205,6 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
     state: f.env?.ready === true ? 'ok' : f.env?.ready === false ? 'warn' : 'idle',
     fact: f.env?.provider ?? '—',
     ...(f.env?.next ? { next: f.env.next } : {}),
-  });
-  put('buildTest', {
-    state: f.build?.ok === true ? 'ok' : f.build?.ok === false ? 'fail' : 'idle',
-    fact: f.build?.ok === true ? `最近：通过 · ${f.build.ago ?? ''}`.trim() : f.build?.ok === false ? '最近：失败' : '—',
   });
   put('settings', {
     state: 'idle',

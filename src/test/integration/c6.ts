@@ -75,9 +75,16 @@ export async function run(): Promise<void> {
     // V5-2 hover console: 项目/状态 table + command links + health row.
     assert.ok(chip.tooltip.includes('| 项目 | 状态 |'), 'hover console is a 项目/状态 table');
     assert.ok(chip.tooltip.includes('工程健康'), 'health total row rendered last');
-    assert.ok(chip.tooltip.includes('command:het.test'), 'build action link present');
+    // E 块：悬停动作名按 §5.2 定稿（编译打包 = het.build；不再有"构建并测试"这个二义名）
+    assert.ok(chip.tooltip.includes('command:het.build'), '编译打包 action link present');
     assert.ok(chip.tooltip.includes('command:het.envCheck'), 'env action link present');
+    assert.ok(chip.tooltip.includes('command:het.cacheClean'), 'cache governance action link present');
     assert.ok(chip.tooltip.includes('command:het.healthCheck'), 'health rescore link present');
+    assert.ok(!chip.tooltip.includes('构建并测试'), '§5.2：二义动作名不许再出现在任何可见文案里');
+    // E 块：行名 == rail 定稿名（同一串字），且五段都在
+    for (const lane of ['环境车道', '构建验证', '模块文档', '质量安全', '交付发布']) {
+      assert.ok(chip.tooltip.includes(lane), `悬停行名用 rail 定稿名：${lane}`);
+    }
 
     // 深链 `deps`（旧 tab id）现在要落在**单页里的某一段**上，而不是切“页”：新 UI 没有
     // “当前页”这个概念（旧 `state.page` 已归档）。用户能感知的验收点只有一个 ——

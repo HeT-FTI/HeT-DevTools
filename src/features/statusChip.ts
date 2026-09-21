@@ -226,12 +226,15 @@ export function chipHoverActions(): { actions: HoverAction[]; nav: HoverAction[]
   return {
     actions: [
       { id: 'envCheck', label: '🔧 检查环境', command: 'het.envCheck', kind: 'primary' },
-      { id: 'test', label: '🚀 构建并测试', command: 'het.test', kind: 'primary' },
-      { id: 'cacheClean', label: '🧹 清理缓存', command: 'het.cacheClean', kind: 'primary' },
+      // §5.2：动作名 = 动词 + 对象，且两个链不许同形词 ——
+      // 「编译打包」= 消费依赖→产出包（het.build）；「全量测试」在构建验证段里。
+      { id: 'build', label: '🛠 编译打包', command: 'het.build', kind: 'primary' },
+      { id: 'cacheClean', label: '🧹 清理构建缓存', command: 'het.cacheClean', kind: 'primary' },
     ],
     nav: [
+      // 导航只留一条：仪表盘。chip 本身就是"点开驾驶舱"的入口，
+      // 再放一个"完整监控卡"既重复又指向一个已经不存在的页签（E 块删了 HUD）。
       { id: 'dashboard', label: '🖥️ 仪表盘', command: 'het.dashboard', kind: 'nav' },
-      { id: 'monitor', label: '📊 完整监控卡', command: 'het.chipOverview', kind: 'nav' },
     ],
   };
 }

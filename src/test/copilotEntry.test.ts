@@ -153,10 +153,9 @@ describe('Copilot 入口与单会话守卫（G10/G21）', () => {
         assert.strictEqual(card.fact, '—', '没有事实时就是 —（不编造）');
         assert.deepStrictEqual(
           card.extra?.map((a) => a.id),
-          ['build', '/het-setup'],
-          '环境卡要有"去准备环境"跳转 + "让 Copilot 讲清楚"（§F.38 / 第二轮第 7 条）',
+          ['/het-setup'],
+          '环境卡要有"让 Copilot 讲清楚"；E 块删了"去准备环境"跳转（只读摘要段没了，执行入口就在这一段）',
         );
-        assert.strictEqual(card.extra?.[0]?.kind, 'jump', '段 1 只读：准备环境是跳转，不是按钮');
         continue;
       }
       assert.strictEqual(card.stage, 'chat', `${e.card} 的详情去处是 Chat`);

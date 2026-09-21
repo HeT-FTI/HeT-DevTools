@@ -11,7 +11,7 @@
  * host → 页面：`{type:'l1'|'section'|'busy'}` 局部替换（§13：页面只生成一次）
  */
 import { pageShell, esc } from '../../ui';
-import { SECTIONS } from './sections';
+import { SECTIONS, railSections } from './sections';
 import { singlePageCss } from './tokens';
 import { COCKPIT_RESERVED_TYPES } from '../../slots/protocol';
 import { stateIcon, type CardRow, type L1Item, type SectionId, type SinglePageModel } from './model';
@@ -101,18 +101,24 @@ function sectionHtml(id: SectionId, cards: CardRow[], folded: SectionId[], busy:
 }
 
 function railHtml(folded: SectionId[]): string {
-  const items = SECTIONS.map(
-    (s) =>
-      `<button class="rail-item" data-action="jump" data-section="${esc(s.id)}" title="${esc(`${s.order} ${s.label}`)}" aria-label="${esc(`${s.order} ${s.label}`)}" aria-current="${folded.includes(s.id) ? 'false' : 'true'}"><span class="rail-ic" aria-hidden="true">${s.rail}</span><span class="rail-tx">${esc(s.railLabel)}</span></button>`,
-  ).join('');
-  // 齿轮的动作 id 必须是 `COMMAND_FOR_ACTION` 里有的（曾是 `settings` → 表里没有 → 点了没反应）
-  const settings = `<button class="rail-item" data-action="act" data-act="openSettings" title="设置（metadata / 网络与源）" aria-label="设置"><span class="rail-ic" aria-hidden="true">⚙︎</span><span class="rail-tx">设置</span></button>`;
-  return `${items}${settings}`;
+  const items = railSections()
+    .map(
+      (s) =>
+        `<button class="rail-item" data-action="jump" data-section="${esc(s.id)}" title="${esc(`${s.order} ${s.label}`)}" aria-label="${esc(`${s.order} ${s.label}`)}" aria-current="${folded.includes(s.id) ? 'false' : 'true'}"><span class="rail-ic" aria-hidden="true">${s.rail}</span><span class="rail-tx">${esc(s.railLabel)}</span></button>`,
+    )
+    .join('');
+  // 齿轮 = 设置段（§5.1：**不进 rail 计数**）。动作 id 必须是 `COMMAND_FOR_ACTION` 里有的
+  // （曾是 `settings` → 表里没有 → 点了没反应），这里用 `jump` 滚到设置段。
+  const gear = `<button class="rail-item rail-gear" data-action="jump" data-section="settings" title="设置（metadata · 上板）" aria-label="设置"><span class="rail-ic" aria-hidden="true">⚙︎</span><span class="rail-tx">设置</span></button>`;
+  return `${items}${gear}`;
 }
 
 /** 按段把卡片分组（模型里卡片顺序无所谓，页面顺序由 `SECTIONS` 决定）。 */
 export function cardsBySection(model: SinglePageModel): Record<SectionId, CardRow[]> {
-  const out: Record<SectionId, CardRow[]> = { now: [], build: [], code: [], deliver: [], config: [] };
+  const out = { env: [], build: [], module: [], quality: [], deliver: [], settings: [] } as Record<
+    SectionId,
+    CardRow[]
+  >;
   for (const def of SECTIONS) {
     for (const defCard of def.cards) {
       const live = model.cards.find((c) => c.id === defCard.id);
@@ -127,7 +133,7 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
   const sections = SECTIONS.map((s) => sectionHtml(s.id, grouped[s.id], model.folded, model.busy)).join('');
   const templateHint =
     model.templateBehind > 0
-      ? `<div class="sub">模板落后上游 ${esc(String(model.templateBehind))} 个提交 —— 可在「配置 › 网络与源」同步。</div>`
+      ? `<div class="sub">模板落后上游 ${esc(String(model.templateBehind))} 个提交 —— 可在「设置 › 网络与源」同步。</div>`
       : '';
   return `${singlePageCss()}
     <div class="sp">

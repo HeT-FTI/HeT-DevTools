@@ -197,7 +197,8 @@ export function hoverMarkdown(project: string, projection: HoverProjection): str
   const nav = projection.nav.length
     ? ['', '━━━ 打开 ━━━', '', ...projection.nav.map((a) => `- ${linkify(a.label, a.command, a.arg)}`)].join('\n')
     : '';
-  return [`**$(package) HeT DevTools · ${project}**`, '', table, '', actions, nav].join('\n');
+  // §5.3：品牌名只允许出现在**唯一页签标题与通道名**上 —— 悬停里只写项目名。
+  return [`**$(package) ${project}**`, '', table, '', actions, nav].join('\n');
 }
 
 /**

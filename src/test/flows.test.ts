@@ -10,7 +10,8 @@ import {
 } from '../core/dependencyService';
 import { statusText } from '../core/status';
 import { chipSpec } from '../features/statusChip';
-import { SECTIONS, allCards } from '../features/cockpit/singlepage/sections';
+import { allCards, railSections } from '../features/cockpit/singlepage/sections';
+import { commandForAction } from '../features/cockpit/singlepage/actions';
 import { initialCockpitState } from '../features/cockpit/state';
 import { singlePageModelFrom } from '../features/cockpit/singlepage/modelFrom';
 import { cockpitSinglePageHtml } from '../features/cockpit/singlepage/shell';
@@ -318,26 +319,29 @@ describe('§F.46 用户流 ⑦：预检 → 发布中心（同一份判决）', 
   });
 });
 
-describe('§F.46 用户流 ③：段 1 摘要 → 跳去执行段 → 那里的按钮是真命令', () => {
-  it('每个 jump 链接都落在"真的有这个动作"的段上', () => {
-    const now = SECTIONS.find((s) => s.id === 'now')!;
-    const jumps = now.cards.flatMap((c) =>
-      (c.extra ?? []).filter((a) => a.kind === 'jump').map((a) => ({ from: c.id, to: a.id })),
-    );
-    assert.ok(jumps.length >= 4, `摘要卡至少要给出四条去路，实际 ${jumps.length}`);
-    for (const { from, to } of jumps) {
-      const target = SECTIONS.find((s) => s.id === to);
-      assert.ok(target, `跳转目标 ${to} 不存在`);
-      const acts = target!.cards.flatMap((c) => [c.action, c.secondary, ...(c.extra ?? [])]);
+describe('§F.46 用户流 ③：rail 五格 → 每一段都点得动（不是死路）', () => {
+  it('rail 上每一格落进去都有可执行入口，且入口都接在真命令上', () => {
+    for (const sec of railSections()) {
+      const acts = sec.cards.flatMap((c) => [c.action, c.secondary, ...(c.extra ?? [])]);
+      const runnable = acts.filter((a): a is NonNullable<typeof a> => a !== undefined && a.kind !== 'jump');
       assert.ok(
-        acts.some((a) => a?.kind === 'action'),
-        `${from} 跳到「${target!.label}」但那段没有任何可执行按钮 —— 用户到了也是死路`,
+        runnable.length >= 1,
+        `「${sec.label}」里没有任何入口 —— 用户从 rail 点进来看到一屏文字，是死路`,
       );
+      for (const a of runnable) {
+        if (a.kind === 'copilot') {
+          assert.ok(a.id.startsWith('/het-'), `「${sec.label}」的 Copilot 入口必须是 /het-*`);
+          continue;
+        }
+        const cmd = commandForAction(a.id);
+        assert.ok(cmd && cmd.startsWith('het.'), `「${sec.label}」的 ${a.id} 没有接线 —— 点了没反应`);
+      }
     }
-    // 页面里真的渲染出了这些链接（不只是数据里写了）
+    // 页面里真的渲染出了 rail 五格 + 齿轮（不是只写在数据里）
     const html = cockpitSinglePageHtml(singlePageModelFrom(initialCockpitState(), {}));
-    assert.ok(html.includes('data-action="jump"'), '要渲染成跳转链接');
-    assert.ok(html.includes('去构建'), '文案要说清是去干什么');
+    const railIds = [...html.matchAll(/class="rail-item[^"]*"[^>]*data-section="([^"]+)"/gu)].map((m) => m[1]);
+    assert.deepStrictEqual(railIds, ['env', 'build', 'module', 'quality', 'deliver', 'settings']);
+    assert.ok(html.includes('data-action="jump"'), 'rail 用 jump 协议滚动到段');
   });
 });
 

@@ -403,8 +403,8 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
   openedSections.clear();
   cockpitPanel.webview.html = cockpitSinglePageHtml(singlePageModel());
 
-  // 段 1 默认展开（其余段等用户展开，§13 懒加载）；深链目标也直接展开。
-  openedSections.add('now');
+  // 段 1 默认展开（E 块后是「环境车道」；其余段等用户展开，§13 懒加载）；深链目标也直接展开。
+  openedSections.add('env');
   if (target) {
     unfold(target);
     openedSections.add(target);
