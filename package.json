@@ -157,6 +157,14 @@
           "type": "boolean",
           "default": false,
           "description": "%config.hudDisableHud%"
+        },
+        "het.task.deadlines": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "markdownDescription": "长动作超时阈值覆盖（毫秒，§3.5）。键：build / test / docs / quality / envPrepare / cross / board / cacheClean / cacheCleanDanger / switchTarget / misc。只能调大生效（写 0/负数会被忽略，不存在“关掉超时”）。"
         }
       }
     },
