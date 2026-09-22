@@ -237,9 +237,11 @@ export function chipHoverActions(): { actions: HoverAction[]; nav: HoverAction[]
       { id: 'cacheClean', label: '🧹 清理构建缓存', command: 'het.cacheClean', kind: 'primary' },
     ],
     nav: [
-      // 导航只留一条：仪表盘。chip 本身就是"点开驾驶舱"的入口，
-      // 再放一个"完整监控卡"既重复又指向一个已经不存在的页签（E 块删了 HUD）。
+      // 导航只留两条（§3.6 预算是 ≤2）：仪表盘 + 任务中心。
+      // 仪表盘：chip 本身就是"点开驾驶舱"的入口，这里再放一个是给"我知道要什么"的人一条直路。
       { id: 'dashboard', label: '🖥️ 仪表盘', command: 'het.dashboard', kind: 'nav' },
+      // 任务中心："刚才那个跑完没有"的入口（空闲时也进得去 —— 忙碌时 L1 的忙点就是捷径）。
+      { id: 'openTasks', label: '⏱ 任务', command: 'het.openTasks', kind: 'nav' },
     ],
   };
 }

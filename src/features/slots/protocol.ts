@@ -34,6 +34,7 @@ export const COCKPIT_RESERVED_TYPES: readonly string[] = [
   'busy',
   'copilotResult',
   'action',
+  'nav',
   'copilot',
   'section:open',
   'folded',

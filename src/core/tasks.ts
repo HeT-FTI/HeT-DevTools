@@ -52,13 +52,64 @@ export const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
 /** 心跳超过这个间隔没打点，就认为"僵住"（§3.2 不变量 1 的阈值）。 */
 export const HEARTBEAT_STALE_MS = 10_000;
 
+/**
+ * **状态的中文口径**（唯一来源）：输出行的终态用词、任务中心的结论列、悬停文案都读它。
+ *
+ * 为什么要单独抽出来：以前 `busy.ts` 自己写 `timedOut ? '超时' : cancelled ? '已取消' : '失败'`，
+ * 任务中心再写一遍就很容易两边不对称（"已取消" vs "取消"）—— 同一个概念两种字正是我们
+ * 一直在根治的毛病，所以先把它变成数据。
+ */
+export const STATE_TEXT: Readonly<Record<TaskState, string>> = {
+  queued: '排队中',
+  running: '进行中',
+  succeeded: '成功',
+  failed: '失败',
+  timedOut: '超时',
+  cancelled: '已取消',
+  stale: '已过期',
+};
+
+/**
+ * **抛错那一刻**的用词。
+ *
+ * 注意：`runWithBusy` 的 catch 里读到的 `state` **通常还是 `running`** —— 落终态
+ * （`fail`/`timeout`/`cancel`）发生在写日志之后。所以这里不能直接 `STATE_TEXT[state]`
+ * （那会得到"进行中"），而要按"这次到底是哪个出口"来定：取消/超时之外的都算失败。
+ */
+export function exitWord(state: TaskState | undefined): string {
+  if (state === 'timedOut') {
+    return STATE_TEXT.timedOut;
+  }
+  if (state === 'cancelled') {
+    return STATE_TEXT.cancelled;
+  }
+  return STATE_TEXT.failed;
+}
+
+/**
+ * 紧凑档的符号（纯文本介质：任务中心、悬停表格）。
+ * 状态栏 chip 用 codicon（`core/statusItem.ts` 的 STATE_ICON）—— 介质不同，语义同一套。
+ */
+export const STATE_GLYPH: Readonly<Record<TaskState, string>> = {
+  queued: '○',
+  running: '⟳',
+  succeeded: '✓',
+  failed: '✗',
+  timedOut: '⌛',
+  cancelled: '⊘',
+  stale: '·',
+};
+
 /** 谁发起的这次执行（问责用：出问题要能说清是哪条入口点出来的）。 */
 export type TaskOwner = 'card' | 'hover' | 'palette' | 'reconciler' | 'recovery' | string;
 
 export interface TaskArtifact {
   label: string;
   path?: string;
+  /** 用哪个命令打开（如 `het.openDocsArtifact`）；缺省时用 `path` 直接打开文件。 */
   command?: string;
+  /** 命令参数（透传给 `command:` 链接；仅当 `command` 给出时有效）。 */
+  arg?: string;
 }
 
 export interface Task {

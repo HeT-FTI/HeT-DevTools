@@ -30,4 +30,5 @@ export const SLOT_VIEWS: readonly SlotView[] = [
   { command: 'het.ci', slot: 'ci' },
   { command: 'het.benchmark', slot: 'bench' },
   { command: 'het.generateTests', slot: 'testgen' },
+  { command: 'het.openTasks', slot: 'tasks' },
 ];

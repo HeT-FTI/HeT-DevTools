@@ -203,7 +203,12 @@ describe('cockpit 单页壳（A 批）', () => {
     assert.strictEqual(html.split('class="l1-item').length - 1, 4, 'L1 四项');
     assert.ok(html.includes('data-busy hidden'), '空闲时忙点隐藏');
     const busyHtml = cockpitSinglePageHtml({ ...model, busy: '检查环境' });
-    assert.ok(busyHtml.includes('data-busy>') || /data-busy>/.test(busyHtml), '忙时忙点展示');
+    assert.ok(/data-busy[^>]*>/.test(busyHtml), '忙时忙点展示');
+    // J 块：忙点是一个“导航”入口（点开任务中心），不是把忙点做成按钮状装饰
+    assert.ok(
+      /data-busy data-action="nav" data-nav="openTasks"/.test(busyHtml),
+      '忙点可点 → 任务中心',
+    );
     assert.ok(busyHtml.includes('检查环境'), '忙时显示动作名');
   });
 

@@ -262,12 +262,13 @@ describe('长耗时动作的统一语义（§7）', () => {
       'busy 开关必须由注册表推导（`st !== null`），不许硬编码 on:true',
     );
 
-    // ③ 单页 L1 的忙位必须"有字"（只留一个转圈图标等于没告诉用户在忙什么）
+    // ③ 单页 L1 的忙位必须"有字"（只留一个转圈图标等于没告诉用户在忙什么），
+    //    而且 J 块之后它**可点**（→ 任务中心："正在跑什么"就在眼前，点它看全局）
     const shell = read('features/cockpit/singlepage/shell.ts');
     assert.match(
       shell,
-      /data-busy><span class="spin">⟳<\/span>\$\{esc\(busy\)\}/u,
-      'L1 忙位要带文字（§F.35）',
+      /data-busy data-action="nav" data-nav="openTasks"[^>]*>[\s\S]{0,80}?\$\{esc\(busy\)\}/u,
+      'L1 忙位要带文字、且可点进任务中心（§F.35 + J 块）',
     );
     // ⑤ §F.36：动作收尾（注册表排空）必须补一次取数 —— 否则从悬停链接 / 命令面板 /
     //    HUD 触发的动作跑完了，卡片上的数字还要等下一次交互才更新。

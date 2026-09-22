@@ -65,6 +65,30 @@ interface Snapshot {
   tasks: { active: TaskShape[]; recent: TaskShape[] };
 }
 
+/** `het.getTaskCenter`（J 块）：任务中心面板渲染的就是这个模型。 */
+interface TaskCenterRowShape {
+  id: string;
+  label: string;
+  state: string;
+  stateText: string;
+  durationText: string;
+  ownerText: string;
+  progressText?: string;
+  reasonText?: string;
+  nextStep?: string;
+  artifacts: Array<{ label: string; command?: string; arg?: string; path?: string }>;
+}
+interface TaskCenterShape {
+  running: TaskCenterRowShape[];
+  recent: TaskCenterRowShape[];
+  ci: { label: string; conclusion: string; glyph: string; whenText: string; url: string } | null;
+  ciNote?: { reason: string; fix: string[] };
+}
+
+async function taskCenter(): Promise<TaskCenterShape> {
+  return (await vscode.commands.executeCommand('het.getTaskCenter')) as TaskCenterShape;
+}
+
 async function snapshot(): Promise<Snapshot> {
   return (await vscode.commands.executeCommand('het.getUiSnapshot')) as Snapshot;
 }
@@ -252,8 +276,27 @@ async function runExit(step: ExitStep): Promise<void> {
   assert.strictEqual(settled?.state, step.expect, `[${step.action}] Task 终态必须是 ${step.expect}`);
   const entries = await outputEntries();
   assertOutputPair(entries, step, `[${step.action}] ${step.expect}`);
+  // J 块：任务中心的面板模型必须**跟着事实走**（它就是面板渲染的东西）
+  const tc = await taskCenter();
+  const row = [...tc.running, ...tc.recent].find((r) => r.id === step.action);
+  assert.ok(row, `[${step.action}] 任务中心必须有这一行（会话刚跑完它）`);
+  assert.strictEqual(row?.state, step.expect, `[${step.action}] 任务中心的结论 = Task 终态`);
+  assert.strictEqual(row?.id, step.action);
+  assert.ok((row?.durationText ?? '').length > 0, '耗时来自 Task（不许空着）');
+  assert.ok(!tc.running.some((r) => r.id === step.action), '跑完了就不该还在"正在运行"里');
+  if (step.expect === 'failed') {
+    assert.ok((row?.reasonText ?? '').length > 0, '失败必须在任务中心给原因（一行）');
+    assert.ok((row?.nextStep ?? '').length > 0, '失败必须在任务中心给下一步');
+  } else {
+    assert.strictEqual(row?.nextStep, undefined, `${step.expect} 不该再劝人排错`);
+  }
+  if (step.action === 'test') {
+    // 注入体登记过一个真产物 → 面板拿到的必须是**可点的那个标签**
+    assert.deepStrictEqual(row?.artifacts.map((a) => a.label), ['注入产物'], '产物必须从 Task 传到面板');
+    assert.ok(row?.artifacts[0].path, '产物要有可打开的路径');
+  }
   console.log(
-    `[c9] ${step.action} × ${step.expect} OK — 三面一致（chip/悬停/页内）+ 输出恰好一对行（${step.level}）`,
+    `[c9] ${step.action} × ${step.expect} OK — 三面一致（chip/悬停/页内）+ 输出恰好一对行（${step.level}）+ 任务中心跟随事实`,
   );
 }
 

@@ -95,6 +95,7 @@ const INTERNAL_COMMANDS: Readonly<Record<string, string>> = {
   'het.getUiSnapshot': 'H 块一致性会话（c9）一次取齐"任务 × 输出 × 前端"三面（也便于现场排查）',
   'het.getOutputLines': 'H 块一致性会话读唯一通道的尾部若干行（与 Output 面板逐字一致）',
   'het.testRunTask': 'H 块一致性会话的长动作注入体（只在测试宿主 + HET_TASK_INJECT=1 时生效）',
+  'het.getTaskCenter': 'J 块读任务中心的**模型**（面板渲染的就是它；会话据此断言面板与事实一致）',
   'het.getCacheReport': 'K.1 集成测试/现场排查读缓存报表（分区与按架构体积）',
   'het.getBuildMatrix': 'K.1 集成测试读目标矩阵（证明目标只来自 .hetai/build-matrix.yml）',
   'het.getConanRuntime': '安装后校验读 conan 运行时',

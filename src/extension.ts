@@ -25,6 +25,8 @@ import { ReleaseState, showReleasePanel } from './features/release/panel';
 import { PreflightState, PreflightItem, showPreflightPanel } from './features/preflight/panel';
 import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './features/slots/host';
 import { showOutputPanel } from './features/output/panel';
+import { showTaskCenterPanel } from './features/tasks/panel';
+import { taskCenterModel } from './core/taskCenter';
 import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, getSinglePageFacts, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
@@ -583,6 +585,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const n = Math.max(1, Math.min(outputLog.cap, Number(arg) || 200));
       return outputLog.tail({}, n).map(formatLogLine);
     }),
+    // J 块：任务中心的**模型**（面板渲染的就是它；会话据此断言"面板与事实一致"）
+    vscode.commands.registerCommand('het.getTaskCenter', async () =>
+      taskCenterModel({ tasks: taskStore().list(), ci: await ciState().catch(() => null), now: Date.now() }),
+    ),
     // H 块：长动作注入体（只在测试宿主 + `HET_TASK_INJECT=1` 时生效）
     vscode.commands.registerCommand('het.testRunTask', (spec?: TaskInjection) => runInjectedTask(spec)),
     // 取消：只有一个在跑就直接取消；多个则让用户选（**不做静默选择**）
@@ -790,6 +796,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('het.openOutput', () =>
       showOutputPanel(context, { revealChannel: () => outputChannelRef()?.show(false) }),
     ),
+    // J 块：任务中心（只读观测：在跑什么 / 跑过什么 / 结果如何）
+    vscode.commands.registerCommand('het.openTasks', () => openTaskCenter(context)),
     vscode.commands.registerCommand('het.getSlotState', () => ({
       open: currentDetailView() ?? null,
       dropped: slotHostDiagnostics().droppedCount,
@@ -1691,6 +1699,25 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (!root) {
       return { ok: false, message: '未检测到 fcpp 项目。' };
     }
+    /**
+     * 产物登记（J 块：任务中心里可点）。
+     *
+     * 用 `het.openDocsArtifact` 而不是把路径写死：入口页在哪是**那个命令**最清楚的事
+     * （doxygen 是 `docs.html` 语言导航页、sphinx 是 `index.html` ），面板再算一遍就是
+     * 第二个真相 —— 算错时用户点到的就是一个打不开的链接。
+     */
+    const registerArtifacts = async (): Promise<void> => {
+      if (!ctx) {
+        return;
+      }
+      const found = await probeDocsArtifacts(root).catch(() => null);
+      if (found?.doxygen) {
+        ctx.artifact('Doxygen', { command: 'het.openDocsArtifact', arg: 'doxygen' });
+      }
+      if (found?.sphinx) {
+        ctx.artifact('Sphinx', { command: 'het.openDocsArtifact', arg: 'sphinx' });
+      }
+    };
     // V5-6: visible progress — chip spinner + cockpit log drawer, exactly like
     // `conan create` (user feedback: docs build must show busy + explanations).
     lastDocsOutput = '';
@@ -1731,6 +1758,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
         if (!ok) {
           return { ok: false, message: '文档生成失败（车道）：请查看“输出 → HeT DevTools”。' };
         }
+        await registerArtifacts();
         return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面（WSL2 车道）。` };
       }
       const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
@@ -1766,6 +1794,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (!summary.ok) {
       return { ok: false, message: '文档生成失败（macOS 车道）：请查看“输出 → HeT DevTools”。' };
     }
+    await registerArtifacts();
     return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面（macOS 车道）。` };
   }
 
@@ -1795,6 +1824,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
         if (!ok) {
           return { ok: false, message: '文档生成失败（Linux 车道）：请查看“输出 → HeT DevTools”。' };
         }
+        await registerArtifacts();
         return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面（Linux 车道）。` };
       }
     }
@@ -1881,6 +1911,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
         message: hint ?? '文档生成失败：请查看“输出 → HeT DevTools”中的原始日志（常见：注释标注/工具缺失）。',
       };
     }
+    await registerArtifacts();
     return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面。` };
   };
 
@@ -2501,6 +2532,13 @@ async function runInjectedTask(spec?: TaskInjection): Promise<BusyResult<unknown
     action,
     async (ctx) => {
       if (mode === 'ok') {
+        // 注入体也登记一个**真产物**（工作区里的真文件）：这样
+        // "执行体登记产物 → Task → 任务中心模型 → 面板可点链接"这条链在会话里真的走一遍，
+        // 而不是只被单测盖住。
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (root) {
+          ctx.artifact('注入产物', { path: join(root, 'metadata.json') });
+        }
         await wait(ms);
         return 'ok';
       }
@@ -2827,6 +2865,40 @@ function openBenchPanel(context: vscode.ExtensionContext): void {
       const root = currentProject?.root;
       if (root) {
         void vscode.window.showTextDocument(vscode.Uri.file(join(root, configRel)), { preview: true });
+      }
+    },
+  });
+}
+
+/**
+ * **任务中心**（J 块）：只读观测面板 —— 在跑什么 / 跑过什么 / 结果如何。
+ *
+ * 三个依赖都是**已存在的**单一来源：CI 事实与「CI 状态」面板同一个取值器（`ciState()`）；
+ * 产物打开复用各面板已经在用的命令（如 `het.openDocsArtifact`），没有 command 的按路径打开。
+ */
+function openTaskCenter(context: vscode.ExtensionContext): void {
+  showTaskCenterPanel(context, {
+    getCi: () => ciState(),
+    openArtifact: async (a) => {
+      if (a.command) {
+        await vscode.commands.executeCommand(a.command, a.arg);
+        return;
+      }
+      if (!a.path) {
+        return;
+      }
+      if (!(await pathExists(a.path))) {
+        // 产物可能被清理过：说清"为什么没了 + 怎么办"，而不是一句"打开失败"
+        void vscode.window.showWarningMessage(
+          `产物不在了：${a.path}（构建产物可能被清理过，重跑一次就有了）。`,
+        );
+        return;
+      }
+      void vscode.env.openExternal(vscode.Uri.file(a.path));
+    },
+    openCi: async (url) => {
+      if (url) {
+        void vscode.env.openExternal(vscode.Uri.parse(url));
       }
     },
   });

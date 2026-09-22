@@ -377,6 +377,11 @@
         "command": "het.openOutput",
         "title": "输出（唯一的输出通道，可按域/级别/关键字过滤）",
         "category": "HeT DevTools"
+      },
+      {
+        "command": "het.openTasks",
+        "title": "任务（正在运行与最近完成；只读，唯一动作是取消）",
+        "category": "HeT DevTools"
       }
     ],
     "menus": {

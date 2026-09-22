@@ -27,8 +27,10 @@ export function l1Html(items: L1Item[], busy: string | null): string {
         `<span class="k">${esc(i.label)}</span><span class="v">${esc(i.value)}</span></span>`,
     )
     .join('');
+  // 忙点可点 → 任务中心（"正在跑什么"就在眼前，点它去看全局）。空闲时隐藏。
   const busyHtml = busy
-    ? `<span class="busy" data-busy><span class="spin">⟳</span>${esc(busy)}</span>`
+    ? `<button class="busy" data-busy data-action="nav" data-nav="openTasks" ` +
+      `title="打开任务中心（在跑什么 · 跑过什么）"><span class="spin">⟳</span>${esc(busy)}</button>`
     : `<span class="busy" data-busy hidden><span class="spin">⟳</span></span>`;
   return `${cells}${busyHtml}`;
 }
@@ -259,6 +261,12 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
             var target = document.getElementById('sec-' + sec);
             if (target) { target.scrollIntoView({ block: 'start' }); }
             setActive(sec);
+            return;
+          }
+          if (act === 'nav') {
+            // 导航动作：**不**改按钮文字（那是"动作"的反馈，导航没有"进行中"）。
+            var nav = btn.getAttribute('data-nav');
+            if (nav) { send({ type: 'nav', id: nav }); }
             return;
           }
           if (act === 'act') {

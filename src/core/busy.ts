@@ -22,7 +22,7 @@ import { intentForBusy } from './intents';
 import { outputLog } from './outputLog';
 import { pickActiveStatus, type ActiveStatus } from './status';
 import type { DeadlineKind, DeadlineOverrides } from './deadlines';
-import { TaskStore, type Task, type TaskSnapshot } from './tasks';
+import { TaskStore, exitWord, type Task, type TaskArtifact, type TaskSnapshot } from './tasks';
 
 /** single writer：整个扩展只有这一份 Task 仓库（UI 与功能模块只读）。 */
 const store = new TaskStore();
@@ -64,6 +64,14 @@ export interface TaskRunContext {
   signal: AbortSignal | undefined;
   heartbeat(message?: string): void;
   progress(pct: number, message?: string): void;
+  /**
+   * 登记一个产物（任务中心里可点）。
+   *
+   * 为什么由执行体登记、而不是"任务中心自己去猜目录"：产物在哪是**动作自己**最清楚的
+   * 事（doxygen 的入口页是 `docs/doxygen/build/docs.html`，sphinx 是 `index.html`）——
+   * 面板再猜一遍就是第二个真相，而且猜错时用户看到的是一个打不开的链接。
+   */
+  artifact(label: string, opts?: { path?: string; command?: string; arg?: string }): void;
 }
 
 /** 幂等注册表：同一动作进行中，后续调用一律**跳过**（不是排队）。 */
@@ -249,6 +257,8 @@ export async function runWithBusy<T>(
   store.start(taskId);
   host.notifyBusy(action, true);
 
+  /** 执行体登记的产物（成功时才落到 Task 上） */
+  const artifacts: TaskArtifact[] = [];
   const ctx: TaskRunContext = {
     signal: store.signalFor(taskId),
     heartbeat: (message?: string) => {
@@ -265,6 +275,16 @@ export async function runWithBusy<T>(
         /* 同上 */
       }
     },
+    artifact: (label: string, opts?: { path?: string; command?: string; arg?: string }) => {
+      // 重复登记同名产物 = 覆盖（动作里多次打点不该看成两件东西）
+      const at = artifacts.findIndex((a) => a.label === label);
+      const next = { label, ...opts };
+      if (at >= 0) {
+        artifacts[at] = next;
+      } else {
+        artifacts.push(next);
+      }
+    },
   };
 
   try {
@@ -273,7 +293,7 @@ export async function runWithBusy<T>(
     const durationMs = Math.max(0, end - now);
     line('ok', `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`, end);
     const message = `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`;
-    store.succeed(taskId, { message });
+    store.succeed(taskId, { message, artifacts: artifacts.length ? artifacts : undefined });
     host.notifyDone(action, true, message);
     return { status: 'done', out, durationMs, message };
   } catch (err) {
@@ -283,7 +303,9 @@ export async function runWithBusy<T>(
     // 取消/超时是**不同的出口**（语义不同，UI 也要分开显示）：这里不再重复落状态
     const state = store.get(taskId)?.state;
     const cancelled = state === 'cancelled' || state === 'timedOut';
-    const word = state === 'timedOut' ? '超时' : state === 'cancelled' ? '已取消' : '失败';
+    // 终态用词来自 `STATE_TEXT`（唯一来源：任务中心的结论列也读它）；
+    // 注意此刻 state 往往还是 running —— 所以走 `exitWord` 而不是直接查表。
+    const word = exitWord(state);
     line(state === 'timedOut' ? 'timeout' : state === 'cancelled' ? 'cancel' : 'fail', `${shown}${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`, end);
     if (!cancelled) {
       line('info', `下一步：${nextStepHint(action)}`, end);

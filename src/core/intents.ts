@@ -251,6 +251,23 @@ export const INTENTS: readonly Intent[] = [
   },
 
   {
+    id: 'openTasks',
+    name: '任务',
+    kind: 'nav',
+    idem: 'openTasks',
+    deadline: 'misc',
+    status: 'env',
+    output: null,
+    command: 'het.openTasks',
+    slot: 'tasks',
+    promptNone: '任务中心是只读的：唯一的动作是取消，没有 Copilot 出口。',
+    vscode: ['status'],
+    onFail: { next: '打不开任务中心：在跑什么看悬停卡的「构建验证」那行，取消用命令面板的「取消任务」。', needsHuman: false },
+    ci: null,
+    localOnly: true,
+  },
+
+  {
     id: 'openOutput',
     name: '输出',
     kind: 'nav',

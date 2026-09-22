@@ -431,6 +431,13 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
             () => requestFacts(),
           );
         }
+      } else if (message.type === 'nav' && message.id) {
+        // J 块：导航动作（如 L1 忙点 → 任务中心）。与 action 的区别只有一条：
+        // 导航**不会**产生"在跑"的语义，所以页面不改按钮文字、这里也不刷事实。
+        const cmd = commandForAction(message.id);
+        if (cmd) {
+          void vscode.commands.executeCommand(cmd);
+        }
       } else if (message.type === 'copilot' && message.command) {
         void runCopilotEntry(message.command);
       } else if (message.type === 'section:open' && message.id) {
