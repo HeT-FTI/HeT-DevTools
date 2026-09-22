@@ -1,4 +1,6 @@
 import * as assert from 'node:assert';
+import { INTENTS } from '../core/intents';
+import { OUTPUT_CHANNEL_NAME } from '../core/outputChannels';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import {
@@ -262,12 +264,34 @@ describe('Copilot 入口与单会话守卫（G10/G21）', () => {
     }
   });
 
-  it('busyHost：通道创建单点、不抢焦点、Copilot 记账通道不 reveal', () => {
+  it('通道创建单点（D 块）：唯一的一个通道，且**只看 Intent 决定要不要抢焦点**', () => {
+    // 创建权收在 constants.ts：extension 与 busyHost 各建一个同名通道会变成
+    // “Output 下拉里两条一模一样的 HeT DevTools”（用户看到的“两个通道”）。
+    const owners = [
+      ...readdirSync(join('src'), { recursive: true, encoding: 'utf8' }) as string[],
+    ]
+      .filter((f) => f.endsWith('.ts') && !f.includes('test'))
+      .map((f) => join('src', f))
+      .filter((f) => readFileSync(f, 'utf8').includes('window.createOutputChannel('));
+    assert.deepStrictEqual(owners, [join('src', 'constants.ts')], '只允许一个创建点');
     const h = read(join('features', 'busyHost.ts'));
-    assert.ok(h.includes('vscode.window.createOutputChannel('), '通道在这里创建');
     assert.ok(h.includes('ch.show(true)'), 'show(true) = preserveFocus，别打断用户');
-    assert.ok(h.includes('name !== COPILOT_CHANNEL'), 'Copilot 记账通道不许抢焦点（会盖住刚打开的 Chat）');
-    assert.ok(h.includes('register?.(ch)'), '通道要能交给调用方释放');
+    assert.ok(
+      !h.includes('COPILOT_CHANNEL'),
+      '适配层不再按通道名判“该不该抢焦点”——策略已经数据化到 Intent.output.focus',
+    );
+    // 真策略：busy.ts 只在 Intent 声明 focus 时才 reveal；chat 类动作不声明 focus
+    const busy = read(join('core', 'busy.ts'));
+    assert.ok(/if \(it\?\.output\?\.focus\) \{/.test(busy), 'reveal 由 Intent.output.focus 决定');
+    const chatIntents = INTENTS.filter((it) => it.kind === 'copilot');
+    assert.ok(chatIntents.length >= 5, 'chat 类动作不能退化成空壳');
+    for (const it of chatIntents) {
+      assert.strictEqual(
+        it.output?.focus,
+        false,
+        `${it.id}（chat 类）不许抢焦点 —— 会盖住刚打开的 Chat`,
+      );
+    }
   });
 
   it('设置项 `het.copilot.renameSession`：默认开、中英文案齐全', () => {
@@ -295,6 +319,6 @@ describe('Copilot 入口与单会话守卫（G10/G21）', () => {
       assert.ok(hint.includes(e.command), `${e.action} 的下一步要点名命令：${hint}`);
       assert.ok(hint.includes('Chat'), `${e.action} 的下一步要说在哪儿执行`);
     }
-    assert.strictEqual(COPILOT_CHANNEL, 'HeT DevTools · Copilot');
+    assert.strictEqual(COPILOT_CHANNEL, OUTPUT_CHANNEL_NAME, 'Copilot 记账也进**唯一**通道（D 块）');
   });
 });

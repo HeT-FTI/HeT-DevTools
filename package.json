@@ -372,6 +372,11 @@
       {
         "command": "het.healthReport",
         "title": "%cmd.healthReport%"
+      },
+      {
+        "command": "het.openOutput",
+        "title": "输出（唯一的输出通道，可按域/级别/关键字过滤）",
+        "category": "HeT DevTools"
       }
     ],
     "menus": {

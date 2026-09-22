@@ -14,6 +14,7 @@ import { intentForBusy } from '../core/intents';
 import {
   BUSY_ACTIONS,
   CHANNELS,
+  OUTPUT_CHANNEL_NAME,
   channelDef,
   nextStepHint,
   outputChannelNames,
@@ -100,7 +101,11 @@ describe('长耗时动作的统一语义（§7）', () => {
     });
     assert.strictEqual(res.status, 'failed');
     assert.match(res.error?.message ?? '', /apt 不可用/);
-    assert.ok(host.lines.some((l) => l.includes('✗ 准备托管环境 失败')), '失败行');
+    // 失败行 = `[hh:mm:ss] [env] ✗ 准备托管环境失败（…）：apt 不可用`
+    assert.ok(
+      host.lines.some((l) => /\[env\] ✗ 准备托管环境失败/u.test(l)),
+      `失败行：${host.lines.join(' | ')}`,
+    );
     assert.ok(host.lines.some((l) => l.includes('下一步：')), '必须给下一步（§7 第 5 条）');
     assert.deepStrictEqual(host.busy, ['on:envPrepare', 'off:envPrepare']);
     assert.strictEqual(isBusy('envPrepare'), false, '失败也要恢复（否则按钮永久禁用）');
@@ -145,18 +150,11 @@ describe('长耗时动作的统一语义（§7）', () => {
       const def = CHANNELS[a];
       assert.ok(def, `${a} 必须在 CHANNELS 里登记`);
       assert.ok(def.label.length > 0 && def.label.length <= 8, `${a} 的动作名要短（≤8 字）`);
-      if (def.kind === 'output' || def.kind === 'chat') {
-        assert.ok(def.channel, `${a}（${def.kind}）必须给 Output 通道名`);
-      }
       assert.ok(nextStepHint(a).length > 0, `${a} 失败时必须能给"下一步"`);
     }
-    assert.deepStrictEqual(outputChannelNames(), [
-      'HeT DevTools · Copilot',
-      'HeT DevTools · 上板',
-      'HeT DevTools · 文档',
-      'HeT DevTools · 构建',
-      'HeT DevTools · 环境',
-    ]);
+    // D 块：**只有一个** Output 通道（域的区分回到行首标签）
+    assert.deepStrictEqual(outputChannelNames(), ['HeT DevTools'], 'Output 下拉里只允许一个名字');
+    assert.strictEqual(OUTPUT_CHANNEL_NAME, 'HeT DevTools');
     assert.strictEqual(channelDef('nope'), undefined);
   });
 

@@ -84,6 +84,8 @@ const VIEWS: readonly { command: string; slot: string }[] = [
   { command: 'het.openSettings', slot: 'settings' },
   { command: 'het.newModule', slot: 'moduleWizard' },
   { command: 'het.coverage', slot: 'coverage' },
+  // D 块新增：页内「输出」视图（唯一输出通道的过滤窗口）
+  { command: 'het.openOutput', slot: 'output' },
 ];
 
 export async function run(): Promise<void> {

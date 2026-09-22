@@ -11,34 +11,30 @@
  */
 import * as vscode from 'vscode';
 import type { BusyHost } from '../core/busy';
-import { COPILOT_CHANNEL } from './cockpit/singlepage/copilotEntry';
+import { OUTPUT_CHANNEL_NAME } from '../core/outputChannels';
+import { outputChannel as getOutputChannel } from '../constants';
 
 export interface BusyHostOptions {
   /** 通知 webview 忙点开/关（§7 第 3 条）。 */
   notifyBusy(action: string, on: boolean): void;
   /** 完成通知；缺省 = 成功轻提示 / 失败警告（§7 第 4 条）。 */
   notifyDone?(action: string, ok: boolean, message: string): void;
-  /** 该通道是否允许被 reveal（默认：除 Copilot 记账通道外都允许）。 */
+  /** 该通道是否允许被 reveal（默认允许；**是否真的 reveal 由 Intent 的 `output.focus` 决定**）。 */
   reveal?(name: string): boolean;
   /** 创建的 OutputChannel 交给调用方登记（deactivate 时释放）。 */
   register?(d: vscode.Disposable): void;
 }
 
 export function createBusyHost(opts: BusyHostOptions): BusyHost {
-  const channels = new Map<string, vscode.OutputChannel>();
-  const channelOf = (name: string): vscode.OutputChannel => {
-    let ch = channels.get(name);
-    if (!ch) {
-      ch = vscode.window.createOutputChannel(name);
-      channels.set(name, ch);
-      opts.register?.(ch);
-    }
-    return ch;
-  };
+  // D 块：**只有一个**通道（`constants.outputChannel()` 单例）。这里不再按名字新建 ——
+  // 以前"extension 建一个 + 这里建一个"会让 Output 下拉里出现两条同名的 `HeT DevTools`。
+  const ch = getOutputChannel();
   return {
     outputChannel(name: string) {
-      const ch = channelOf(name);
-      const reveal = opts.reveal ? opts.reveal(name) : name !== COPILOT_CHANNEL;
+      if (name !== OUTPUT_CHANNEL_NAME) {
+        console.warn(`[het] 只允许一个输出通道（收到 ${name}）—— 已改用 ${OUTPUT_CHANNEL_NAME}`);
+      }
+      const reveal = opts.reveal ? opts.reveal(name) : true;
       return reveal
         ? { appendLine: (line: string) => ch.appendLine(line), show: () => ch.show(true) }
         : { appendLine: (line: string) => ch.appendLine(line) };

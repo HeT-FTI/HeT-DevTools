@@ -117,7 +117,7 @@ async function rootAptLinux(...pkgs: string[]): Promise<void> {
   // ADR-8：如实记账本车道为系统装过什么 → 「移除托管环境」会列出清单 + 给卸载命令（不自动卸）。
   const added = recordAptInstall(join(linuxLaneHome(), '.het-fti', 'managed-env'), pkgs);
   if (added.length) {
-    log(`[env] 车道通过 apt 安装系统包：${added.join('、')}（移除托管环境时只提示，不自动卸载）`);
+    log('env', `车道通过 apt 安装系统包：${added.join('、')}（移除托管环境时只提示，不自动卸载）`);
   }
 }
 
@@ -223,7 +223,7 @@ export async function ensureLinuxLane(opts: { mirror?: LaneMirror } = {}): Promi
   cache = { at: Date.now(), home, note: baselineNote(facts.compiler), mirrorKey };
   // 自证行进日志（一行一事实）：与 WSL 车道同口径。
   for (const line of laneReportLines(r.stdout)) {
-    log(`[lane] ${line}`);
+    log('lane', `${line}`);
   }
   return { home, note: cache.note, facts };
 }

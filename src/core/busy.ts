@@ -17,8 +17,9 @@
  * 本文件仍是**纯逻辑**（不 import vscode）：OutputChannel / 通知 / 时钟由 `BusyHost`
  * 注入，因此可以在无人值守环境里把超时/取消/恢复全跑一遍。
  */
-import { BUSY_ACTIONS, channelDef, nextStepHint } from './outputChannels';
+import { BUSY_ACTIONS, OUTPUT_CHANNEL_NAME, channelDef, formatLogLine, nextStepHint, type LogDomain, type LogEntry, type LogLevel } from './outputChannels';
 import { intentForBusy } from './intents';
+import { outputLog } from './outputLog';
 import { pickActiveStatus, type ActiveStatus } from './status';
 import type { DeadlineKind } from './deadlines';
 import { TaskStore, type Task, type TaskSnapshot } from './tasks';
@@ -189,11 +190,6 @@ export interface BusyResult<T> {
   message: string;
 }
 
-function ts(now: number): string {
-  const d = new Date(now);
-  const p = (n: number): string => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
 
 /**
  * 跑一个长动作：转圈 → 输出 → 结论 → 恢复。
@@ -231,12 +227,20 @@ export async function runWithBusy<T>(
   }
   const taskId = decision.task.id;
   const now = host.now?.() ?? Date.now();
-  const channel = def?.channel ? host.outputChannel(def.channel) : null;
-  const line = (text: string): void => {
-    channel?.appendLine(text);
+  // D 块：**只有一个通道**；域的区分在行首标签（`[build] ▶ …`）。
+  // 要不要把输出面板拉到前台由 Intent 声明（`output.focus`）—— 策略数据化，不再硬编在适配层。
+  const it = intentForBusy(action);
+  const domain: LogDomain = (it?.output?.domain as LogDomain) ?? 'env';
+  const channel = def ? host.outputChannel(OUTPUT_CHANNEL_NAME) : null;
+  const line = (level: LogLevel, text: string, at = host.now?.() ?? Date.now()): void => {
+    const entry: LogEntry = { at, domain, level, text };
+    channel?.appendLine(formatLogLine(entry));
+    outputLog.append(entry);
   };
-  channel?.show?.();
-  line(`[${ts(now)}] ▶ ${shown}${detail ? ` — ${detail}` : ''}`);
+  if (it?.output?.focus) {
+    channel?.show?.();
+  }
+  line('step', `${shown}${detail ? ` — ${detail}` : ''}`, now);
   store.start(taskId);
   host.notifyBusy(action, true);
 
@@ -262,7 +266,7 @@ export async function runWithBusy<T>(
     const out = await fn(ctx);
     const end = host.now?.() ?? Date.now();
     const durationMs = Math.max(0, end - now);
-    line(`[${ts(end)}] ✓ ${shown} 完成（${(durationMs / 1000).toFixed(1)}s）`);
+    line('ok', `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`, end);
     const message = `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`;
     store.succeed(taskId, { message });
     host.notifyDone(action, true, message);
@@ -275,9 +279,9 @@ export async function runWithBusy<T>(
     const state = store.get(taskId)?.state;
     const cancelled = state === 'cancelled' || state === 'timedOut';
     const word = state === 'timedOut' ? '超时' : state === 'cancelled' ? '已取消' : '失败';
-    line(`[${ts(end)}] ${cancelled ? '–' : '✗'} ${shown} ${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`);
+    line(state === 'timedOut' ? 'timeout' : state === 'cancelled' ? 'cancel' : 'fail', `${shown}${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`, end);
     if (!cancelled) {
-      line(`        下一步：${nextStepHint(action)}`);
+      line('info', `下一步：${nextStepHint(action)}`, end);
     }
     const message = `${shown}${word}：${error.message}`;
     if (!cancelled) {

@@ -250,6 +250,23 @@ export const INTENTS: readonly Intent[] = [
     localOnly: true,
   },
 
+  {
+    id: 'openOutput',
+    name: '输出',
+    kind: 'nav',
+    idem: 'openOutput',
+    deadline: 'misc',
+    status: 'env',
+    output: null,
+    command: 'het.openOutput',
+    slot: 'output',
+    promptNone: '输出是只读的：域/级别/关键字都在页内过滤，没有 Copilot 出口。',
+    vscode: ['status'],
+    onFail: { next: '打不开输出视图：输出面板本身始终可用（入口：查看 → 输出 → HeT DevTools）。', needsHuman: false },
+    ci: null,
+    localOnly: true,
+  },
+
   // ── 构建验证 ────────────────────────────────────────────────────────────
   {
     id: 'build',

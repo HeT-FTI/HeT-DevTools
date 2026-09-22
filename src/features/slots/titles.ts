@@ -7,6 +7,8 @@
  */
 export const SLOT_TITLES: Readonly<Record<string, string>> = {
   health: '环境车道：环境体检',
+  // 输出是**跨域**控制台（不属任何一条 rail 车道）→ 前缀就是「输出」
+  output: '输出：HeT DevTools',
   settings: '环境车道：项目设置',
   deps: '构建验证：依赖管理器',
   coverage: '构建验证：覆盖率',

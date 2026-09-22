@@ -19,6 +19,7 @@ import { statusText } from '../core/status';
 import { HOVER_DOMAIN_ORDER } from '../core/statusItem';
 import { chipSpec, type ChipModel } from '../features/statusChip';
 import { COPILOT_ENTRIES, copilotEntryFor, prefillText } from '../features/cockpit/singlepage/copilotEntry';
+import { OUTPUT_CHANNEL_NAME } from '../core/outputChannels';
 import { SECTIONS, allCards, railSections } from '../features/cockpit/singlepage/sections';
 import { SLOT_TITLES } from '../features/slots/titles';
 
@@ -115,14 +116,19 @@ describe('§5 术语：黑名单（rail / 段 / 按钮 / 悬停）', () => {
     assert.deepStrictEqual(bad, [], `术语黑名单命中：\n${bad.join('\n')}`);
   });
 
-  it('唯一页签标题可以带品牌名，其它文案前缀不许带', () => {
-    const titled = [...Object.entries(SLOT_TITLES)];
-    for (const [id, title] of titled) {
+  it('唯一页签标题与唯一通道名可以带品牌名，其它文案前缀不许带', () => {
+    const allowed = new Set([OUTPUT_CHANNEL_NAME]);
+    for (const [id, title] of Object.entries(SLOT_TITLES)) {
+      // 例外只有一个，且写清理由：**输出视图的标题就是那个唯一的通道名**（§5.3 允许）。
+      if (allowed.has(title.split('：')[1] ?? '')) {
+        continue;
+      }
       assert.ok(!title.includes('HeT DevTools'), `Slot ${id} 的标题不许带品牌前缀：${title}`);
     }
     for (const c of allCards()) {
       assert.ok(!c.label.includes('HeT DevTools'), `卡片 ${c.id} 的标题不许带品牌前缀`);
     }
+    assert.deepStrictEqual([...allowed], ['HeT DevTools'], '通道名只有一个（D 块）');
   });
 });
 
@@ -140,8 +146,10 @@ describe('§5 术语：白名单一致（一个概念全库一个写法）', () 
     );
   });
 
-  it('Slot 标题 = `<rail 定稿名>：<对象>`（品牌名只留在唯一页签上）', () => {
-    const known = new Set([...railSections().map((s) => s.label), '设置']);
+  it('Slot 标题 = `<rail 定稿名>：<对象>`（跨域控制台用中性前缀；品牌名只留在唯一页签上）', () => {
+    // 「输出」是**跨域**控制台（不属于任何一条 rail 车道），所以它有中性前缀；
+    // 这条例外比“给每个视图发一个前缀”安全：允许集合就两个来源（rail 名 / 跨域名单）。
+    const known = new Set([...railSections().map((s) => s.label), '设置', '输出']);
     for (const [id, title] of Object.entries(SLOT_TITLES)) {
       const prefix = title.split('：')[0];
       assert.ok(

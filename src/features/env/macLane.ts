@@ -131,7 +131,7 @@ export async function ensureMacLane(opts: { mirror?: LaneMirror } = {}): Promise
   }
   // 自证行进日志（一行一事实）：与 Linux/WSL 车道同口径。
   for (const line of laneReportLines(r.stdout)) {
-    log(`[lane] ${line}`);
+    log('lane', `${line}`);
   }
   const note = `${compiler.name} ${compiler.version}（系统原生）`;
   cache = { at: Date.now(), home, note, mirrorKey };

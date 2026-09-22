@@ -11,6 +11,7 @@
  * 3. **命名只做一次** —— 成功/失败都记账，同一次 VS Code 会话内不反复尝试。
  */
 import { intentFor } from '../../../core/intents';
+import { OUTPUT_CHANNEL_NAME } from '../../../core/outputChannels';
 
 /** 会话标题（§8.1：用户要求以它命名）。 */
 export const COPILOT_SESSION_TITLE = 'HeT DevTools Agent';
@@ -24,8 +25,11 @@ export const COPILOT_SESSION_TITLE = 'HeT DevTools Agent';
  */
 export const COPILOT_PROMPT_MARKER = '【HeT DevTools Agent】';
 
-/** Copilot 入口的记账通道名（与 `core/outputChannels.ts` 的 chat 类动作一致）。 */
-export const COPILOT_CHANNEL = 'HeT DevTools · Copilot';
+/**
+ * Copilot 入口的记账去处 = **唯一的输出通道**（D 块：不再给 Copilot 单开一个频道；
+ * 要不要抢焦点由 Intent 的 `output.focus` 决定 —— chat 类动作不抢，免得盖住刚打开的 Chat）。
+ */
+export const COPILOT_CHANNEL = OUTPUT_CHANNEL_NAME;
 
 /** 同一入口的重复点击窗口（§8.1 铁律 2）。 */
 export const COPILOT_DEDUPE_MS = 1500;
