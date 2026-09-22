@@ -384,6 +384,11 @@
         "category": "HeT DevTools"
       },
       {
+        "command": "het.boardBuild",
+        "title": "上板验证（前置检查 + 只构建/真的上板两条腿；上板会真的刷写芯片）",
+        "category": "HeT DevTools"
+      },
+      {
         "command": "het.crossBuild",
         "title": "交叉编译（目标来自 .hetai/build-matrix.yml；出目标架构包 + readelf 报告，不跑测试）",
         "category": "HeT DevTools"

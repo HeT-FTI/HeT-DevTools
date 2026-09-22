@@ -50,13 +50,19 @@ export interface BoardFactInput {
   /** 明确要上板刷写时为 true（默认 undefined = 只构建）。 */
   flashing?: boolean;
   last?: BoardLast;
+  /** `metadata.workflow_triggers.cross_compile`（K 块：卡上要看得见 CI 到底跑不跑）。 */
+  crossTrigger?: boolean;
 }
 
 export function boardFact(input: BoardFactInput): { fact: string; next?: string } {
   const fact = `${platformText(input.platform)} · ${boardModeText(input.flashing)}`;
   const last = boardLastText(input.last);
+  // 触发开关只说"开/关"，不编造 CI 的实际结果（那是 CI 状态面板的事）
+  const trigger =
+    input.crossTrigger === undefined ? null : `🛠️ 提交触发交叉编译：${input.crossTrigger ? '开' : '关'}`;
+  const tail = [last, ...(trigger ? [trigger] : [])].join(' · ');
   if (input.flashing === true) {
-    return { fact, next: `${last} —— 上板前请确认目标板与供电（--flash 会真的刷写芯片）` };
+    return { fact, next: `${tail} —— 上板前请确认目标板与供电（--flash 会真的刷写芯片）` };
   }
-  return { fact, next: last };
+  return { fact, next: tail };
 }

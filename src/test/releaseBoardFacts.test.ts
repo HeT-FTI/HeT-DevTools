@@ -132,7 +132,20 @@ describe('三项卡片的呈现（G23）', () => {
     assert.ok(ext.includes('未深度判定'), '跳过的项要如实说明，不能假装绿');
     assert.ok(ext.includes('preflightState({ deep: true })'), '面板入口跑深探测');
     assert.ok(ext.includes('setSinglePageFacts({ release: { summary: summarizePreflight(st.items) } })'), '面板跑完要把真实三态回喂卡片');
-    assert.ok(ext.includes("runWithBusy(\n      busyHost(),\n      'board'"), '上板构建要走 runWithBusy（§7/§19.3）');
+    // K 块：面板的两个按钮与命令走**同一条** runBoardBuild（不再各自拼命令 ——
+    // 否则"面板点的那条"与"命令跑的那条"会慢慢变成两条流水线）
+    assert.ok(
+      /runWithBusy\(\s*busyHost\(\),\s*'board'/u.test(ext),
+      '上板构建要走 runWithBusy（§7/§19.3）',
+    );
+    assert.ok(
+      ext.includes("runBoardBuild('cross')") && ext.includes("runBoardBuild('on-board')"),
+      '面板的"只构建"与"构建并上板"必须走同一个执行器',
+    );
+    assert.ok(
+      ext.includes("vscode.commands.registerCommand('het.boardBuild'"),
+      '命令入口也要走同一个执行器（不然无头环境跑不了）',
+    );
     assert.ok(ext.includes("'het.bench.last'"), '「上次采集」要有出处');
     assert.ok(ext.includes('void feedExtraSinglePageFacts();'), '解析成功后要刷新卡片');
     const ctl = read(join('features', 'cockpit', 'controller.ts'));

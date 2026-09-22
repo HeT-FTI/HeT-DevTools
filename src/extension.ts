@@ -123,6 +123,14 @@ import {
 } from './core/buildMatrix';
 import { checkTargetSwitch, ledgerPath, parseLedger, recordBuild } from './core/buildLedger';
 import {
+  boardNextStep,
+  boardPlanFor,
+  flashExeFor,
+  type BenchMode,
+  type BoardFacts,
+  type ProbeVisibility,
+} from './core/boardCheck';
+import {
   archReport,
   crossPlanFor,
   matchesExpectation,
@@ -747,6 +755,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void refreshStatus();
     }),
     // K 块：交叉编译（目标架构的包 + readelf 架构报告；目标只来自矩阵）
+    // K 块：上板验证（前置检查 + 只构建/真的上板两条路）
+    vscode.commands.registerCommand('het.boardBuild', (mode?: BenchMode) => runBoardBuild(mode ?? 'cross')),
+    vscode.commands.registerCommand('het.getBoardPlan', async () => {
+      const root = currentProject?.root;
+      if (!root) {
+        return { error: '未检测到工程' };
+      }
+      const facts = await boardFactsNow('cross', root);
+      return boardPlanFor(facts);
+    }),
     vscode.commands.registerCommand('het.crossBuild', (target?: string) => runCrossBuild(target)),
     vscode.commands.registerCommand('het.targetSwitch', async () => {
       const root = currentProject?.root;
@@ -1134,12 +1152,19 @@ async function feedExtraSinglePageFacts(): Promise<void> {
     /* 没有项目 / 读不动 → 不传 */
   }
   // G23 / §19.3：上板卡必须让"是否 flash"在 L2 可见（避免误刷板）
+  // + K 块：把 `workflow_triggers.cross_compile` 的状态也放到卡上（否则用户永远不知道 CI 上到底跑不跑交叉编译）
   try {
     const cfgRel = 'benchmark/platform/bench_config.json';
     if (await pathExists(join(root, cfgRel))) {
       const cfg = JSON.parse(await readText(join(root, cfgRel))) as Record<string, unknown>;
       const last = contextRef?.workspaceState.get<BoardLast>('het.bench.last');
-      const b = boardFact({ platform: configPlatform(cfg), ...(last ? { last } : {}) });
+      const b = boardFact({
+        platform: configPlatform(cfg),
+        ...(last ? { last } : {}),
+        ...(currentProject?.metadata?.workflow_triggers?.cross_compile !== undefined
+          ? { crossTrigger: currentProject.metadata.workflow_triggers.cross_compile }
+          : {}),
+      });
       facts.board = { fact: b.fact, ...(b.next ? { next: b.next } : {}), collected: Boolean(last?.at) };
     }
   } catch {
@@ -2825,43 +2850,31 @@ function openBenchPanel(context: vscode.ExtensionContext): void {
     return { ok: true, message: `已保存 ${configRel}（字段级写回，注释/结构保留）。` };
   };
 
-  const buildNoFlash = async () => {
-    const root = currentProject?.root;
-    if (!root) {
-      return { ok: false, message: '未检测到 fcpp 项目。' };
-    }
-    const python = await findPython();
-    if (!python) {
-      return { ok: false, message: '找不到 python/python3。' };
-    }
-    const script = 'benchmark/script/run_bench.py';
-    if (!(await pathExists(join(root, script)))) {
-      return { ok: false, message: `缺少 ${script}（fcpp 模板未含 benchmark 时跳过）。` };
-    }
-    channel?.appendLine(`[bench] ${python} ${script} --no-flash @ ${root}`);
-    // §7 忙语义 / §19.3：采集走统一 helper（唯一输出通道 + L1 忙点 + 幂等）
-    const busy = await runWithBusy(
-      busyHost(),
-      'board',
-      () => withDeadline('上板构建', 'board', (timeoutMs) =>
-        run(python, [script, '--no-flash'], { cwd: root, onStdout: (c) => channel?.append(c), onStderr: (c) => channel?.append(c), timeoutMs }),
-        deadlineOverrides(),
-      ),
-      `${python} ${script} --no-flash`,
-    );
-    if (busy.status === 'skipped') {
-      return { ok: false, message: busy.message };
-    }
-    if (busy.status === 'done' && busy.out?.code === 0) {
-      return { ok: true, message: '无板卡构建（--no-flash）成功。可粘贴串口输出解析结果，或接板后执行 ② 构建并上板。' };
-    }
-    return { ok: false, message: '无板卡构建失败：请看「输出 → HeT DevTools」里 [bench] 那几行。（通常需先经 Conan 拉取 arm-toolchain）' };
-  };
+  // K 块：只构建 / 真的上板都走同一条前置检查 + 忙语义（面板不再自己拼命令 ——
+  // 否则"面板点的那条"与"命令跑的那条"会慢慢变成两条流水线）。
+  const buildNoFlash = (): Promise<{ ok: boolean; message: string }> => runBoardBuild('cross');
+  const flash = (): Promise<{ ok: boolean; message: string }> => runBoardBuild('on-board');
 
   showBenchPanel(context, {
     getState,
+    getBoard: async () => {
+      const projectRoot = currentProject?.root;
+      if (projectRoot) {
+        return boardPlanFor(await boardFactsNow('cross', projectRoot));
+      }
+      return boardPlanFor({
+        platform: 'unknown',
+        cpu: '',
+        configPresent: false,
+        flashTool: '',
+        probeVisibility: 'unknown',
+        toolPresent: () => true,
+        mode: 'cross',
+      });
+    },
     saveConfig,
     buildNoFlash,
+    flash,
     parseSim: (text) => {
       const p = parseBenchmarkProtocol(text);
       if (p.cases.length === 0) {
@@ -3121,6 +3134,162 @@ async function readArchFacts(folder: string, plan: CrossPlan): Promise<ArchFact[
     }
   }
   return out;
+}
+
+const BENCH_CONFIG_REL = 'benchmark/platform/bench_config.json';
+const BENCH_SCRIPT_REL = 'benchmark/script/run_bench.py';
+
+/**
+ * **板子看得见吗**（前置检查的输入之一）。
+ *
+ * 三条纪律：Windows 上我们**不枚举**设备（拿不到可靠的清单）→ `unknown`（“看不出”不等于
+ * “没连”）；只认常见的板载调试口（ACM/USB/by-id）；判断不了就如实说。
+ */
+async function probeVisibility(): Promise<ProbeVisibility> {
+  if (process.platform === 'win32') {
+    return 'unknown';
+  }
+  const patterns = ['/dev/ttyACM*', '/dev/ttyUSB*', '/dev/tty.usb*', '/dev/serial/by-id/*'];
+  const dirs = ['/dev', '/dev/serial/by-id'];
+  for (const dir of dirs) {
+    const names = await readdir(dir).catch(() => [] as string[]);
+    for (const n of names) {
+      const full = `${dir}/${n}`;
+      if (patterns.some((p) => new RegExp(`^${p.replace(/\*/gu, '.*')}$`, 'u').test(full))) {
+        return 'seen';
+      }
+    }
+  }
+  return 'none';
+}
+
+/** 上板前置检查的事实（宿主侧：读配置 + 探针可见性 + 工作流开关）。 */
+async function boardFactsNow(mode: BenchMode, root: string): Promise<BoardFacts> {
+  const loaded = await loadBenchConfig(root);
+  const cfg = loaded?.cfg ?? {};
+  const platform = configPlatform(cfg);
+  const trigger = currentProject?.metadata?.workflow_triggers?.cross_compile;
+  const base: BoardFacts = {
+    platform,
+    cpu: String(cfg.target_mcu ?? cfg.target_cpu ?? ''),
+    ...(typeof cfg.target_os === 'string' ? { targetOs: cfg.target_os } : {}),
+    configPresent: !!loaded,
+    flashTool: String(cfg.flash_tool ?? cfg.deploy_tool ?? ''),
+    ...(typeof cfg.serial_port === 'string' ? { serialPort: cfg.serial_port } : {}),
+    probeVisibility: await probeVisibility(),
+    toolPresent: () => false,
+    mode,
+    ...(trigger !== undefined ? { workflowTrigger: trigger } : {}),
+  };
+  // 先算一遍"需要哪些可执行"（注入 `toolPresent: () => true`），再真查那几个
+  // —— 比把整张表都 which 一遍快，也不会漏（计划自己知道它要用什么）。
+  const provisional = boardPlanFor({ ...base, toolPresent: () => true });
+  const need = new Set<string>(
+    provisional.toolchain ? [provisional.toolchain.cc, provisional.toolchain.cxx, provisional.toolchain.ar] : [],
+  );
+  if (mode === 'on-board') {
+    const flash = flashExeFor(base);
+    if (flash) {
+      need.add(flash);
+    }
+  }
+  const found = await Promise.all([...need].map(async (e) => [e, !!(await which(e))] as const));
+  const map = new Map(found);
+  return { ...base, toolPresent: (e) => map.get(e) === true };
+}
+
+/** 读 bench 配置（不存在/读不动都返回 null —— 由前置检查去解释"为什么"）。 */
+async function loadBenchConfig(root: string): Promise<{ text: string; cfg: Record<string, unknown> } | null> {
+  const abs = join(root, BENCH_CONFIG_REL);
+  if (!(await pathExists(abs))) {
+    return null;
+  }
+  try {
+    const text = await readText(abs);
+    return { text, cfg: JSON.parse(text) as Record<string, unknown> };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * **上板验证**（K 块）：`cross` = 只构建（--no-flash，**永不刷写**），`on-board` = 真的上板。
+ *
+ * 前置检查先跑：缺工具链/看不见探针就把**定向提示**写进输出并失败，而不是等 openocd 报一句
+ * 看不懂的错。上板前必须过 `askModal` 确认 —— 刷写芯片不可回滚。
+ */
+async function runBoardBuild(mode: BenchMode = 'cross'): Promise<{ ok: boolean; message: string }> {
+  const root = currentProject?.root;
+  if (!root) {
+    void vscode.window.showWarningMessage('未检测到工程（上板验证需要工程根）。');
+    return { ok: false, message: '未检测到工程' };
+  }
+  if (!(await pathExists(join(root, BENCH_SCRIPT_REL)))) {
+    const message = `缺少 ${BENCH_SCRIPT_REL}（fcpp 模板里的 benchmark 目录没同步过来）—— 上板验证跑不了。`;
+    log('bench', message);
+    void vscode.window.showWarningMessage(message);
+    return { ok: false, message };
+  }
+  const facts = await boardFactsNow(mode, root);
+  const plan = boardPlanFor(facts);
+  for (const line of plan.hints.lines) {
+    log('bench', line);
+  }
+  for (const f of plan.hints.fix) {
+    log('bench', `怎么办：${f}`);
+  }
+  if (mode === 'on-board') {
+    // 会真的刷写芯片：**先确认**（自动化宿主里 askModal 视作取消，不会静默刷）
+    const answer = await askModal(
+      `上板会**真的刷写芯片**（目标 ${facts.cpu || '未配置'} · flash_tool ${facts.flashTool || '未配置'}）。确认继续？`,
+      '上板刷写',
+    );
+    if (answer !== '上板刷写') {
+      return { ok: false, message: '已取消上板（没有刷写芯片）。' };
+    }
+  }
+  if (plan.missing.length > 0) {
+    // 前置检查没过就**不开任务**：这不是"跑了然后失败"，而是"现在跑不了" ——
+    // 但话必须说清（缺什么、怎么装、或者交给 CI），所以返回而不是抛：
+    // 面板拿到抛出会变成"点了没反应"。
+    return {
+      ok: false,
+      message: `${plan.hints.lines.find((l) => l.includes('本机缺')) ?? '前置检查未通过'}｜${boardNextStep(plan)}`,
+    };
+  }
+  const python = await findPython();
+  if (!python) {
+    return { ok: false, message: '找不到 python/python3（run_bench.py 要它）。' };
+  }
+  const args = [BENCH_SCRIPT_REL, ...(plan.mode === 'build-only' ? ['--no-flash'] : [])];
+  const busy = await runWithBusy(
+    busyHost(),
+    'board',
+    () =>
+      withDeadline(
+        plan.mode === 'build-only' ? '上板构建' : '上板验证',
+        'board',
+        (timeoutMs) =>
+          run(python, args, {
+            cwd: root,
+            onStdout: (c) => channel?.append(c),
+            onStderr: (c) => channel?.append(c),
+            timeoutMs,
+          }),
+        deadlineOverrides(),
+      ),
+    `${python} ${args.join(' ')}`,
+  );
+  if (busy.status !== 'done') {
+    return { ok: false, message: busy.message };
+  }
+  const ok = (busy.out as ExecResult | undefined)?.code === 0;
+  const message = ok
+    ? plan.mode === 'build-only'
+      ? `无板卡构建成功（目标 ${plan.arch ?? '?'}）—— 接板后可跑「构建并上板」，或粘贴串口输出解析结果。`
+      : '上板完成：串口输出可在面板里解析（没收到 BENCHMARK_END 会标出来）。'
+    : `上板${plan.mode === 'build-only' ? '构建' : '验证'}失败：看「输出 → HeT DevTools」里的 bench 行。下一步：${boardNextStep(plan)}`;
+  return { ok, message };
 }
 
 /** CI status view (G-19): GitHub Actions with D-9 tier + offline degradation. */

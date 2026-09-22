@@ -37,29 +37,43 @@ export interface CrossToolchain {
  */
 export function compilerFor(arch: string, os: string | undefined): CrossToolchain | undefined {
   const bare = (os ?? '').toLowerCase() === 'baremetal';
-  if (arch === 'armv7' && bare) {
-    return { cc: 'arm-none-eabi-gcc', cxx: 'arm-none-eabi-g++', ar: 'arm-none-eabi-ar', packages: ['gcc-arm-none-eabi'] };
+  // 裸机一律 arm-none-eabi（M0/M3/M4 是 armv6/armv7，M23/M33/M55 是 armv8_32 ——
+  // 三者用的是**同一套** GNU Arm Embedded 工具链）；但"裸机 + 非 ARM 架构"不猜。
+  if (bare) {
+    return /^armv\d/u.test(arch) ? ARM_NONE_EABI : undefined;
   }
   if (arch === 'armv7') {
     // A-core 32 位 Linux：Windows/Linux 上都是 gnueabihf 这一套
-    return {
-      cc: 'arm-linux-gnueabihf-gcc',
-      cxx: 'arm-linux-gnueabihf-g++',
-      ar: 'arm-linux-gnueabihf-ar',
-      packages: ['gcc-arm-linux-gnueabihf', 'g++-arm-linux-gnueabihf'],
-    };
+    return ARM_LINUX_GNUEABIHF;
   }
   if (arch === 'armv8' || arch === 'aarch64') {
-    return {
-      cc: 'aarch64-linux-gnu-gcc',
-      cxx: 'aarch64-linux-gnu-g++',
-      ar: 'aarch64-linux-gnu-ar',
-      // g++ 驱动是单独一个包（gcc 包只带 C 编译器）—— CI 脚本里也写了这条不对称
-      packages: ['gcc-aarch64-linux-gnu', 'g++-aarch64-linux-gnu'],
-    };
+    // g++ 驱动是单独一个包（gcc 包只带 C 编译器）—— CI 脚本里也写了这条不对称
+    return AARCH64_LINUX_GNU;
   }
   return undefined;
 }
+
+/** M-core（裸机）的 C/C++/ar：GNU Arm Embedded。 */
+const ARM_NONE_EABI: CrossToolchain = {
+  cc: 'arm-none-eabi-gcc',
+  cxx: 'arm-none-eabi-g++',
+  ar: 'arm-none-eabi-ar',
+  packages: ['gcc-arm-none-eabi'],
+};
+/** A-core 32 位 Linux。 */
+const ARM_LINUX_GNUEABIHF: CrossToolchain = {
+  cc: 'arm-linux-gnueabihf-gcc',
+  cxx: 'arm-linux-gnueabihf-g++',
+  ar: 'arm-linux-gnueabihf-ar',
+  packages: ['gcc-arm-linux-gnueabihf', 'g++-arm-linux-gnueabihf'],
+};
+/** A-core 64 位 Linux。 */
+const AARCH64_LINUX_GNU: CrossToolchain = {
+  cc: 'aarch64-linux-gnu-gcc',
+  cxx: 'aarch64-linux-gnu-g++',
+  ar: 'aarch64-linux-gnu-ar',
+  packages: ['gcc-aarch64-linux-gnu', 'g++-aarch64-linux-gnu'],
+};
 
 /** 期望的 ELF 形态（readelf 判据）。矩阵里的 arch 不认识时返回 undefined —— **不猜**。 */
 export interface ArchExpectation {
@@ -71,7 +85,8 @@ export interface ArchExpectation {
 
 export function archExpectation(arch: string, os?: string): ArchExpectation | undefined {
   const bare = (os ?? '').toLowerCase() === 'baremetal';
-  if (arch === 'armv7' && bare) {
+  // 裸机 = 32 位 ARM + **必须是 Thumb 代码**（M 核只跑 Thumb；没有它链接期才发现）
+  if (bare && /^armv\d/u.test(arch)) {
     return { elfClass: 'ELF32', machine: 'ARM', thumb: true };
   }
   if (arch === 'armv7') {

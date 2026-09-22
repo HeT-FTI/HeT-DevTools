@@ -448,6 +448,58 @@ export async function run(): Promise<void> {
     assert.ok(crossLines.some((e) => e.level === 'ok' || e.level === 'fail'), '必须有终态行');
   }
   console.log(`[c9] 交叉编译 OK — 目标来自矩阵 · ${hasCc ? '本机有工具链' : '缺工具链时提示含包名与 CI 路线'}`);
+
+  // ── ④ K 块下半：上板前置检查（有没有板子都要"说得清"）────────────────
+  // 夹具（mini-fcpp）不带 benchmark 目录：会话自己铺最小的一份，这样"前置检查/确认门"
+  // 这些**真机路径**能被真跑一遍，而不是只被单测盖住。
+  const benchDir = vscode.Uri.joinPath(ws.uri, 'benchmark');
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(benchDir, 'script'));
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(benchDir, 'platform'));
+  await vscode.workspace.fs.writeFile(
+    vscode.Uri.joinPath(benchDir, 'script', 'run_bench.py'),
+    Buffer.from('# 会话夹具：真实脚本在 fcpp 模板里\nprint("[bench] session stub")\n', 'utf8'),
+  );
+  await vscode.workspace.fs.writeFile(
+    vscode.Uri.joinPath(benchDir, 'platform', 'bench_config.json'),
+    Buffer.from(
+      JSON.stringify({ target_mcu: 'cortex-m4', flash_tool: 'jlink', serial_port: '/dev/ttyUSB0' }, null, 2) + '\n',
+      'utf8',
+    ),
+  );
+  const boardPlan = (await vscode.commands.executeCommand('het.getBoardPlan')) as {
+    mode: string;
+    missing: string[];
+    canFlash: boolean;
+    hints: { lines: string[]; fix: string[] };
+    trigger: { state: string; text: string };
+  };
+  assert.ok(boardPlan, '前置检查必须能取到（面板开头就是它）');
+  assert.strictEqual(boardPlan.mode, 'build-only', '默认必须是只构建（安全默认：不静默刷芯片）');
+  assert.strictEqual(boardPlan.canFlash, false, '夹具没接板 → 不能刷');
+  const boardText = [...boardPlan.hints.lines, ...boardPlan.hints.fix].join('\n');
+  assert.match(boardText, /cortex-m4|arm-none-eabi/u, `前置检查要认得配置里的 cpu：${boardText}`);
+  assert.match(`${boardText}\n${boardPlan.missing.join('、')}`, /arm-none-eabi-gcc/u, '缺什么要点名');
+  assert.match(boardText, /apt-get install/u, '要给装法');
+  assert.match(boardText, /hetai-package-matrix\.yml/u, '要给 CI 那条路');
+  assert.match(boardPlan.trigger.text, /workflow_triggers|cross_compile/u, '触发开关也要说得出来');
+  // 会刷板的那条路必须**问过**才走（自动化宿主里 askModal 视作取消 → 不静默刷）
+  const flash = (await vscode.commands.executeCommand('het.boardBuild', 'on-board')) as { ok: boolean; message: string };
+  assert.strictEqual(flash.ok, false, '没人确认就不许刷写芯片');
+  assert.match(flash.message, /取消/u, `要明说"已取消上板"：${flash.message}`);
+  const flashLines = (await outputEntries()).slice(0, 12).map((e) => `${e.level}:${e.text}`).join('\n');
+  assert.ok(!flashLines.includes('step:上板验证') || flashLines.includes('cancel:'), '没确认就不该真的开跑上板');
+  // 只构建那条路：本机没交叉工具链 → 定向失败（同样不许是一句裸错）
+  const build = (await vscode.commands.executeCommand('het.boardBuild', 'cross')) as { ok: boolean; message: string };
+  const boardLines = (await outputEntries()).slice(0, 20).map((e) => e.text).join('\n');
+  assert.match(boardLines, /真机前置检查|--no-flash|本机缺|bench_config/u, `前置检查要写进输出：${boardLines}`);
+  if (!build.ok) {
+    assert.match(
+      `${build.message}\n${boardLines}`,
+      /apt-get install|hetai-package-matrix/u,
+      '失败要给定向提示（装包或去 CI）',
+    );
+  }
+  console.log('[c9] 上板前置检查 OK — 默认只构建 · 上板要确认 · 缺东西给定向提示');
   assertOneTab(await snapshot(), 'K 块会话结束');
 
   const end = await snapshot();
