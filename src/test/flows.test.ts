@@ -10,7 +10,8 @@ import {
 } from '../core/dependencyService';
 import { statusText } from '../core/status';
 import { chipSpec } from '../features/statusChip';
-import { SECTIONS, allCards } from '../features/cockpit/singlepage/sections';
+import { allCards, railSections } from '../features/cockpit/singlepage/sections';
+import { commandForAction } from '../features/cockpit/singlepage/actions';
 import { initialCockpitState } from '../features/cockpit/state';
 import { singlePageModelFrom } from '../features/cockpit/singlepage/modelFrom';
 import { cockpitSinglePageHtml } from '../features/cockpit/singlepage/shell';
@@ -18,7 +19,6 @@ import { COPILOT_ENTRIES, copilotEntryFor, prefillText } from '../features/cockp
 import {
   BUSY_ACTIONS,
   CHANNELS,
-  channelDef,
   nextStepHint,
   type BusyAction,
 } from '../core/outputChannels';
@@ -41,7 +41,7 @@ import { preflightInnerHtml, verdictOf } from '../features/preflight/html';
  * 最常见的翻车方式（"点了没反应"、"状态不对"、"数字不更新"）。
  *
  * 所以这里不重复测单个函数，而是把**用户的一次操作**从头走到尾：
- *   点击 → 忙语义 → 状态显示（吸顶/chip/HUD）→ 结果写回 → 卡片与清单更新。
+ *   点击 → 忙语义 → 状态显示（吸顶/chip 悬停）→ 结果写回 → 卡片与清单更新。
  */
 
 const read = (p: string): string => readFileSync(join('src', p), 'utf8');
@@ -77,7 +77,7 @@ describe('§F.46 用户流 ①：点"构建" → 忙语义 → 状态栏/吸顶/
     const state = initialCockpitState();
 
     // ① 用户点了「构建」→ 统一 helper 记账
-    const promise = runWithBusy(host, 'build', channelDef('build')!.label, async () => {
+    const promise = runWithBusy(host, 'build', async () => {
       // ② 此刻：单一状态源能答出来"在构建"，而且是用户能看懂的话
       const st = currentStatus();
       assert.strictEqual(st?.action, 'build');
@@ -221,7 +221,7 @@ describe('§F.46 用户流 ⑤：编译文档（含"缺工具"这条最常见的
   it('跑起来 → chip 文档格说"构建中" → 成功给 ✓/耗时、失败给可执行原因与下一步', async () => {
     resetBusy();
     const ok = docsHost();
-    await runWithBusy(ok, 'docsBuild', '编译文档', async () => true);
+    await runWithBusy(ok, 'docsBuild', async () => true);
     assert.ok(ok.lines.some((l) => l.includes('▶') && l.includes('编译文档')), '开始要有回显');
     assert.ok(ok.lines.some((l) => l.includes('✓')), '结束要有 ✓ 与耗时');
     assert.ok(ok.lines.some((l) => l.includes('完成（')), '耗时是可读的秒数');
@@ -240,13 +240,20 @@ describe('§F.46 用户流 ⑤：编译文档（含"缺工具"这条最常见的
       templateBehind: 0,
       docs: 'fail',
     })!;
-    assert.ok(html.tooltip.includes('$(sync~spin) 构建中'), '正在编译 → 该行显示进行中');
+    assert.ok(html.tooltip.includes('$(sync~spin) 进行中'), '正在编译 → 该行显示进行中');
     assert.ok(!html.tooltip.includes('技术文档 | ✗'), '不许把上一次失败当结论');
+    // H 块：忙的**写法**只有一种 —— 模块文档以前自己写「构建中」，同一张表里
+    // 构建验证说「进行中」而它说「构建中」（一个概念两种字）。这一条钉住统一口径。
+    const runningCell = html.tooltip.split('\n').find((l) => l.includes('模块文档')) ?? '';
+    assert.ok(
+      runningCell.includes('进行中'),
+      `忙时该行必须用与其它域同一串字「进行中」：${runningCell}`,
+    );
 
     // 缺 doxygen 这条半路：错误里要是**可执行**的说明，不是"检查失败"
     resetBusy();
     const bad = docsHost();
-    const res = await runWithBusy(bad, 'docsBuild', '编译文档', async () => {
+    const res = await runWithBusy(bad, 'docsBuild', async () => {
       throw new Error("doxygen is not recognized as an internal or external command");
     });
     assert.strictEqual(res.status, 'failed');
@@ -318,26 +325,29 @@ describe('§F.46 用户流 ⑦：预检 → 发布中心（同一份判决）', 
   });
 });
 
-describe('§F.46 用户流 ③：段 1 摘要 → 跳去执行段 → 那里的按钮是真命令', () => {
-  it('每个 jump 链接都落在"真的有这个动作"的段上', () => {
-    const now = SECTIONS.find((s) => s.id === 'now')!;
-    const jumps = now.cards.flatMap((c) =>
-      (c.extra ?? []).filter((a) => a.kind === 'jump').map((a) => ({ from: c.id, to: a.id })),
-    );
-    assert.ok(jumps.length >= 4, `摘要卡至少要给出四条去路，实际 ${jumps.length}`);
-    for (const { from, to } of jumps) {
-      const target = SECTIONS.find((s) => s.id === to);
-      assert.ok(target, `跳转目标 ${to} 不存在`);
-      const acts = target!.cards.flatMap((c) => [c.action, c.secondary, ...(c.extra ?? [])]);
+describe('§F.46 用户流 ③：rail 五格 → 每一段都点得动（不是死路）', () => {
+  it('rail 上每一格落进去都有可执行入口，且入口都接在真命令上', () => {
+    for (const sec of railSections()) {
+      const acts = sec.cards.flatMap((c) => [c.action, c.secondary, ...(c.extra ?? [])]);
+      const runnable = acts.filter((a): a is NonNullable<typeof a> => a !== undefined && a.kind !== 'jump');
       assert.ok(
-        acts.some((a) => a?.kind === 'action'),
-        `${from} 跳到「${target!.label}」但那段没有任何可执行按钮 —— 用户到了也是死路`,
+        runnable.length >= 1,
+        `「${sec.label}」里没有任何入口 —— 用户从 rail 点进来看到一屏文字，是死路`,
       );
+      for (const a of runnable) {
+        if (a.kind === 'copilot') {
+          assert.ok(a.id.startsWith('/het-'), `「${sec.label}」的 Copilot 入口必须是 /het-*`);
+          continue;
+        }
+        const cmd = commandForAction(a.id);
+        assert.ok(cmd && cmd.startsWith('het.'), `「${sec.label}」的 ${a.id} 没有接线 —— 点了没反应`);
+      }
     }
-    // 页面里真的渲染出了这些链接（不只是数据里写了）
+    // 页面里真的渲染出了 rail 五格 + 齿轮（不是只写在数据里）
     const html = cockpitSinglePageHtml(singlePageModelFrom(initialCockpitState(), {}));
-    assert.ok(html.includes('data-action="jump"'), '要渲染成跳转链接');
-    assert.ok(html.includes('去构建'), '文案要说清是去干什么');
+    const railIds = [...html.matchAll(/class="rail-item[^"]*"[^>]*data-section="([^"]+)"/gu)].map((m) => m[1]);
+    assert.deepStrictEqual(railIds, ['env', 'build', 'module', 'quality', 'deliver', 'settings']);
+    assert.ok(html.includes('data-action="jump"'), 'rail 用 jump 协议滚动到段');
   });
 });
 

@@ -114,36 +114,3 @@ ${tokenBlock()}
 ${SINGLE_PAGE_LAYOUT_CSS}
 </style>`;
 }
-
-/**
- * HUD（决策 6A）：它**不再是第二套皮** —— 令牌、L1 渲染器、卡片渲染器都和单页共用，
- * 这里只补几行它自己特有的排版（同样只用 token，且遵守 §5：不允许会随宽度重排的网格）。
- */
-export const HUD_CSS = `
-  .hud { width: 100%; max-width: min(780px, calc(100vw - 32px)); margin: 0 auto; padding: 16px; }
-  .hud-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-  .hud-head h1 { font-size: 1.25em; margin: 0; flex: 1; min-width: 0; }
-  .hud-lines { margin: 8px 0 4px; }
-  .hud-line { font-size: .78em; opacity: .8; overflow-wrap: anywhere; }
-  .hud-h2 { font-size: .72em; text-transform: uppercase; letter-spacing: .5px; opacity: .7; margin: 14px 0 6px; }
-  .hud-acts { display: flex; flex-wrap: wrap; gap: 6px; }
-  .hud-act { display: inline-flex; align-items: center; gap: 6px; background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground); border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: .85em; }
-  .hud-act:hover { opacity: .9; }
-  .hud-key { font-size: .72em; opacity: .6; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
-  .hud-prefs { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
-  .hud-link { background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; font-size: .8em; padding: 0; }
-  .hud-foot { margin-top: 10px; font-size: .72em; opacity: .65; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; }
-  .hud-foot kbd { font-family: var(--vscode-font-family); border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
-  .hud .cards { display: flex; flex-direction: column; gap: 2px; }
-`;
-
-export function hudCss(): string {
-  return `<style>
-  :root {
-${tokenBlock()}
-  }
-${SINGLE_PAGE_LAYOUT_CSS}
-${HUD_CSS}
-</style>`;
-}

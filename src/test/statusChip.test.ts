@@ -70,24 +70,32 @@ describe('statusChip（C 块：三档同源 + 悬停预算）', () => {
     const s = chipSpec(projectModel())!;
     assert.ok(s.tooltip.includes('━━━ 快捷操作（点按即执行）━━━'), '快捷操作区在');
     assert.ok(s.tooltip.includes('\n- [🔧 检查环境]('), '动作各占一行（不许挤成一行）');
-    assert.ok(s.tooltip.includes('\n- [🧹 清理缓存]('), '清理缓存（K.1）在快捷操作区');
+    assert.ok(s.tooltip.includes('\n- [🧹 清理构建缓存]('), '清理构建缓存（K.1）在快捷操作区');
 
-    // 预算越界必须抛错（而不是渲染出来才发现挤成一片）
-    const tooMany = ['a', 'b', 'c', 'd'].map((id) => ({
-      id,
-      label: id,
-      command: `het.${id}`,
+    // 预算越界必须抛错（而不是渲染出来才发现挤成一片）。
+    // 用「上限 + 1」构造，而不是硬编码数量 —— 否则上限一改（如导航从 2 收到 1），
+    // 这条断言就会变成"没超也能过"，门禁静默失效。
+    const tooMany = Array.from({ length: HOVER_LIMITS.primaryActions + 1 }, (_, i) => ({
+      id: `a${i}`,
+      label: `a${i}`,
+      command: `het.a${i}`,
       kind: 'primary' as const,
     }));
-    assert.throws(() => hoverProjection(items, { actions: tooMany, nav: [] }), StatusItemError, '4 个主动作必须抛错（上限 3）');
     assert.throws(
-      () =>
-        hoverProjection(items, {
-          actions,
-          nav: [...nav, { id: 'x', label: 'x', command: 'het.x', kind: 'nav' }],
-        }),
+      () => hoverProjection(items, { actions: tooMany, nav: [] }),
       StatusItemError,
-      '3 个导航必须抛错（上限 2）',
+      `${tooMany.length} 个主动作必须抛错（上限 ${HOVER_LIMITS.primaryActions}）`,
+    );
+    const tooManyNav = Array.from({ length: HOVER_LIMITS.nav + 1 }, (_, i) => ({
+      id: `n${i}`,
+      label: `n${i}`,
+      command: `het.n${i}`,
+      kind: 'nav' as const,
+    }));
+    assert.throws(
+      () => hoverProjection(items, { actions, nav: tooManyNav }),
+      StatusItemError,
+      `${tooManyNav.length} 个导航必须抛错（上限 ${HOVER_LIMITS.nav}）`,
     );
   });
 
@@ -97,7 +105,7 @@ describe('statusChip（C 块：三档同源 + 悬停预算）', () => {
     assert.ok(table.includes('❌ 失败'), '构建失败是结论');
     assert.ok(table.includes('command:het.openBuildOutput'), '输出入口');
     assert.ok(table.includes('command:het.showTestResults'), '测试结果入口');
-    for (const word of ['检查环境', '清理缓存', '构建并测试']) {
+    for (const word of ['检查环境', '清理构建缓存', '编译打包']) {
       assert.ok(!table.includes(word), `状态格不许出现执行动作「${word}」`);
     }
   });

@@ -4,8 +4,13 @@
  * 设计来源：`workspace/develope/gui-single-page-rework-plan.md` §3（5 段工作流）与 §4（L1/L2/L3 三层密度）。
  * 这里只描述"页面上有什么"，不关心怎么取数（那由 host 侧的 controller/adapter 负责）。
  */
-/** 5 个工作流段（决策 2A）。顺序 = 页面顺序 = rail 顺序。 */
-export type SectionId = 'now' | 'build' | 'code' | 'deliver' | 'config';
+/**
+ * 5 个工作流段 + 齿轮（设置）（E 块定稿，计划 §5.1）。
+ *
+ * 名字就是 rail 上的定稿名：环境车道 / 构建验证 / 模块文档 / 质量安全 / 交付发布（+ 设置）。
+ * 顺序 = 页面顺序 = rail 顺序。
+ */
+export type SectionId = 'env' | 'build' | 'module' | 'quality' | 'deliver' | 'settings';
 
 /**
  * 历史 tab id（旧 UI 的 11 个 tab）。
@@ -108,7 +113,7 @@ export interface SinglePageModel {
   cards: CardRow[];
   /** 正在跑的动作名（§7）：非空时 L1 显示忙点。 */
   busy: string | null;
-  /** 折叠的段（§6：默认 `['build','code','deliver','config']`）。 */
+  /** 折叠的段（§6：默认只展开第 1 段「环境车道」）。 */
   folded: SectionId[];
   /** 模板落后多少提交（0 = 不提示）。 */
   templateBehind: number;
@@ -117,7 +122,7 @@ export interface SinglePageModel {
 /** L1 的项顺序（决策：构建 · 测试 · 覆盖率 · 环境）。 */
 export const L1_IDS = ['build', 'test', 'coverage', 'env'] as const;
 
-export const DEFAULT_FOLDED: SectionId[] = ['build', 'code', 'deliver', 'config'];
+export const DEFAULT_FOLDED: SectionId[] = ['build', 'module', 'quality', 'deliver', 'settings'];
 
 export function defaultL1(): L1Item[] {
   return [
@@ -138,13 +143,20 @@ export function defaultModel(): SinglePageModel {
   };
 }
 
-/** 归一化折叠状态：去重 + 只保留合法段 id（持久化数据可能来自旧版本）。 */
+/** 全部合法段 id（顺序同 rail）。 */
+export const SECTION_IDS: readonly SectionId[] = ['env', 'build', 'module', 'quality', 'deliver', 'settings'];
+
+/**
+ * 归一化折叠状态：去重 + 只保留合法段 id。
+ *
+ * 持久化的数据可能来自**改过名字的旧版本**（如 `now`/`code`/`config`）—— `normalizeFolded`
+ * 负责把认不出的丢掉，而不是把它们当成未知段渲染出一个空壳。
+ */
 export function normalizeFolded(raw: unknown): SectionId[] {
-  const valid: SectionId[] = ['now', 'build', 'code', 'deliver', 'config'];
   if (!Array.isArray(raw)) {
     return [...DEFAULT_FOLDED];
   }
-  const out = raw.filter((x): x is SectionId => typeof x === 'string' && valid.includes(x as SectionId));
+  const out = raw.filter((x): x is SectionId => typeof x === 'string' && (SECTION_IDS as readonly string[]).includes(x));
   return [...new Set(out)];
 }
 

@@ -161,7 +161,12 @@ function templateCell(m: ChipModel): string {
  */
 export function chipStatusItems(m: ChipModel): StatusItem[] {
   const busyDom = busyDomainOf(m.runningAction ?? null);
-  /** 忙时该域只表达"进行中"（不变题 4：不与上一次失败并列）。 */
+  /** 忙时该域只表达"进行中"（不变题 4：不与上一次失败并列）——**所有域用同一串字**。
+   *
+   * H 块踩到的一次：模块文档那一行以前自己写了个「构建中」，于是同一张悬停表里
+   * 构建验证/构建时说「进行中」而文档说「构建中」—— 同一个概念两种写法（C 块的
+   * 单一来源就是为这个设的）。现在只有"不在 Task 里、由 docs 模块自己的在跑标志"
+   * 那一条旧路径还留着「构建中」（它不是一次 Task，没有 busy 状态可读）。 */
   const busyText = busyDom ? '进行中' : '';
   const cacheBits: string[] = [];
   if (m.cache) {
@@ -204,7 +209,7 @@ export function chipStatusItems(m: ChipModel): StatusItem[] {
             : (m.docs ?? 'none') === 'fail'
               ? 'fail'
               : 'unknown',
-      text: busyDom === 'docs' || (m.docs ?? 'none') === 'running' ? '构建中' : docsCell(m),
+      text: busyDom === 'docs' ? busyText : (m.docs ?? 'none') === 'running' ? '构建中' : docsCell(m),
     },
     {
       id: 'coverage',
@@ -226,12 +231,17 @@ export function chipHoverActions(): { actions: HoverAction[]; nav: HoverAction[]
   return {
     actions: [
       { id: 'envCheck', label: '🔧 检查环境', command: 'het.envCheck', kind: 'primary' },
-      { id: 'test', label: '🚀 构建并测试', command: 'het.test', kind: 'primary' },
-      { id: 'cacheClean', label: '🧹 清理缓存', command: 'het.cacheClean', kind: 'primary' },
+      // §5.2：动作名 = 动词 + 对象，且两个链不许同形词 ——
+      // 「编译打包」= 消费依赖→产出包（het.build）；「全量测试」在构建验证段里。
+      { id: 'build', label: '🛠 编译打包', command: 'het.build', kind: 'primary' },
+      { id: 'cacheClean', label: '🧹 清理构建缓存', command: 'het.cacheClean', kind: 'primary' },
     ],
     nav: [
+      // 导航只留两条（§3.6 预算是 ≤2）：仪表盘 + 任务中心。
+      // 仪表盘：chip 本身就是"点开驾驶舱"的入口，这里再放一个是给"我知道要什么"的人一条直路。
       { id: 'dashboard', label: '🖥️ 仪表盘', command: 'het.dashboard', kind: 'nav' },
-      { id: 'monitor', label: '📊 完整监控卡', command: 'het.chipOverview', kind: 'nav' },
+      // 任务中心："刚才那个跑完没有"的入口（空闲时也进得去 —— 忙碌时 L1 的忙点就是捷径）。
+      { id: 'openTasks', label: '⏱ 任务', command: 'het.openTasks', kind: 'nav' },
     ],
   };
 }

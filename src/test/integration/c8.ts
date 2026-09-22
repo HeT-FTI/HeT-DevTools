@@ -19,10 +19,13 @@ import * as vscode from 'vscode';
 
 import { EXTENSION_ID } from '../hostExtension';
 import { assertHostIsTrustworthy, logProvenance, writeEvidence } from './support/hostProvenance';
+import { SLOT_VIEWS } from './support/slotViews';
 
 interface SlotState {
   open: { id: string; title: string } | null;
   dropped: number;
+  /** 我们的页签数（来自 `features/tabs.ts` 的**唯一口径**，不是测试自己数的）。 */
+  tabs: number;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -38,10 +41,14 @@ function tabSnapshot(): string[] {
 }
 
 /** 轮询等待（CI 上慢一点不该变红：等条件成立，超时才失败）。 */
-async function waitFor(what: string, ok: () => boolean, timeoutMs = 15_000): Promise<void> {
+async function waitFor(
+  what: string,
+  ok: () => boolean | Promise<boolean>,
+  timeoutMs = 15_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (ok()) {
+    if (await ok()) {
       return;
     }
     await sleep(250);
@@ -49,20 +56,12 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 15_000): Pro
   assert.fail(`等待「${what}」超时（${timeoutMs}ms）—— 当前页签：${JSON.stringify(tabSnapshot())}`);
 }
 
-/** 我们自己的页签（按 viewType **或** label 识别）。
+/** 我们自己的页签（**唯一口径**：`features/tabs.ts`；测试不再自己写一套模糊匹配）。
  *
- * 为什么不能只看 `input.viewType`：在真实宿主里实测拿不到（VS Code 1.134 给的是
- * `mainThreadWebview-het.cockpit` 这种内部形状）—— 只看 viewType 会得到空数组，
- * 于是“页签数正确”变成永远不成立的假断言。 */
-function hetTabs(): string[] {
-  return vscode.window.tabGroups.all
-    .flatMap((group) => group.tabs)
-    .map((tab) => {
-      const viewType = (tab.input as { viewType?: string } | undefined)?.viewType;
-      return { viewType, label: tab.label };
-    })
-    .filter((t) => (t.viewType ?? '').startsWith('het.') || t.label.includes('het.') || t.label.includes('HeT DevTools'))
-    .map((t) => t.viewType ?? t.label);
+ * 以前这里自己数一遍（viewType 前缀 + label 模糊匹配），产品诊断命令又自己数一遍 ——
+ * 两边口径一旦不同，"页签数 = 1"就成了各说各话。现在两侧读同一份（H 块收的）。 */
+async function hetTabs(): Promise<number> {
+  return (await slotState()).tabs;
 }
 
 async function slotState(): Promise<SlotState> {
@@ -72,19 +71,11 @@ async function slotState(): Promise<SlotState> {
 /**
  * 依次打开这些视图，每次都断言"页签恒为 1 + 当前 Slot 正确"。
  *
- * **为什么不带 `het.showTestResults`**：它要求先有测试结果（`lastTestSummary`），没有就只
- * 弹一句"尚无测试结果"、不开视图 —— 那是**正确行为**。把它写进来会得到一个"永远失败的
- * 假期望"（"断言照着自己想象的产品行为写"这个坑，计划里已经记过一次）。
+ * 表格本身在 `support/slotViews.ts`（c9 会话共用一份）：**为什么不能各写一份** ——
+ * 新增视图时只更新一处，另一个脚本就悄悄失去覆盖（"新功能绕过一致性验证"）。
+ * 有意不带 `het.showTestResults` 的原因也写在那边。
  */
-const VIEWS: readonly { command: string; slot: string }[] = [
-  { command: 'het.openDeps', slot: 'deps' },
-  { command: 'het.docs', slot: 'docs' },
-  { command: 'het.quality', slot: 'quality' },
-  { command: 'het.preflight', slot: 'preflight' },
-  { command: 'het.openSettings', slot: 'settings' },
-  { command: 'het.newModule', slot: 'moduleWizard' },
-  { command: 'het.coverage', slot: 'coverage' },
-];
+const VIEWS = SLOT_VIEWS;
 
 export async function run(): Promise<void> {
   console.log('[c8] starting — 页签恒为 1 + 页内 Slot 互斥');
@@ -98,10 +89,10 @@ export async function run(): Promise<void> {
   await sleep(400);
 
   await vscode.commands.executeCommand('het.dashboard');
-  await waitFor('驾驶舱页签出现', () => hetTabs().length >= 1);
+  await waitFor('驾驶舱页签出现', async () => (await hetTabs()) >= 1);
   await sleep(400);
   assert.strictEqual(
-    hetTabs().length,
+    await hetTabs(),
     1,
     `打开驾驶舱后应当只有 1 个页签，实际：${JSON.stringify(tabSnapshot())}`,
   );
@@ -110,7 +101,7 @@ export async function run(): Promise<void> {
   for (const view of VIEWS) {
     await vscode.commands.executeCommand(view.command);
     // 命令是异步的（面板首帧还在渲染）→ 轮询等它成为当前 Slot，而不是"睡固定毫秒"
-    let state: SlotState = { open: null, dropped: 0 };
+    let state: SlotState = { open: null, dropped: 0, tabs: 0 };
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       state = await slotState();
@@ -124,9 +115,9 @@ export async function run(): Promise<void> {
       view.slot,
       `当前 Slot 应当是 ${view.slot}（互斥折叠：上一个自动关掉），实际 ${state.open?.id}`,
     );
-    const tabs = hetTabs();
+    const tabs = await hetTabs();
     assert.strictEqual(
-      tabs.length,
+      tabs,
       1,
       `打开 ${view.slot} 后页签必须仍是 1 个，实际：${JSON.stringify(tabSnapshot())}` +
         '（多出来的就是"它自己又开了页签"）',
@@ -150,7 +141,7 @@ export async function run(): Promise<void> {
   await sleep(300);
   const closed = await slotState();
   assert.strictEqual(closed.open, null, '关闭后不该还有 Slot');
-  assert.strictEqual(hetTabs().length, 1, '关掉 Slot 不许连带关掉驾驶舱');
+  assert.strictEqual(await hetTabs(), 1, '关掉 Slot 不许连带关掉驾驶舱');
   console.log(`[c8] 关闭 OK — 页签 = 1 · 丢弃消息数 ${closed.dropped}`);
   // 证据落盘：驱动脚本据此判定"用例真的跑过"——否则 VS Code CLI 忽略参数、退出码 0
   // 也会被当成通过（假绿）。宿主上下文一并写入，供驱动回验版本。

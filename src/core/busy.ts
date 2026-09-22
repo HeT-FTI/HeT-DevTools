@@ -17,10 +17,12 @@
  * 本文件仍是**纯逻辑**（不 import vscode）：OutputChannel / 通知 / 时钟由 `BusyHost`
  * 注入，因此可以在无人值守环境里把超时/取消/恢复全跑一遍。
  */
-import { channelDef, nextStepHint } from './outputChannels';
+import { BUSY_ACTIONS, OUTPUT_CHANNEL_NAME, channelDef, formatLogLine, nextStepHint, type LogDomain, type LogEntry, type LogLevel } from './outputChannels';
+import { intentForBusy } from './intents';
+import { outputLog } from './outputLog';
 import { pickActiveStatus, type ActiveStatus } from './status';
-import type { DeadlineKind } from './deadlines';
-import { TaskStore, type Task, type TaskSnapshot } from './tasks';
+import type { DeadlineKind, DeadlineOverrides } from './deadlines';
+import { TaskStore, exitWord, type Task, type TaskArtifact, type TaskSnapshot } from './tasks';
 
 /** single writer：整个扩展只有这一份 Task 仓库（UI 与功能模块只读）。 */
 const store = new TaskStore();
@@ -31,35 +33,25 @@ export function taskStore(): TaskStore {
 }
 
 /**
- * 长动作 → §3.5 阈值类别。**每个 busy action 都必须显式登记**（门禁会逼你登记，
- * 不许悄悄落进兜底档：兜底 10min 对"环境准备"这种是错的）。
+ * 长动作 → §3.5 阈值类别（I 块后**从 Intent 表推导**：阈值只在 `deadlines.ts` 定稿，
+ * 动作→类别的对应只在 `intents.ts` 登记一处）。
+ *
+ * `wslImport` 没有卡片/命令入口（它在环境准备流程里被调用）→ 单列，仍然显式登记。
  */
-const DEADLINE_KIND_FOR_ACTION: Readonly<Record<string, DeadlineKind>> = {
-  build: 'build',
-  clean: 'build',
-  test: 'test',
-  docsBuild: 'docs',
-  docsCopilot: 'docs',
-  quality: 'quality',
-  envPrepare: 'envPrepare',
-  envRemove: 'envPrepare',
-  envCheck: 'misc',
+const EXTRA_DEADLINE_KINDS: Readonly<Record<string, DeadlineKind>> = {
   wslImport: 'envPrepare',
-  board: 'board',
-  commitCopilot: 'misc',
-  testgenCopilot: 'misc',
-  setupCopilot: 'misc',
-  moduleCopilot: 'misc',
-  cacheClean: 'cacheClean',
-  targetSwitch: 'switchTarget',
 };
 
 export function deadlineKindForAction(action: string): DeadlineKind {
-  return DEADLINE_KIND_FOR_ACTION[action] ?? 'misc';
+  return intentForBusy(action)?.deadline ?? EXTRA_DEADLINE_KINDS[action] ?? 'misc';
 }
 
 export function deadlineKindsForActions(): Readonly<Record<string, DeadlineKind>> {
-  return DEADLINE_KIND_FOR_ACTION;
+  const out: Record<string, DeadlineKind> = { ...EXTRA_DEADLINE_KINDS };
+  for (const a of BUSY_ACTIONS) {
+    out[a] = deadlineKindForAction(a);
+  }
+  return out;
 }
 
 /**
@@ -72,6 +64,14 @@ export interface TaskRunContext {
   signal: AbortSignal | undefined;
   heartbeat(message?: string): void;
   progress(pct: number, message?: string): void;
+  /**
+   * 登记一个产物（任务中心里可点）。
+   *
+   * 为什么由执行体登记、而不是"任务中心自己去猜目录"：产物在哪是**动作自己**最清楚的
+   * 事（doxygen 的入口页是 `docs/doxygen/build/docs.html`，sphinx 是 `index.html`）——
+   * 面板再猜一遍就是第二个真相，而且猜错时用户看到的是一个打不开的链接。
+   */
+  artifact(label: string, opts?: { path?: string; command?: string; arg?: string }): void;
 }
 
 /** 幂等注册表：同一动作进行中，后续调用一律**跳过**（不是排队）。 */
@@ -119,7 +119,7 @@ export function busyEntries(): Array<{ action: string; startedAt: number }> {
 }
 
 /**
- * **当前仓库级状态**：吸顶右侧 / chip / HUD / 悬停卡都读这一份（`core/status.ts` 定义口吻）。
+ * **当前仓库级状态**：吸顶右侧 / chip / 悬停卡都读这一份（`core/status.ts` 定义口吻）。
  * 空闲返回 null —— 调用方负责把"空闲"渲染成历史结果，而不是把它渲染成"正在跑"。
  */
 export function currentStatus(): ActiveStatus | null {
@@ -182,6 +182,8 @@ export interface BusyHost {
   now?(): number;
   /** 谁发起的这次执行（问责用）。缺省 = 'card'。 */
   owner?(): string;
+  /** §3.5 阈值覆盖（宿主从设置 `het.task.deadlines` 读；缺省 = 只用表里的默认值）。 */
+  deadlineOverrides?(): DeadlineOverrides;
 }
 
 export type BusyStatus = 'done' | 'skipped' | 'failed';
@@ -198,27 +200,29 @@ export interface BusyResult<T> {
   message: string;
 }
 
-function ts(now: number): string {
-  const d = new Date(now);
-  const p = (n: number): string => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
 
 /**
  * 跑一个长动作：转圈 → 输出 → 结论 → 恢复。
+ *
+ * **显示名不再由调用方传字串**（I 块）：它取自 Intent 表的领域术语名（§5.2 定稿）。
+ * 以前 8 个调用点各写一个中文名，于是同一个动作在输出里叫"构建并测试"、在卡片上叫"全量测试" ——
+ * 一个概念两个写法，而改一处忘了另一处没人会发现。
  *
  * `skipped` 表示"同一动作已在跑"（幂等；webview 侧也会禁用按钮，这里是最后一道保险）。
  */
 export async function runWithBusy<T>(
   host: BusyHost,
   action: string,
-  label: string,
   fn: (ctx: TaskRunContext) => Promise<T>,
   detail?: string,
 ): Promise<BusyResult<T>> {
   const def = channelDef(action);
-  const shown = label || def?.label || action;
+  // 单一来源：Intent 名 → 通道 label → action id（三级兜底，绝不显示 undefined）
+  const shown = intentForBusy(action)?.name || def?.label || action;
   store.useClock(host.now ?? (() => Date.now()));
+  // 阈值覆盖（§3.5 的设置）必须同时作用于**执行层**（`withDeadline`）与**对账器**
+  // （`deadlineMs`）—— 否则用户调大设置后，对账器仍按默认值把任务判超时。
+  store.useDeadlineOverrides(host.deadlineOverrides ?? (() => ({})));
   const decision = store.dispatch({
     action,
     label: shown,
@@ -236,15 +240,25 @@ export async function runWithBusy<T>(
   }
   const taskId = decision.task.id;
   const now = host.now?.() ?? Date.now();
-  const channel = def?.channel ? host.outputChannel(def.channel) : null;
-  const line = (text: string): void => {
-    channel?.appendLine(text);
+  // D 块：**只有一个通道**；域的区分在行首标签（`[build] ▶ …`）。
+  // 要不要把输出面板拉到前台由 Intent 声明（`output.focus`）—— 策略数据化，不再硬编在适配层。
+  const it = intentForBusy(action);
+  const domain: LogDomain = (it?.output?.domain as LogDomain) ?? 'env';
+  const channel = def ? host.outputChannel(OUTPUT_CHANNEL_NAME) : null;
+  const line = (level: LogLevel, text: string, at = host.now?.() ?? Date.now()): void => {
+    const entry: LogEntry = { at, domain, level, text };
+    channel?.appendLine(formatLogLine(entry));
+    outputLog.append(entry);
   };
-  channel?.show?.();
-  line(`[${ts(now)}] ▶ ${shown}${detail ? ` — ${detail}` : ''}`);
+  if (it?.output?.focus) {
+    channel?.show?.();
+  }
+  line('step', `${shown}${detail ? ` — ${detail}` : ''}`, now);
   store.start(taskId);
   host.notifyBusy(action, true);
 
+  /** 执行体登记的产物（成功时才落到 Task 上） */
+  const artifacts: TaskArtifact[] = [];
   const ctx: TaskRunContext = {
     signal: store.signalFor(taskId),
     heartbeat: (message?: string) => {
@@ -261,15 +275,25 @@ export async function runWithBusy<T>(
         /* 同上 */
       }
     },
+    artifact: (label: string, opts?: { path?: string; command?: string; arg?: string }) => {
+      // 重复登记同名产物 = 覆盖（动作里多次打点不该看成两件东西）
+      const at = artifacts.findIndex((a) => a.label === label);
+      const next = { label, ...opts };
+      if (at >= 0) {
+        artifacts[at] = next;
+      } else {
+        artifacts.push(next);
+      }
+    },
   };
 
   try {
     const out = await fn(ctx);
     const end = host.now?.() ?? Date.now();
     const durationMs = Math.max(0, end - now);
-    line(`[${ts(end)}] ✓ ${shown} 完成（${(durationMs / 1000).toFixed(1)}s）`);
+    line('ok', `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`, end);
     const message = `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`;
-    store.succeed(taskId, { message });
+    store.succeed(taskId, { message, artifacts: artifacts.length ? artifacts : undefined });
     host.notifyDone(action, true, message);
     return { status: 'done', out, durationMs, message };
   } catch (err) {
@@ -279,10 +303,12 @@ export async function runWithBusy<T>(
     // 取消/超时是**不同的出口**（语义不同，UI 也要分开显示）：这里不再重复落状态
     const state = store.get(taskId)?.state;
     const cancelled = state === 'cancelled' || state === 'timedOut';
-    const word = state === 'timedOut' ? '超时' : state === 'cancelled' ? '已取消' : '失败';
-    line(`[${ts(end)}] ${cancelled ? '–' : '✗'} ${shown} ${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`);
+    // 终态用词来自 `STATE_TEXT`（唯一来源：任务中心的结论列也读它）；
+    // 注意此刻 state 往往还是 running —— 所以走 `exitWord` 而不是直接查表。
+    const word = exitWord(state);
+    line(state === 'timedOut' ? 'timeout' : state === 'cancelled' ? 'cancel' : 'fail', `${shown}${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`, end);
     if (!cancelled) {
-      line(`        下一步：${nextStepHint(action)}`);
+      line('info', `下一步：${nextStepHint(action)}`, end);
     }
     const message = `${shown}${word}：${error.message}`;
     if (!cancelled) {

@@ -11,14 +11,13 @@
  * host → 页面：`{type:'l1'|'section'|'busy'}` 局部替换（§13：页面只生成一次）
  */
 import { pageShell, esc } from '../../ui';
-import { commandForAction } from './actions';
-import { SECTIONS } from './sections';
+import { SECTIONS, railSections } from './sections';
 import { singlePageCss } from './tokens';
 import { COCKPIT_RESERVED_TYPES } from '../../slots/protocol';
 import { stateIcon, type CardRow, type L1Item, type SectionId, type SinglePageModel } from './model';
 
 /**
- * L1 吸顶条的内容（**共享渲染器**：单页页头与 HUD 顶部都用它 —— 决策 6A“只留一套皮”）。
+ * L1 吸顶条的内容（单页页头用）。
  */
 export function l1Html(items: L1Item[], busy: string | null): string {
   const cells = items
@@ -28,36 +27,32 @@ export function l1Html(items: L1Item[], busy: string | null): string {
         `<span class="k">${esc(i.label)}</span><span class="v">${esc(i.value)}</span></span>`,
     )
     .join('');
+  // 忙点可点 → 任务中心（"正在跑什么"就在眼前，点它去看全局）。空闲时隐藏。
   const busyHtml = busy
-    ? `<span class="busy" data-busy><span class="spin">⟳</span>${esc(busy)}</span>`
+    ? `<button class="busy" data-busy data-action="nav" data-nav="openTasks" ` +
+      `title="打开任务中心（在跑什么 · 跑过什么）"><span class="spin">⟳</span>${esc(busy)}</button>`
     : `<span class="busy" data-busy hidden><span class="spin">⟳</span></span>`;
   return `${cells}${busyHtml}`;
 }
 
 /**
- * 一张卡（L2 行）的 HTML。导出供 HUD 复用：它的环境行就是同一串卡片（同一套视觉语言）。
- */
-export type CardActionProtocol = 'act' | 'command';
-
-/**
- * 一张卡（L2 行）的 HTML。导出供 HUD 复用：它的环境行就是同一串卡片（同一套视觉语言）。
+ * 一张卡（L2 行）的 HTML。
  *
- * ⚠️ **两个壳的动作协议不同**（这里被真实 bug 咬过，别再合成一个）：
- *   · `'act'`（驶驶舱）：`data-action="act"` + `data-act="<动作 id>"` → host 用 `COMMAND_FOR_ACTION` 翻译；
- *   · `'command'`（HUD）：`data-action="<命令 id>"` → HUD 脚本直接把值当命令 post。
+ * 动作协议**只有一种**（`data-action="act"` + `data-act="<动作 id>"` → host 用 `COMMAND_FOR_ACTION` 翻译）。
+ * E 块把 HUD 页签并入悬停档后，曾经的第二种协议（`'command'`：直接把值当命令 post）没有使用者了 ——
+ * 留着一个壳都不用的分支，只会让下一个人猜“什么时候该用哪个”。
  *
- * **只发 `data-act` 不发 `data-action`：两个壳的点击都会掉进“没有 data-action 就 return”，
- * 按钮全死**（2026-09-20 同事反馈的"仪表盘除了 Copilot 都点不动"就是这个）；
- * 而在 HUD 里错发 `data-action="act"` 则会把字符串 `act` 当命令执行。
+ * **只发 `data-act` 不发 `data-action`：点击会掉进“没有 data-action 就 return”，按钮全死**
+ * （2026-09-20 用户反馈的“仪表盘除了 Copilot 都点不动”就是这个）。
  * 门禁：`src/test/buttonReachability.test.ts`（渲染出来逐个按钮查可达性）。
  */
-export function cardRowHtml(c: CardRow, protocol: CardActionProtocol = 'act'): string {
+export function cardRowHtml(c: CardRow): string {
   const acts: string[] = [];
   const button = (a: typeof c.action, secondary: boolean): void => {
     if (!a) {
       return;
     }
-    // `jump`：段内导航（去执行段做这件事），不是动作 —— 段 1 只留只读摘要的关键。
+    // `jump`：段内导航（去执行段做这件事），不是动作。
     if (a.kind === 'jump') {
       acts.push(
         `<button class="link" data-action="jump" data-section="${esc(a.id)}" title="跳到「${esc(sectionLabel(a.id))}」执行">${esc(a.label)} →</button>`,
@@ -65,11 +60,7 @@ export function cardRowHtml(c: CardRow, protocol: CardActionProtocol = 'act'): s
       return;
     }
     const attr =
-      a.kind === 'copilot'
-        ? `data-copilot="${esc(a.id)}"`
-        : protocol === 'command'
-          ? `data-action="${esc(commandForAction(a.id) ?? a.id)}"`
-          : `data-action="act" data-act="${esc(a.id)}"`;
+      a.kind === 'copilot' ? `data-copilot="${esc(a.id)}"` : `data-action="act" data-act="${esc(a.id)}"`;
     const cls = secondary ? ' class="secondary"' : '';
     acts.push(`<button${cls} ${attr} data-card="${esc(c.id)}">${esc(a.label)}</button>`);
   };
@@ -112,18 +103,24 @@ function sectionHtml(id: SectionId, cards: CardRow[], folded: SectionId[], busy:
 }
 
 function railHtml(folded: SectionId[]): string {
-  const items = SECTIONS.map(
-    (s) =>
-      `<button class="rail-item" data-action="jump" data-section="${esc(s.id)}" title="${esc(`${s.order} ${s.label}`)}" aria-label="${esc(`${s.order} ${s.label}`)}" aria-current="${folded.includes(s.id) ? 'false' : 'true'}"><span class="rail-ic" aria-hidden="true">${s.rail}</span><span class="rail-tx">${esc(s.railLabel)}</span></button>`,
-  ).join('');
-  // 齿轮的动作 id 必须是 `COMMAND_FOR_ACTION` 里有的（曾是 `settings` → 表里没有 → 点了没反应）
-  const settings = `<button class="rail-item" data-action="act" data-act="openSettings" title="设置（metadata / 网络与源）" aria-label="设置"><span class="rail-ic" aria-hidden="true">⚙︎</span><span class="rail-tx">设置</span></button>`;
-  return `${items}${settings}`;
+  const items = railSections()
+    .map(
+      (s) =>
+        `<button class="rail-item" data-action="jump" data-section="${esc(s.id)}" title="${esc(`${s.order} ${s.label}`)}" aria-label="${esc(`${s.order} ${s.label}`)}" aria-current="${folded.includes(s.id) ? 'false' : 'true'}"><span class="rail-ic" aria-hidden="true">${s.rail}</span><span class="rail-tx">${esc(s.railLabel)}</span></button>`,
+    )
+    .join('');
+  // 齿轮 = 设置段（§5.1：**不进 rail 计数**）。动作 id 必须是 `COMMAND_FOR_ACTION` 里有的
+  // （曾是 `settings` → 表里没有 → 点了没反应），这里用 `jump` 滚到设置段。
+  const gear = `<button class="rail-item rail-gear" data-action="jump" data-section="settings" title="设置（metadata · 上板）" aria-label="设置"><span class="rail-ic" aria-hidden="true">⚙︎</span><span class="rail-tx">设置</span></button>`;
+  return `${items}${gear}`;
 }
 
 /** 按段把卡片分组（模型里卡片顺序无所谓，页面顺序由 `SECTIONS` 决定）。 */
 export function cardsBySection(model: SinglePageModel): Record<SectionId, CardRow[]> {
-  const out: Record<SectionId, CardRow[]> = { now: [], build: [], code: [], deliver: [], config: [] };
+  const out = { env: [], build: [], module: [], quality: [], deliver: [], settings: [] } as Record<
+    SectionId,
+    CardRow[]
+  >;
   for (const def of SECTIONS) {
     for (const defCard of def.cards) {
       const live = model.cards.find((c) => c.id === defCard.id);
@@ -138,7 +135,7 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
   const sections = SECTIONS.map((s) => sectionHtml(s.id, grouped[s.id], model.folded, model.busy)).join('');
   const templateHint =
     model.templateBehind > 0
-      ? `<div class="sub">模板落后上游 ${esc(String(model.templateBehind))} 个提交 —— 可在「配置 › 网络与源」同步。</div>`
+      ? `<div class="sub">模板落后上游 ${esc(String(model.templateBehind))} 个提交 —— 可在「设置 › 网络与源」同步。</div>`
       : '';
   return `${singlePageCss()}
     <div class="sp">
@@ -264,6 +261,12 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
             var target = document.getElementById('sec-' + sec);
             if (target) { target.scrollIntoView({ block: 'start' }); }
             setActive(sec);
+            return;
+          }
+          if (act === 'nav') {
+            // 导航动作：**不**改按钮文字（那是"动作"的反馈，导航没有"进行中"）。
+            var nav = btn.getAttribute('data-nav');
+            if (nav) { send({ type: 'nav', id: nav }); }
             return;
           }
           if (act === 'act') {

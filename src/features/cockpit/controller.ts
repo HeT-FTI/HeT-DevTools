@@ -137,7 +137,7 @@ export function getCockpitView(): { focus: SectionId | null; folded: SectionId[]
  */
 export function notifySinglePageBusy(action: string, _on: boolean): void {
   // §F.35：忙语义的**唯一来源**是 `core/busy.ts` 的注册表 —— 这里顺手把它同步成
-  // "仓库级状态"，吸顶右侧 / chip / HUD / 悬停卡都读这同一份（以前 chip 读的是
+  // "仓库级状态"，吸顶右侧 / chip / 悬停卡都读这同一份（以前 chip 读的是
   // 上一次构建结果，于是"正在跑"被显示成"已失败"）。
   const st = currentStatus();
   const had = singlePageFacts.status ?? null;
@@ -148,7 +148,7 @@ export function notifySinglePageBusy(action: string, _on: boolean): void {
     postSinglePage();
   }
   // §F.36：**动作跑完 = 仓库事实变了**，不管用户是从哪个入口点的（单页按钮 / 悬停链接 /
-  // 命令面板 / HUD），都在这里统一补一次取数 —— 否则卡片上的数字要等下一次交互才动，
+  // 命令面板），都在这里统一补一次取数 —— 否则卡片上的数字要等下一次交互才动，
   // 实测反馈里就是"构建/测试/覆盖率不刷新，只有体检刷新"（体检本来就走面板入口）。
   if (had && !st) {
     requestFacts();
@@ -297,7 +297,6 @@ async function runCopilotEntry(command: string): Promise<void> {
   const res = await runWithBusy(
     host(),
     def.action,
-    channelDef(def.action)?.label ?? command,
     () => openCopilotChat(query),
     `预填 ${command}（复用当前会话，不新建）`,
   );
@@ -403,8 +402,8 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
   openedSections.clear();
   cockpitPanel.webview.html = cockpitSinglePageHtml(singlePageModel());
 
-  // 段 1 默认展开（其余段等用户展开，§13 懒加载）；深链目标也直接展开。
-  openedSections.add('now');
+  // 段 1 默认展开（E 块后是「环境车道」；其余段等用户展开，§13 懒加载）；深链目标也直接展开。
+  openedSections.add('env');
   if (target) {
     unfold(target);
     openedSections.add(target);
@@ -431,6 +430,13 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
             () => requestFacts(),
             () => requestFacts(),
           );
+        }
+      } else if (message.type === 'nav' && message.id) {
+        // J 块：导航动作（如 L1 忙点 → 任务中心）。与 action 的区别只有一条：
+        // 导航**不会**产生"在跑"的语义，所以页面不改按钮文字、这里也不刷事实。
+        const cmd = commandForAction(message.id);
+        if (cmd) {
+          void vscode.commands.executeCommand(cmd);
         }
       } else if (message.type === 'copilot' && message.command) {
         void runCopilotEntry(message.command);

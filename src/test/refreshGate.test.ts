@@ -71,7 +71,7 @@ describe('刷新闸门（G18）', () => {
     assert.ok(ctl.includes('export function requestFacts('), '要能请求刷新（懒加载入口调它）');
     assert.ok(ctl.includes('beginRefresh(refreshGate)') && ctl.includes('endRefresh(refreshGate)'), '要用闸门');
     assert.ok(
-      ctl.includes("openedSections.add('now');") && /openedSections\.add\('now'\);[\s\S]{0,200}requestFacts\(\)/.test(ctl),
+      ctl.includes("openedSections.add('env');") && /openedSections\.add\('env'\);[\s\S]{0,200}requestFacts\(\)/.test(ctl),
       '打开面板时就要取事实',
     );
     assert.ok(

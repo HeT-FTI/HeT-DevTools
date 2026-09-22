@@ -15,6 +15,7 @@ import {
   allCards,
   cardSection,
   railLabelOf,
+  railSections,
   railWidthCss,
   tabsCovered,
 } from '../features/cockpit/singlepage/sections';
@@ -61,14 +62,25 @@ describe('cockpit 单页壳（A 批）', () => {
     }
   });
 
-  it('段与卡片定义自洽：5 段、序号 1..5、卡片 id 唯一', () => {
-    assert.strictEqual(SECTIONS.length, 5, '5 段工作流');
-    assert.deepStrictEqual(SECTIONS.map((s) => s.order), [1, 2, 3, 4, 5]);
-    assert.deepStrictEqual(SECTIONS.map((s) => s.id), ['now', 'build', 'code', 'deliver', 'config']);
+  it('段与卡片定义自洽：rail 5 段 + 齿轮、序号 1..5、卡片 id 唯一', () => {
+    const rail = SECTIONS.filter((s) => !s.gear);
+    assert.strictEqual(rail.length, 5, 'rail 五项（§5.1 定稿）');
+    assert.deepStrictEqual(railSections().map((s) => s.order), [1, 2, 3, 4, 5]);
+    assert.deepStrictEqual(
+      rail.map((s) => s.label),
+      ['环境车道', '构建验证', '模块文档', '质量安全', '交付发布'],
+      '段名就是 rail 定稿名（四个字、不带“与”）',
+    );
+    assert.deepStrictEqual(SECTIONS.map((s) => s.id), ['env', 'build', 'module', 'quality', 'deliver', 'settings']);
     const ids = allCards().map((c) => c.id);
     assert.strictEqual(new Set(ids).size, ids.length, '卡片 id 不能重复');
     assert.strictEqual(SECTIONS.filter((s) => !s.foldedByDefault).length, 1, '默认只展开段 1');
     assert.strictEqual(SECTIONS[0].foldedByDefault, false);
+    assert.strictEqual(SECTIONS[0].id, 'env', '默认展开的是「环境车道」');
+    const gear = SECTIONS.filter((s) => s.gear);
+    assert.strictEqual(gear.length, 1, '齿轮只有一格');
+    assert.strictEqual(gear[0].label, '设置', '齿轮就叫“设置”（不叫“更多/其他”）');
+    assert.deepStrictEqual(gear[0].cards.length >= 1, true, '设置段里有卡片');
   });
 
   it('每张卡最多一个主按钮；Copilot 入口只指向 /het-* 命令', () => {
@@ -171,15 +183,17 @@ describe('cockpit 单页壳（A 批）', () => {
       assert.ok(inner.includes(`>${railLabelOf(def).split(' ')[0]}<`), `${id} 的图标来自段定义`);
       assert.ok(inner.includes(`<span class="rail-tx">${def.railLabel}</span>`), `${id} 的短名来自段定义`);
     }
-    assert.ok(html.includes('aria-label="1 现在怎么样"'), 'rail 要有可读标签（无障碍 + 悬浮提示）');
+    assert.ok(html.includes('aria-label="1 环境车道"'), 'rail 要有可读标签（无障碍 + 悬浮提示）');
     assert.ok(html.includes('data-page'), '有内容容器');
   });
 
   it('默认折叠 = 只展开段 1；折叠状态可归一化（老数据不炸）', () => {
-    assert.deepStrictEqual(DEFAULT_FOLDED, ['build', 'code', 'deliver', 'config']);
-    assert.strictEqual(attrCount(html, 'section', 'data-collapsed', '1'), 4, '4 段默认折叠');
+    assert.deepStrictEqual(DEFAULT_FOLDED, ['build', 'module', 'quality', 'deliver', 'settings']);
+    assert.strictEqual(attrCount(html, 'section', 'data-collapsed', '1'), 5, '5 段默认折叠');
     assert.strictEqual(attrCount(html, 'section', 'data-collapsed', '0'), 1, '1 段默认展开');
-    assert.deepStrictEqual(normalizeFolded(['code', 'code', 'nope', 1]), ['code']);
+    // 归一化：认不出的段 id（含改名前的 now/code/config）直接丢掉
+    assert.deepStrictEqual(normalizeFolded(['module', 'module', 'nope', 1]), ['module']);
+    assert.deepStrictEqual(normalizeFolded(['now', 'code', 'config']), [], '旧段名一律不认');
     assert.deepStrictEqual(normalizeFolded(undefined), [...DEFAULT_FOLDED]);
     assert.deepStrictEqual(normalizeFolded('junk'), [...DEFAULT_FOLDED]);
   });
@@ -189,22 +203,29 @@ describe('cockpit 单页壳（A 批）', () => {
     assert.strictEqual(html.split('class="l1-item').length - 1, 4, 'L1 四项');
     assert.ok(html.includes('data-busy hidden'), '空闲时忙点隐藏');
     const busyHtml = cockpitSinglePageHtml({ ...model, busy: '检查环境' });
-    assert.ok(busyHtml.includes('data-busy>') || /data-busy>/.test(busyHtml), '忙时忙点展示');
+    assert.ok(/data-busy[^>]*>/.test(busyHtml), '忙时忙点展示');
+    // J 块：忙点是一个“导航”入口（点开任务中心），不是把忙点做成按钮状装饰
+    assert.ok(
+      /data-busy data-action="nav" data-nav="openTasks"/.test(busyHtml),
+      '忙点可点 → 任务中心',
+    );
     assert.ok(busyHtml.includes('检查环境'), '忙时显示动作名');
   });
 
-  it('卡片行数 = 23，且按段归位；模板落后时给一行提示', () => {
-    assert.strictEqual(allCards().length, 25, '§3.1 的 25 张卡（段 2 拆分 + 段 3 新增 /het-module 入口）');
-    assert.strictEqual(html.split('data-card-row=').length - 1, 25);
-    assert.ok(!html.includes('模板落后'), '不落后时不提示');
+  it('卡片行数 = 22，且按段归位；模板落后时给一行提示', () => {
+    assert.strictEqual(allCards().length, 22, '§5.1 的 21 张卡 + K 块的「交叉编译」（删掉“只读摘要段”的 4 张重复卡）');
+    assert.strictEqual(html.split('data-card-row=').length - 1, 22);
+    assert.ok(!html.includes('模板落后上游 0'), '不落后时不提示');
     const behind = cockpitSinglePageHtml({ ...model, templateBehind: 64 });
     assert.ok(behind.includes('模板落后上游 64 个提交'), '落后时提示（§11 联动）');
   });
 
   it('卡片事实文本按 HTML 转义（用户内容不得注入）', () => {
+    // 注：模型的 `cards` 只能**补丁已声明的卡**（SECTIONS 是唯一来源）——
+    // 所以这里用一个真实存在的卡 id，把它的事实改成恶意字符串。
     const evil: CardRow = {
-      id: 'build',
-      tab: 'overview',
+      id: 'buildTest',
+      tab: 'buildTest',
       label: '构建',
       state: 'fail',
       fact: '<img src=x onerror=alert(1)>',

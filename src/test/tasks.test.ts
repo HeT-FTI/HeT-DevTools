@@ -316,9 +316,9 @@ describe('B. 与 busy 层的对账（G3/G17：每个长动作都要有 owner + d
       notifyBusy: () => undefined,
       notifyDone: () => undefined,
     };
-    const ok = await runWithBusy(host, 'build', '编译打包', async () => 'ok');
+    const ok = await runWithBusy(host, 'build', async () => 'ok');
     assert.strictEqual(ok.status, 'done');
-    const bad = await runWithBusy(host, 'build', '编译打包', async () => {
+    const bad = await runWithBusy(host, 'build', async () => {
       throw new Error('boom');
     });
     assert.strictEqual(bad.status, 'failed');
@@ -334,7 +334,7 @@ describe('B. 与 busy 层的对账（G3/G17：每个长动作都要有 owner + d
       notifyDone: () => undefined,
     };
     let signal: AbortSignal | undefined;
-    const done = await runWithBusy(host, 'test', '全量测试', async (ctx) => {
+    const done = await runWithBusy(host, 'test', async (ctx) => {
       signal = ctx.signal;
       ctx.progress(42, '编译测试目标');
       ctx.heartbeat('跑用例');

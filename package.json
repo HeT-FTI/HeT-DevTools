@@ -146,25 +146,13 @@
           "default": "",
           "markdownDescription": "%config.netDockerMirror%"
         },
-        "het.hud.fontSize": {
-          "type": "number",
-          "default": 13.5,
-          "minimum": 10,
-          "maximum": 20,
-          "description": "%config.hudFontSize%"
-        },
-        "het.hud.disableHud": {
-          "type": "boolean",
-          "default": false,
-          "description": "%config.hudDisableHud%"
-        },
         "het.task.deadlines": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
           "default": {},
-          "markdownDescription": "长动作超时阈值覆盖（毫秒，§3.5）。键：build / test / docs / quality / envPrepare / cross / board / cacheClean / cacheCleanDanger / switchTarget / misc。只能调大生效（写 0/负数会被忽略，不存在“关掉超时”）。"
+          "markdownDescription": "长动作超时阈值覆盖（毫秒，§3.5）。键：build / test / docs / quality / envPrepare / cross / board / cacheClean / cacheCleanDanger / switchTarget / misc。执行层（子进程超时）与对账器（把僵住的任务收敛成超时）读**同一份**：调大 → 慢机器不会被误杀；调小 → 更早收敛（下限 1 秒）。写 0 / 负数 / 非数字会被忽略，不存在“关掉超时”。"
         }
       }
     },
@@ -386,53 +374,23 @@
         "title": "%cmd.healthReport%"
       },
       {
-        "command": "het.hud.d1",
-        "title": "HUD: 执行第 1 个动作",
+        "command": "het.openOutput",
+        "title": "输出（唯一的输出通道，可按域/级别/关键字过滤）",
         "category": "HeT DevTools"
       },
       {
-        "command": "het.hud.d2",
-        "title": "HUD: 执行第 2 个动作",
+        "command": "het.openTasks",
+        "title": "任务（正在运行与最近完成；只读，唯一动作是取消）",
         "category": "HeT DevTools"
       },
       {
-        "command": "het.hud.d3",
-        "title": "HUD: 执行第 3 个动作",
+        "command": "het.boardBuild",
+        "title": "上板验证（前置检查 + 只构建/真的上板两条腿；上板会真的刷写芯片）",
         "category": "HeT DevTools"
       },
       {
-        "command": "het.hud.d4",
-        "title": "HUD: 执行第 4 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d5",
-        "title": "HUD: 执行第 5 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d6",
-        "title": "HUD: 执行第 6 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d7",
-        "title": "HUD: 执行第 7 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d8",
-        "title": "HUD: 执行第 8 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.d9",
-        "title": "HUD: 执行第 9 个动作",
-        "category": "HeT DevTools"
-      },
-      {
-        "command": "het.hud.esc",
-        "title": "HUD: 关闭监控卡",
+        "command": "het.crossBuild",
+        "title": "交叉编译（目标来自 .hetai/build-matrix.yml；出目标架构包 + readelf 报告，不跑测试）",
         "category": "HeT DevTools"
       }
     ],
@@ -453,58 +411,7 @@
         "isSticky": true
       }
     ],
-    "keybindings": [
-      {
-        "command": "het.hud.d1",
-        "key": "1",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d2",
-        "key": "2",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d3",
-        "key": "3",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d4",
-        "key": "4",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d5",
-        "key": "5",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d6",
-        "key": "6",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d7",
-        "key": "7",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d8",
-        "key": "8",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.d9",
-        "key": "9",
-        "when": "activeWebviewPanelId == het.hud"
-      },
-      {
-        "command": "het.hud.esc",
-        "key": "escape",
-        "when": "activeWebviewPanelId == het.hud"
-      }
-    ]
+    "keybindings": []
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -525,6 +432,7 @@
     "test:c6": "npm run compile && node esbuild.mjs --c6 && node scripts/run-c6.mjs",
     "test:c7": "npm run compile && node esbuild.mjs --c7 && node scripts/run-c7.mjs",
     "test:c8": "npm run compile && node esbuild.mjs --c8 && node scripts/run-c8.mjs",
+    "test:c9": "npm run compile && node esbuild.mjs --c9 && node scripts/run-c9.mjs",
     "asset": "node scripts/build-template-asset.mjs",
     "test:real": "npm run compile && node esbuild.mjs --real && node scripts/run-real.mjs",
     "audit:pins": "npm run compile && npm run compile:tests && mocha out/test/auditPins.test.js"

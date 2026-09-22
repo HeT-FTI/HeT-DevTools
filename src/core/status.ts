@@ -8,7 +8,7 @@
  * 规矩：
  *   · 状态文字只说**现在**（进行中/检查中…），历史结果留在各自的单元格里；
  *   · 同一时刻多件事在跑 → 取**最早开始**的那件（用户先看到它在动）；
- *   · 吸顶右侧、状态栏 chip、HUD、悬停卡都读这一份，谁都不许自己造一个"忙"。
+ *   · 吸顶右侧、状态栏 chip、悬停卡都读这一份，谁都不许自己造一个“忙”。
  *
  * 纯函数（不 import vscode），可直接单测。
  */
@@ -32,6 +32,7 @@ const STATUS_TEXT: Readonly<Record<string, string>> = {
   setupCopilot: '环境答疑',
   cacheClean: '清理缓存',
   targetSwitch: '切换目标',
+  crossBuild: '交叉编译中',
 };
 
 /** 忙语义落在哪个**域**：悬停卡用它把"上一次结果"换成"进行中"（表意准确）。 */
@@ -47,6 +48,8 @@ const STATUS_DOMAIN: Readonly<Record<string, StatusDomain>> = {
   envPrepare: 'env',
   envRemove: 'env',
   wslImport: 'env',
+  // 交叉编译也是"构建"这件事：状态栏 chip 与悬停的「构建验证」行要说"交叉编译中"
+  crossBuild: 'build',
 };
 
 export interface ActiveStatus {

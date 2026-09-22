@@ -66,6 +66,13 @@ export interface FcppWorkflowTriggers {
   release?: boolean;
   docs?: boolean;
   security_scan?: boolean;
+  /**
+   * 推提交时是否触发 🛠️ 交叉编译流水线（`cross-compile.yml`）。
+   *
+   * 模板的 `metadata.schema.json` 把它列为**必填**（六个开关里的一个），所以这里必须有
+   * —— 之前类型里漏了它，于是扩展读不到也写不出这个开关（用户只能手改 JSON）。
+   */
+  cross_compile?: boolean;
 }
 
 /** Result of probing an external tool. */

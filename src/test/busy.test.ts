@@ -10,10 +10,11 @@ import {
   runWithBusy,
   type BusyHost,
 } from '../core/busy';
-import { COPILOT_ENTRIES } from '../features/cockpit/singlepage/copilotEntry';
+import { intentForBusy } from '../core/intents';
 import {
   BUSY_ACTIONS,
   CHANNELS,
+  OUTPUT_CHANNEL_NAME,
   channelDef,
   nextStepHint,
   outputChannelNames,
@@ -79,27 +80,32 @@ describe('长耗时动作的统一语义（§7）', () => {
   it('成功：开始行含动作名与时间、结束行含耗时；忙点开→关；有完成通知', async () => {
     resetBusy();
     const host = fakeHost();
-    const res = await runWithBusy(host, 'build', '构建', async () => 'ok', 'conan create');
+    const res = await runWithBusy(host, 'build', async () => 'ok', 'conan create');
     assert.strictEqual(res.status, 'done');
     assert.strictEqual(res.out, 'ok');
-    assert.match(host.lines[0], /▶ 构建 — conan create/, '开始行带动作名与细节');
+    // 动作名来自 Intent 表（§5.2 定稿：`build` = 「编译打包」），不再由调用方传字串
+    assert.match(host.lines[0], /▶ 编译打包 — conan create/, '开始行带动作名与细节');
     assert.ok(/\[\d{2}:\d{2}:\d{2}\]/.test(host.lines[0]), '开始行带时间戳');
     host.at += 1500;
     assert.deepStrictEqual(host.busy, ['on:build', 'off:build'], '忙点开→关');
     assert.strictEqual(host.done.length, 1);
-    assert.match(host.done[0], /^ok:build:构建完成/);
+    assert.match(host.done[0], /^ok:build:编译打包完成/);
     assert.strictEqual(isBusy('build'), false, '结束后注册表必须清空（否则永久禁用）');
   });
 
   it('失败：把错误写进输出、给出"下一步"、并**清空忙状态**（不卡死）', async () => {
     resetBusy();
     const host = fakeHost();
-    const res = await runWithBusy(host, 'envPrepare', '准备托管环境', async () => {
+    const res = await runWithBusy(host, 'envPrepare', async () => {
       throw new Error('apt 不可用');
     });
     assert.strictEqual(res.status, 'failed');
     assert.match(res.error?.message ?? '', /apt 不可用/);
-    assert.ok(host.lines.some((l) => l.includes('✗ 准备托管环境 失败')), '失败行');
+    // 失败行 = `[hh:mm:ss] [env] ✗ 准备托管环境失败（…）：apt 不可用`
+    assert.ok(
+      host.lines.some((l) => /\[env\] ✗ 准备托管环境失败/u.test(l)),
+      `失败行：${host.lines.join(' | ')}`,
+    );
     assert.ok(host.lines.some((l) => l.includes('下一步：')), '必须给下一步（§7 第 5 条）');
     assert.deepStrictEqual(host.busy, ['on:envPrepare', 'off:envPrepare']);
     assert.strictEqual(isBusy('envPrepare'), false, '失败也要恢复（否则按钮永久禁用）');
@@ -112,13 +118,13 @@ describe('长耗时动作的统一语义（§7）', () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const first = runWithBusy(host, 'test', '构建并测试', async () => {
+    const first = runWithBusy(host, 'test', async () => {
       await gate;
       return 1;
     });
-    const second = await runWithBusy(host, 'test', '构建并测试', async () => 2);
+    const second = await runWithBusy(host, 'test', async () => 2);
     assert.strictEqual(second.status, 'skipped');
-    assert.match(second.message, /正在执行：构建并测试/, '告诉用户"已经在跑了"');
+    assert.match(second.message, /正在执行：全量测试/, '告诉用户"已经在跑了"（动作名来自 Intent 表）');
     release?.();
     const done = await first;
     assert.strictEqual(done.status, 'done');
@@ -129,7 +135,7 @@ describe('长耗时动作的统一语义（§7）', () => {
   it('耗时按注入时钟计算（无人值守下时间断言可复现）', async () => {
     resetBusy();
     const host = fakeHost();
-    const p = runWithBusy(host, 'docsBuild', '编译文档', async () => {
+    const p = runWithBusy(host, 'docsBuild', async () => {
       host.at += 2500;
       return null;
     });
@@ -144,18 +150,11 @@ describe('长耗时动作的统一语义（§7）', () => {
       const def = CHANNELS[a];
       assert.ok(def, `${a} 必须在 CHANNELS 里登记`);
       assert.ok(def.label.length > 0 && def.label.length <= 8, `${a} 的动作名要短（≤8 字）`);
-      if (def.kind === 'output' || def.kind === 'chat') {
-        assert.ok(def.channel, `${a}（${def.kind}）必须给 Output 通道名`);
-      }
       assert.ok(nextStepHint(a).length > 0, `${a} 失败时必须能给"下一步"`);
     }
-    assert.deepStrictEqual(outputChannelNames(), [
-      'HeT DevTools · Copilot',
-      'HeT DevTools · 上板',
-      'HeT DevTools · 文档',
-      'HeT DevTools · 构建',
-      'HeT DevTools · 环境',
-    ]);
+    // D 块：**只有一个** Output 通道（域的区分回到行首标签）
+    assert.deepStrictEqual(outputChannelNames(), ['HeT DevTools'], 'Output 下拉里只允许一个名字');
+    assert.strictEqual(OUTPUT_CHANNEL_NAME, 'HeT DevTools');
     assert.strictEqual(channelDef('nope'), undefined);
   });
 
@@ -221,11 +220,13 @@ describe('长耗时动作的统一语义（§7）', () => {
       quality: '质量门禁直接在终端里跑（kind: terminal），不由扩展托管那段执行',
     };
     const declared = Object.keys(CHANNELS).filter((id) => !explicit.includes(id));
-    // §F.44：动态接线名单**从 Copilot 入口表推导**（以前是手写四个 —— 新增 /het-module
-    // 时这条门禁立刻报"既没接线也没写理由"，正是它该干的事：别再手维护第二份名单）。
-    const dynamic = COPILOT_ENTRIES.map((e) => e.action);
-    const unexplained = declared.filter((id) => !dynamic.includes(id) && exceptions[id] === undefined);
-    assert.deepStrictEqual(unexplained, [], `这些动作既没接线也没写理由：${unexplained.join('、')}`);
+    // I 块后：**唯一的动作表是 `core/intents.ts`** —— 凡是在 Intent 表里登记过的动作，
+    // 就已经声明了"输出去哪、超时多少、失败怎么办"，不必再在忙语义里重复接线。
+    // 这条门禁的作用因此变成：每个忙动作要么是 Intent，要么在例外名单里写清理由。
+    const unexplained = declared.filter(
+      (id) => intentForBusy(id) === undefined && exceptions[id] === undefined,
+    );
+    assert.deepStrictEqual(unexplained, [], `这些动作既不是 Intent 也没写理由：${unexplained.join('、')}`);
     assert.deepStrictEqual(
       Object.keys(exceptions).filter((id) => wired(id)),
       [],
@@ -235,17 +236,17 @@ describe('长耗时动作的统一语义（§7）', () => {
     assert.ok(BUSY_ACTIONS.length >= 14, '动作清单不能退化成空壳');
   });
 
-  it('§F.35 忙语义只有一份：chip/HUD/吸顶都从 busy 注册表推导', () => {
+  it('§F.35 忙语义只有一份：chip / 吸顶 / 单页都从 busy 注册表推导', () => {
     const read = (p: string): string => readFileSync(join('src', p), 'utf8');
     const ext = read('extension.ts');
 
-    // ① chip 与 HUD 的 `running` 必须来自 `currentStatus()`，不许再直接读 log 抽屉的字段
+    // ① 状态行（chip 悬停 / 吸顶）的 `running` 必须来自 `currentStatus()`，不许再直接读 log 抽屉的字段
     //    （直读的后果：纯 runWithBusy 动作永远点不亮状态栏）
     const bare = ext.match(/^\s*running: st\.top\.running,\s*$/gmu) ?? [];
-    assert.deepStrictEqual(bare, [], 'chip/HUD 的 running 必须走 currentStatus()');
+    assert.deepStrictEqual(bare, [], 'running 必须走 currentStatus()');
     assert.ok(
-      (ext.match(/running: currentStatus\(\)\?\.text/gu) ?? []).length >= 2,
-      'chip 与 HUD 都要接同一份状态',
+      (ext.match(/running: currentStatus\(\)\?\.text/gu) ?? []).length >= 1,
+      '状态行要接同一份状态',
     );
 
     // ② 控制器不许自己造状态文案：忙/闲只能由 `currentStatus()` 判定
@@ -261,12 +262,13 @@ describe('长耗时动作的统一语义（§7）', () => {
       'busy 开关必须由注册表推导（`st !== null`），不许硬编码 on:true',
     );
 
-    // ③ 单页 L1 的忙位必须"有字"（只留一个转圈图标等于没告诉用户在忙什么）
+    // ③ 单页 L1 的忙位必须"有字"（只留一个转圈图标等于没告诉用户在忙什么），
+    //    而且 J 块之后它**可点**（→ 任务中心："正在跑什么"就在眼前，点它看全局）
     const shell = read('features/cockpit/singlepage/shell.ts');
     assert.match(
       shell,
-      /data-busy><span class="spin">⟳<\/span>\$\{esc\(busy\)\}/u,
-      'L1 忙位要带文字（§F.35）',
+      /data-busy data-action="nav" data-nav="openTasks"[^>]*>[\s\S]{0,80}?\$\{esc\(busy\)\}/u,
+      'L1 忙位要带文字、且可点进任务中心（§F.35 + J 块）',
     );
     // ⑤ §F.36：动作收尾（注册表排空）必须补一次取数 —— 否则从悬停链接 / 命令面板 /
     //    HUD 触发的动作跑完了，卡片上的数字还要等下一次交互才更新。

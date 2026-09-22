@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { BenchField, BenchPlatform, BenchCase } from '../../core/benchmark';
+import type { BoardPlan } from '../../core/boardCheck';
 import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface BenchState {
@@ -20,8 +21,12 @@ export interface BenchParseResult {
 
 export interface BenchDeps {
   getState: () => Promise<BenchState>;
+  /** 前置检查（K 块）：能不能上板、缺什么、怎么办 —— 面板开头就要看得到。 */
+  getBoard: () => Promise<BoardPlan>;
   saveConfig: (values: Record<string, string>) => Promise<{ ok: boolean; message: string }>;
   buildNoFlash: () => Promise<{ ok: boolean; message: string }>;
+  /** 真的上板（会刷写芯片）：由宿主先过确认再执行。 */
+  flash: () => Promise<{ ok: boolean; message: string }>;
   parseSim: (text: string) => BenchParseResult;
   openConfig: () => Promise<void>;
 }
@@ -39,7 +44,9 @@ export function showBenchPanel(context: vscode.ExtensionContext, deps: BenchDeps
 
     const render = async (resultHtml = ''): Promise<void> => {
       const state = await deps.getState();
-      panel.webview.html = buildHtml(state, resultHtml);
+      // 前置检查失败（没有工程/没配置）时也不应该把整个面板变成空白
+      const board = await deps.getBoard().catch(() => null);
+      panel.webview.html = buildHtml(state, resultHtml, board);
     };
 
     const sub = panel.webview.onDidReceiveMessage(async (message: { type: string; values?: Record<string, string>; text?: string }) => {
@@ -51,6 +58,11 @@ export function showBenchPanel(context: vscode.ExtensionContext, deps: BenchDeps
         await render();
       } else if (message.type === 'buildNoFlash') {
         const r = await deps.buildNoFlash();
+        void vscode.window.showInformationMessage(r.message);
+        await render();
+      } else if (message.type === 'flash') {
+        // 上板会**真的刷写芯片**：确认在宿主侧（`askModal`）—— 面板不代替用户拍板
+        const r = await deps.flash();
         void vscode.window.showInformationMessage(r.message);
         await render();
       } else if (message.type === 'parseSim' && typeof message.text === 'string') {
@@ -86,10 +98,20 @@ function buildResultHtml(r: BenchParseResult): string {
     <div class="tag">状态列仅为演示占位：目标值/偏差需按 case 目标表校准。</div>`;
 }
 
-function buildHtml(s: BenchState, resultHtml: string): string {
+function buildHtml(s: BenchState, resultHtml: string, board: BoardPlan | null): string {
   const noProject = s.projectName.length === 0;
   const platformLabel = s.platform === 'm' ? 'Cortex-M 裸机' : s.platform === 'a' ? 'Cortex-A Linux' : '未知';
   const fields = s.fields.map((f) => buildFieldHtml(f, s.values[f.key] ?? '')).join('');
+  // 前置检查：✓/✗ 逐条 + 原因 + 怎么办。会刷板的那条必须**显眼**（误刷芯片不可回滚）
+  const checkLines = (board?.hints.lines ?? []).map((l) => `<div class="tag">· ${esc(l)}</div>`).join('');
+  const fixes = (board?.hints.fix ?? []).map((f) => `<li>${esc(f)}</li>`).join('');
+  const boardBlock = board
+    ? `<h2>真机前置检查</h2>
+      <div class="${board.mode === 'on-board' ? 'warn' : 'okline'}">本次模式：${board.mode === 'on-board' ? '⚠ 会上板刷写芯片' : '只构建（--no-flash）'}</div>
+      ${checkLines}
+      <div class="tag">${esc(board.trigger.text)}</div>
+      ${fixes ? `<div class="tag">怎么办：<ul>${fixes}</ul></div>` : ''}`
+    : '';
   return pageShell(
     '上板测试',
     `
@@ -103,6 +125,7 @@ function buildHtml(s: BenchState, resultHtml: string): string {
       th, td { border: 1px solid var(--vscode-widget-border,#333); padding: 4px 8px; text-align: left; }
       .warn { background: rgba(226,192,141,.12); border: 1px solid #e2c08d; border-radius: 6px;
         padding: 8px 10px; margin: 6px 0; font-size: 12px; white-space: pre-wrap; }
+      .okline { border: 1px solid #73c991; border-radius: 6px; padding: 4px 8px; margin: 6px 0; font-size: 12px; }
     </style>
     <div class="card">
       <h1>上板测试</h1>
@@ -110,9 +133,11 @@ function buildHtml(s: BenchState, resultHtml: string): string {
       ${noProject ? '<div class="warn">未检测到 fcpp 项目。</div>' : ''}
       <div class="row">
         <button data-action="buildNoFlash">🔨 只构建（--no-flash）</button>
+        <button data-action="flash" class="secondary">⬆ 构建并上板（会刷写芯片）</button>
         <button data-action="openConfig" class="secondary">打开 bench_config.json</button>
         <button data-action="refresh" class="secondary">🔄 刷新</button>
       </div>
+      ${boardBlock}
       <h2>板卡配置（字段级写回，保留注释）</h2>
       <div id="fields">${fields || '<div class="warn">未能解析 bench_config.json（请先在 fcpp 模板配置好）。</div>'}</div>
       <div class="row"><button data-action="saveConfig" class="primary">💾 保存配置</button></div>

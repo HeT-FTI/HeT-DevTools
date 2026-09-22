@@ -1,9 +1,9 @@
 import { isAbsolute, join, dirname, delimiter } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import * as vscode from 'vscode';
-import { LOG_CHANNEL_NAME, log, setOutputChannel } from './constants';
+import { outputChannel as outputChannelSingleton, log, logBlock, logStream } from './constants';
 import { locateConan, runConanCreate, resolveConanRuntime, ensureConanDefaultProfile } from './core/conanService';
 import { parseGTestOutput, GTestRunSummary } from './core/gtestRunner';
 import { runHealthCheck, healthGapLabels, verdictZh } from './core/healthCheck';
@@ -24,14 +24,21 @@ import { CommitRequest, CommitState, showCommitPanel } from './features/commit/p
 import { ReleaseState, showReleasePanel } from './features/release/panel';
 import { PreflightState, PreflightItem, showPreflightPanel } from './features/preflight/panel';
 import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './features/slots/host';
-import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
+import { showOutputPanel } from './features/output/panel';
+import { showTaskCenterPanel } from './features/tasks/panel';
+import { taskCenterModel } from './core/taskCenter';
+import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, getSinglePageFacts, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
 import { showSettingsPanel } from './features/settings/panel';
 import { showTestResultsPanel } from './features/testResults/panel';
 import { DashboardSnapshot } from './features/ui';
 import { registerTestController } from './features/testExplorer/controller';
-import { chipSpec } from './features/statusChip';
+import { chipSpec, chipStatusItems, type ChipModel } from './features/statusChip';
+import { hetTabCount, tabReport } from './features/tabs';
+import { outputLog } from './core/outputLog';
+import { formatLogLine } from './core/outputChannels';
+import { busyDomainOf } from './core/status';
 import {
   addDependency,
   listDependencies,
@@ -49,7 +56,7 @@ import { pathExists, readText, writeText } from './utils/fs';
 import { fcppStyleStringify } from './core/metadataText';
 import { findPython, run, which, type ExecResult } from './utils/exec';
 import { docsOptions, graphvizMismatch } from './core/docsService';
-import { currentStatus, runWithBusy, type BusyHost, type TaskRunContext } from './core/busy';
+import { currentStatus, runWithBusy, type BusyHost, type BusyResult, type TaskRunContext } from './core/busy';
 import {
   activeTasks,
   busySnapshot,
@@ -115,6 +122,27 @@ import {
   type BuildMatrix,
 } from './core/buildMatrix';
 import { checkTargetSwitch, ledgerPath, parseLedger, recordBuild } from './core/buildLedger';
+import {
+  boardNextStep,
+  boardPlanFor,
+  flashExeFor,
+  type BenchMode,
+  type BoardFacts,
+  type ProbeVisibility,
+} from './core/boardCheck';
+import {
+  archReport,
+  crossPlanFor,
+  matchesExpectation,
+  missingHints,
+  missingMatrixHint,
+  missingTools,
+  packageFolderFromCachePath,
+  packageUidFromList,
+  parseReadelf,
+  type ArchFact,
+  type CrossPlan,
+} from './core/crossCompile';
 import { cacheReportText, cacheVerdict, formatBytes, scanCache, type CacheReport } from './core/cacheUsage';
 import {
   CLEAN_SCOPES,
@@ -130,14 +158,11 @@ import { NetPlan, mirrorLabel, netDecisionLine, netPlanFor, netSummaryLine, root
 import type { AptMirrorRef } from './core/laneAptMirror';
 import { effectiveCmakeFloor, laneCompilerGuide, nativeCmakePlan, unsupportedArchMessage } from './core/laneProfile';
 import { prependPath } from './core/envPath';
-import { closeHudPanel, hudPanelOpen, openHudPanel, pressHudKey, type HudDeps } from './features/hud/panel';
-import { HUD_CLOSE_COMMAND, hudKeyCommands } from './features/hud/keys';
 
 /** §3.5 / G2：长动作的阈值只有一处默认值（`core/deadlines.ts`），这里只负责读设置覆盖。 */
 function deadlineOverrides(): DeadlineOverrides {
   return vscode.workspace.getConfiguration().get<Record<string, number>>(DEADLINE_SETTING) ?? {};
 }
-import { HudEnvRow, HudModel, defaultHudActions, hudEnabled } from './features/hud/hudModel';
 import { TEMPLATE_REPO, TEMPLATE_REF, TEMPLATE_SNAPSHOT_VERSION, TEMPLATE_TAG, TEMPLATE_TARBALL_BYTES, TEMPLATE_TARBALL_SHA256 } from './core/templateDefaults';
 import * as os from 'node:os';
 import { snapshotFallbackNotice, tarballPlanFor, templateFetchNextStep, templateTarballCandidates } from './core/templateTarball';
@@ -179,11 +204,9 @@ let envSummaryCache: { at: number; summary: string } | null = null;
 /** V5-6: singleton 体检明细 panel (live-synced with the chip). */
 let onboardingNotified = false;
 let lastChip: { text: string; tooltip: string; command?: string } | null = null;
-/** Timer id for the "hide chip for 5 minutes" snooze. */
-let chipSnoozeTimer: ReturnType<typeof setTimeout> | undefined;
 const isTestHost = process.argv.some((a) => a.includes('--extensionTestsPath'));
 
-/** Record a build/test outcome + timestamp (for the chip/HUD "…前" line). */
+/** Record a build/test outcome + timestamp (for the chip "…前" line). */
 function markBuildOutcome(ok: boolean): void {
   lastBuildOk = ok;
   lastBuildAt = Date.now();
@@ -236,7 +259,7 @@ async function askModal(message: string, okLabel: string, cancelLabel = '取消'
   try {
     return await vscode.window.showWarningMessage(message, { modal: true }, okLabel, cancelLabel);
   } catch (err) {
-    log(`[ui] 宿主拒绝显示弹窗 → 按「取消」处理：${err instanceof Error ? err.message : String(err)}`);
+    log('ui', `宿主拒绝显示弹窗 → 按「取消」处理：${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
 }
@@ -244,7 +267,7 @@ async function askModal(message: string, okLabel: string, cancelLabel = '取消'
 /** A no-op-safe wrapper for success/error toasts that would distract in automation. */
 function maybeToast(kind: 'info' | 'warn' | 'error', message: string, ...buttons: string[]): Thenable<string | undefined> | undefined {
   if (quietHost()) {
-    log(message.replace(/\n/g, ' '));
+    log('ui', message.replace(/\n/g, ' '));
     return undefined;
   }
   // A host that refuses dialogs rejects this promise — never let that surface as
@@ -257,7 +280,7 @@ function maybeToast(kind: 'info' | 'warn' | 'error', message: string, ...buttons
   return shown.then(
     (v) => v,
     (err) => {
-      log(`[ui] 宿主拒绝显示提示 → 忽略：${err instanceof Error ? err.message : String(err)}`);
+      log('ui', `宿主拒绝显示提示 → 忽略：${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     },
   );
@@ -285,7 +308,7 @@ function prependPathDir(dir: string): void {
     return;
   }
   process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ''}`;
-  log(`[tools] PATH += ${dir}`);
+  log('tools', `PATH += ${dir}`);
 }
 
 async function applyToolOverrides(): Promise<void> {
@@ -354,7 +377,7 @@ async function ensureConanRuntime(force = false): Promise<typeof conanRuntime> {
   const prefix = pinned?.prefix ?? rt?.pathPrefix;
   if (prefix && !(process.env.PATH ?? '').includes(rt?.envDir ?? overrideEnv)) {
     process.env.PATH = `${prefix}${delimiter}${process.env.PATH ?? ''}`;
-    log(`[conda] PATH prefix for ${pinned?.envName ?? rt?.envName ?? 'env'} (${rt?.envDir ?? overrideEnv})`);
+    log('conda', `PATH prefix for ${pinned?.envName ?? rt?.envName ?? 'env'} (${rt?.envDir ?? overrideEnv})`);
   }
   let version = '';
   const v = await run(exe, ['--version'], { timeoutMs: 15000 }).catch(() => null);
@@ -369,7 +392,7 @@ async function ensureConanRuntime(force = false): Promise<typeof conanRuntime> {
     at: Date.now(),
     overrideUser: !!pinned,
   };
-  log(`[conda] conan=${exe} env=${conanRuntime.envName ?? 'PATH'} version=${version}${conanRuntime.overrideUser ? ' (用户自定义)' : ''}`);
+  log('conda', `conan=${exe} env=${conanRuntime.envName ?? 'PATH'} version=${version}${conanRuntime.overrideUser ? ' (用户自定义)' : ''}`);
   await refreshChip();
   return conanRuntime;
 }
@@ -412,21 +435,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const key = `het.stats.${name}`;
         void context.workspaceState.update(key, (context.workspaceState.get<number>(key) ?? 0) + 1);
         void context.workspaceState.update('het.stats.lastActive', Date.now());
-        log(`[telemetry] ${name} (local counter)`);
+        log('telemetry', `${name} (local counter)`);
       }
     } catch {
       /* never breaks activation */
     }
   };
 
-  channel = vscode.window.createOutputChannel(LOG_CHANNEL_NAME);
-  setOutputChannel(channel);
+  // D 块：通道由 `constants.outputChannel()` 懒建单例（这里不再自己创建一个同名通道）
+  channel = outputChannelSingleton();
+  outputChannelRef = () => channel;
   context.subscriptions.push(channel, buildDiagnostics);
   // `context.extension.id` is the authoritative `<publisher>.<name>` of THIS
   // host — a hardcoded id breaks the moment the publisher is renamed
   // (het-test-publisher → het-fti; see src/test/hostExtension.ts).
   activationLine = `activated — ${context.extension.id} v${context.extension.packageJSON.version}`;
-  log(activationLine);
+  log('init', activationLine);
   contextRef = context;
   cacheContextRef = context;
   track('activation');
@@ -458,10 +482,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const snapshot = raw ? (JSON.parse(raw) as ReturnType<typeof busySnapshot>) : undefined;
     const recovered = restoreBusy(snapshot);
     if (recovered.length > 0) {
-      log(`[task] 上次未完成的任务已中止：${recovered.map((t) => `${t.label}(${t.state})`).join('、')}`);
+      log('task', `上次未完成的任务已中止：${recovered.map((t) => `${t.label}(${t.state})`).join('、')}`);
     }
   } catch (err) {
-    log(`[task] 快照恢复失败（忽略，不影响启动）：${err instanceof Error ? err.message : String(err)}`);
+    log('task', `快照恢复失败（忽略，不影响启动）：${err instanceof Error ? err.message : String(err)}`);
   }
   // 2) 任何状态变化 → 落盘快照（避免重启后 UI 显示过期状态）
   let persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -476,11 +500,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const offTaskChange = taskStore().onChange(() => persistTasks());
   context.subscriptions.push({ dispose: offTaskChange });
+  // 2b) **忙语义一变就重画状态栏 chip**（H 块查出来的真问题）。
+  //
+  // 为什么必须在这里：chip 是唯一"永远看得见"的那一档（悬停要点、页内要开着窗口），
+  // 而它只由 `refreshChip()` 推。以前只有"激活 / 工作区变化 / 动作**结束**后取数"
+  // 会走到那儿 —— 于是长动作**进行中**的时候，chip 还在显示上一次的健康分：
+  // 用户看到的是"点了没反应"，而 §F.35 想要的恰恰是"进行中"（那正是"构建时 chip
+  // 飘红"修完之后的下一个坑）。
+  //
+  // 只在"在跑什么"真的变了时才重画：心跳/进度也会触发 onChange，每个心跳重画一遍
+  // 是无意义的开销（也是"状态栏闪烁"的来源）。
+  let lastBusySig = '';
+  const offBusyChip = taskStore().onChange(() => {
+    const sig = activeTasks().map((t) => `${t.id}:${t.state}`).join(',');
+    if (sig === lastBusySig) {
+      return;
+    }
+    lastBusySig = sig;
+    void refreshChip();
+  });
+  context.subscriptions.push({ dispose: offBusyChip });
   // 3) 对账器：每 15s 把"超 deadline / 心跳断了"的任务收敛成 timedOut（并写日志便于复盘）
   const reconciler = setInterval(() => {
     const changed = reconcileBusy();
     for (const task of changed) {
-      log(`[task] ${task.label} → ${task.state}：${task.message ?? ''}`);
+      log('task', `${task.label} → ${task.state}：${task.message ?? ''}`);
     }
     if (changed.length > 0) {
       persistTasks();
@@ -537,6 +581,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       active: activeTasks(),
       recent: taskStore().list().slice(0, 10),
     })),
+    // H 块：**三元组诊断**（Task / 输出 / 前端）—— 一致性会话与现场排查共用。
+    // 为什么要一次取齐：会话断言的正是"三面说的是不是同一件事"；分三次取数，
+    // 中间的忙/闲一变就会随机红/绿（那是测试的错，不是产品的错）。
+    vscode.commands.registerCommand('het.getUiSnapshot', async () => {
+      const model = await buildChipModel();
+      const status = currentStatus();
+      return {
+        tabs: hetTabCount(),
+        tabReport: tabReport(),
+        slot: { open: currentDetailView() ?? null, dropped: slotHostDiagnostics().droppedCount },
+        chip: lastChip,
+        // 三档（芯片/悬停/页内）共用的状态项：悬停文案与页内卡片都由它推导
+        items: chipStatusItems(model),
+        busy: status ? { action: status.action, text: status.text, domain: busyDomainOf(status.action) ?? null } : null,
+        // 页内（第 3 档）读的就是 Facts.status（`notifySinglePageBusy` 写）
+        page: { status: getSinglePageFacts().status ?? null },
+        sections: getCockpitView(),
+        tasks: { active: activeTasks(), recent: taskStore().list().slice(0, 10) },
+      };
+    }),
+    // H 块：唯一通道的尾部 N 行（结构化字符串，与 Output 面板里看到的一模一样）
+    vscode.commands.registerCommand('het.getOutputLines', (arg?: number) => {
+      const n = Math.max(1, Math.min(outputLog.cap, Number(arg) || 200));
+      return outputLog.tail({}, n).map(formatLogLine);
+    }),
+    // J 块：任务中心的**模型**（面板渲染的就是它；会话据此断言"面板与事实一致"）
+    vscode.commands.registerCommand('het.getTaskCenter', async () =>
+      taskCenterModel({ tasks: taskStore().list(), ci: await ciState().catch(() => null), now: Date.now() }),
+    ),
+    // H 块：长动作注入体（只在测试宿主 + `HET_TASK_INJECT=1` 时生效）
+    vscode.commands.registerCommand('het.testRunTask', (spec?: TaskInjection) => runInjectedTask(spec)),
     // 取消：只有一个在跑就直接取消；多个则让用户选（**不做静默选择**）
     vscode.commands.registerCommand('het.task.cancel', async () => {
       const running = activeTasks();
@@ -556,7 +631,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         target = running.find((t) => t.id === picked.id) ?? target;
       }
       const ok = cancelBusy(target.id, '用户取消');
-      log(`[task] 取消 ${target.label}：${ok ? '已发出取消信号' : '取消失败（可能已结束）'}`);
+      log('task', `取消 ${target.label}：${ok ? '已发出取消信号' : '取消失败（可能已结束）'}`);
       void vscode.window.showInformationMessage(
         ok ? `已取消：${target.label}（子进程会被杀掉）` : `${target.label} 已经结束了，无需取消。`,
       );
@@ -587,7 +662,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('het.cacheUsage', async () => {
       const report = cacheReportNow();
-      channel?.appendLine(cacheReportText(report));
+      logBlock('cache', '缓存报表', cacheReportText(report));
       channel?.show?.(true);
       void vscode.window.showInformationMessage(cacheVerdict(report));
       return report;
@@ -651,18 +726,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const busy = await runWithBusy(
         busyHost(),
         'cacheClean',
-        plan.label,
         async (ctx) => {
-          channel?.appendLine(`[cache] ${plan.effect}`);
+          log('cache', plan.effect);
           if (plan.dirs?.length && projectRoot) {
             for (const dir of plan.dirs) {
               const abs = join(projectRoot, dir);
               rmSync(abs, { recursive: true, force: true });
-              channel?.appendLine(`[cache] 已删 ${abs}`);
+              log('cache', `已删 ${abs}`);
             }
           }
           for (const command of plan.commands) {
-            channel?.appendLine(`[cache] $ ${[command.cmd, ...command.args].join(' ')}`);
+            log('cache', `$ ${[command.cmd, ...command.args].join(' ')}`);
             await run(command.cmd, command.args, { cwd: projectRoot, timeoutMs: 30 * 60_000, signal: ctx.signal });
           }
           return true;
@@ -676,10 +750,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const freed = cleanResultText(before, after);
       lastCacheCleanAt = Date.now();
       cacheFactsMemo = undefined; // 清完立刻让下一次刷新重新算
-      channel?.appendLine(`[cache] ${freed}`);
+      log('cache', freed);
       void vscode.window.showInformationMessage(`清理完成：${freed}`);
       void refreshStatus();
     }),
+    // K 块：交叉编译（目标架构的包 + readelf 架构报告；目标只来自矩阵）
+    // K 块：上板验证（前置检查 + 只构建/真的上板两条路）
+    vscode.commands.registerCommand('het.boardBuild', (mode?: BenchMode) => runBoardBuild(mode ?? 'cross')),
+    vscode.commands.registerCommand('het.getBoardPlan', async () => {
+      const root = currentProject?.root;
+      if (!root) {
+        return { error: '未检测到工程' };
+      }
+      const facts = await boardFactsNow('cross', root);
+      return boardPlanFor(facts);
+    }),
+    vscode.commands.registerCommand('het.crossBuild', (target?: string) => runCrossBuild(target)),
     vscode.commands.registerCommand('het.targetSwitch', async () => {
       const root = currentProject?.root;
       if (!root) {
@@ -728,22 +814,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         buildDir: join('build', target.id),
       });
       await writeText(ledgerFile, `${JSON.stringify(next, null, 2)}\n`);
-      const busy = await runWithBusy(busyHost(), 'targetSwitch', '切换目标', async () => {
-        channel?.appendLine(`[target] ${check.text}`);
-        channel?.appendLine(`[target] profile: ${profileFile}（hash ${hash}）`);
+      const busy = await runWithBusy(busyHost(), 'targetSwitch', async () => {
+        log('target', check.text);
+        log('target', `profile: ${profileFile}（hash ${hash}）`);
         return check.text;
       });
       const text = busy.status === 'done' ? check.text : busy.message;
       if (issue) {
-        channel?.appendLine(`[target] 账本提示：${issue}`);
+        log('target', `账本提示：${issue}`);
       }
       void vscode.window.showInformationMessage(text);
     }),
     // A 块探针：当前页内 Slot + 丢弃消息数（集成测试用，也便于现场排查"消息没人接"）
+    vscode.commands.registerCommand('het.openOutput', () =>
+      showOutputPanel(context, { revealChannel: () => outputChannelRef()?.show(false) }),
+    ),
+    // J 块：任务中心（只读观测：在跑什么 / 跑过什么 / 结果如何）
+    vscode.commands.registerCommand('het.openTasks', () => openTaskCenter(context)),
     vscode.commands.registerCommand('het.getSlotState', () => ({
       open: currentDetailView() ?? null,
       dropped: slotHostDiagnostics().droppedCount,
-      tabs: vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => String((t.input as { viewType?: string } | undefined)?.viewType ?? '').startsWith('het.')).length,
+      tabs: hetTabCount(),
     })),
     vscode.commands.registerCommand('het.getConanRuntime', async () => ensureConanRuntime()),
     vscode.commands.registerCommand('het.getEnvRows', async () => ensureToolDiscovery()),
@@ -774,20 +865,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // §F.42（实测反馈第 4 条）：`het.openDeps` 以前深链到驾驶舱，而**依赖面板从未被任何
     // 入口调用**（死代码）——现在它就是我们点开的那个详情页。
     vscode.commands.registerCommand('het.openDeps', () => openDepsPanel(context)),
-    // §F.43（实测反馈）：HUD 写着"按键 1–9 直达 / Esc 关闭"，但页面内 keydown 只在卡片
-    // 有焦点时收得到 —— 这里补一条"焦点在编辑器里也生效"的路径（keybindings 限定面板激活）。
-    ...hudKeyCommands().map(({ key, command }) =>
-      vscode.commands.registerCommand(command, async () => {
-        if (!hudPanelOpen()) {
-          return;
-        }
-        if (command === HUD_CLOSE_COMMAND) {
-          closeHudPanel();
-          return;
-        }
-        await pressHudKey(Number(key), hudDeps());
-      }),
-    ),
     vscode.commands.registerCommand('het.addDependency', () => runDepsAddFlow()),
     vscode.commands.registerCommand('het.refreshConanIndex', () => runConanIndexRefresh()),
     vscode.commands.registerCommand('het.newModule', () => openModuleWizard(context)),
@@ -810,7 +887,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { ok: false, message: '文档中心未初始化：请先运行 het.docs 再调用 het.docsRun。' };
       }
       // §7 忙语义（F.32）：编译文档是分钟级动作（doxygen + sphinx）→ 统一 helper
-      const busy = await runWithBusy(busyHost(), 'docsBuild', '编译文档', (ctx) => impl(ctx));
+      const busy = await runWithBusy(busyHost(), 'docsBuild', (ctx) => impl(ctx));
       return busy.status === 'done' ? busy.out : { ok: false, message: busy.message };
     }),
     vscode.commands.registerCommand('het.getLastDocsOutput', () => lastDocsOutput.slice(-3000)),
@@ -843,7 +920,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const busy = await runWithBusy(
         busyHost(),
         'envCheck',
-        '检查环境',
         async () => {
           // V5-6: fresh env sample — invalidate the summary cache AND the cached
           // WSL lane probe so the check reflects reality (not a 60 s-old snapshot).
@@ -935,7 +1011,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   watcher2.onDidCreate(scheduleRefresh);
   watcher2.onDidDelete(scheduleRefresh);
   context.subscriptions.push(watcher1, watcher2);
-  log(`[perf] activate ${Date.now() - startedAt}ms`);
+  log('perf', `activate ${Date.now() - startedAt}ms`);
 
   // @het Chat bridge (T-4.5, optional): intent → matching HeT GUI action.
   try {
@@ -964,9 +1040,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return { metadata: {} };
     });
     context.subscriptions.push(participant);
-    log('[chat] @het participant registered');
+    log('chat', '@het participant registered');
   } catch (err) {
-    log(`[chat] participant unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    log('chat', `participant unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -1076,12 +1152,19 @@ async function feedExtraSinglePageFacts(): Promise<void> {
     /* 没有项目 / 读不动 → 不传 */
   }
   // G23 / §19.3：上板卡必须让"是否 flash"在 L2 可见（避免误刷板）
+  // + K 块：把 `workflow_triggers.cross_compile` 的状态也放到卡上（否则用户永远不知道 CI 上到底跑不跑交叉编译）
   try {
     const cfgRel = 'benchmark/platform/bench_config.json';
     if (await pathExists(join(root, cfgRel))) {
       const cfg = JSON.parse(await readText(join(root, cfgRel))) as Record<string, unknown>;
       const last = contextRef?.workspaceState.get<BoardLast>('het.bench.last');
-      const b = boardFact({ platform: configPlatform(cfg), ...(last ? { last } : {}) });
+      const b = boardFact({
+        platform: configPlatform(cfg),
+        ...(last ? { last } : {}),
+        ...(currentProject?.metadata?.workflow_triggers?.cross_compile !== undefined
+          ? { crossTrigger: currentProject.metadata.workflow_triggers.cross_compile }
+          : {}),
+      });
       facts.board = { fact: b.fact, ...(b.next ? { next: b.next } : {}), collected: Boolean(last?.at) };
     }
   } catch {
@@ -1656,6 +1739,25 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (!root) {
       return { ok: false, message: '未检测到 fcpp 项目。' };
     }
+    /**
+     * 产物登记（J 块：任务中心里可点）。
+     *
+     * 用 `het.openDocsArtifact` 而不是把路径写死：入口页在哪是**那个命令**最清楚的事
+     * （doxygen 是 `docs.html` 语言导航页、sphinx 是 `index.html` ），面板再算一遍就是
+     * 第二个真相 —— 算错时用户点到的就是一个打不开的链接。
+     */
+    const registerArtifacts = async (): Promise<void> => {
+      if (!ctx) {
+        return;
+      }
+      const found = await probeDocsArtifacts(root).catch(() => null);
+      if (found?.doxygen) {
+        ctx.artifact('Doxygen', { command: 'het.openDocsArtifact', arg: 'doxygen' });
+      }
+      if (found?.sphinx) {
+        ctx.artifact('Sphinx', { command: 'het.openDocsArtifact', arg: 'sphinx' });
+      }
+    };
     // V5-6: visible progress — chip spinner + cockpit log drawer, exactly like
     // `conan create` (user feedback: docs build must show busy + explanations).
     lastDocsOutput = '';
@@ -1668,7 +1770,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     };
     const stream = (c: string): void => {
       lastDocsOutput += c;
-      channel?.append(c);
+      logStream(c);
       emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
     };
     // V5-4: Windows + managed → build docs INSIDE the WSL2 lane (docs stack is
@@ -1676,26 +1778,27 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (process.platform === 'win32' && currentProject && (await projectToolchainFor(currentProject)) !== 'system') {
       const laneDistro = await managedLaneDistro(currentProject);
       if (laneDistro) {
-        channel?.appendLine(`[docs] WSL2 车道文档构建：distro=${laneDistro} · ${root}`);
+        log('docs', `WSL2 车道文档构建：distro=${laneDistro} · ${root}`);
         emitCockpitEvent({ type: 'log:start', title: `docs/build.py · WSL2 ${laneDistro}` });
         let summary;
         try {
           summary = await runWslDocs(laneDistro, root, { onStdout: stream, onStderr: stream });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          channel?.appendLine(msg);
+          log('docs', msg);
           emitCockpitEvent({ type: 'log:done', ok: false });
           finish(false);
           return { ok: false, message: msg };
         }
         const artifacts = await locateArtifacts(root);
         const ok = summary.ok;
-        log(`[docs] lane finished ok=${ok} artifacts=${artifacts.length}`);
+        log('docs', `lane finished ok=${ok} artifacts=${artifacts.length}`);
         emitCockpitEvent({ type: 'log:done', ok });
         finish(ok);
         if (!ok) {
           return { ok: false, message: '文档生成失败（车道）：请查看“输出 → HeT DevTools”。' };
         }
+        await registerArtifacts();
         return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面（WSL2 车道）。` };
       }
       const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
@@ -1712,25 +1815,26 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     // T07: macOS + managed → docs INSIDE the macOS lane (venv sphinx; doxygen/
   // graphviz must come from brew — we guide instead of installing).
   if (process.platform === 'darwin' && currentProject && (await projectToolchainFor(currentProject)) !== 'system') {
-    channel?.appendLine(`[docs] macOS 托管车道文档构建：${root}`);
+    log('docs', `macOS 托管车道文档构建：${root}`);
     emitCockpitEvent({ type: 'log:start', title: 'docs/build.py · macOS lane' });
     let summary;
     try {
       summary = await runMacDocs(root, { onStdout: stream, onStderr: stream, mirror: laneMirrorConfig() });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      channel?.appendLine(msg);
+      log('docs', msg);
       emitCockpitEvent({ type: 'log:done', ok: false });
       finish(false);
       return { ok: false, message: msg };
     }
     const artifacts = await locateArtifacts(root);
-    log(`[docs] macOS lane finished ok=${summary.ok} artifacts=${artifacts.length}`);
+    log('docs', `macOS lane finished ok=${summary.ok} artifacts=${artifacts.length}`);
     emitCockpitEvent({ type: 'log:done', ok: summary.ok });
     finish(summary.ok);
     if (!summary.ok) {
       return { ok: false, message: '文档生成失败（macOS 车道）：请查看“输出 → HeT DevTools”。' };
     }
+    await registerArtifacts();
     return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面（macOS 车道）。` };
   }
 
@@ -1740,26 +1844,27 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (process.platform === 'linux' && currentProject && (await projectToolchainFor(currentProject)) !== 'system') {
       const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
       if (plan?.provider === 'linux-managed') {
-        channel?.appendLine(`[docs] Linux 托管车道文档构建：${root}`);
+        log('docs', `Linux 托管车道文档构建：${root}`);
         emitCockpitEvent({ type: 'log:start', title: 'docs/build.py · Linux lane' });
         let summary;
         try {
           summary = await runLinuxDocs(root, { onStdout: stream, onStderr: stream });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          channel?.appendLine(msg);
+          log('docs', msg);
           emitCockpitEvent({ type: 'log:done', ok: false });
           finish(false);
           return { ok: false, message: msg };
         }
         const artifacts = await locateArtifacts(root);
         const ok = summary.ok;
-        log(`[docs] linux lane finished ok=${ok} artifacts=${artifacts.length}`);
+        log('docs', `linux lane finished ok=${ok} artifacts=${artifacts.length}`);
         emitCockpitEvent({ type: 'log:done', ok });
         finish(ok);
         if (!ok) {
           return { ok: false, message: '文档生成失败（Linux 车道）：请查看“输出 → HeT DevTools”。' };
         }
+        await registerArtifacts();
         return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面（Linux 车道）。` };
       }
     }
@@ -1798,9 +1903,9 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
       finish(false);
       return { ok: false, message: '找不到 python（docs/build.py 需要）。请先安装 Python 3.10+。' };
     }
-    const preamble = `[docs] ${python} docs/build.py @ ${root}`;
-    lastDocsOutput += `${preamble}\n`;
-    channel?.appendLine(preamble);
+    const preamble = `${python} docs/build.py @ ${root}`;
+    lastDocsOutput += `[docs] ${preamble}\n`;
+    log('docs', preamble);
     // `docs/build.py` shells out to `sphinx-build` / `sphinx-intl` / `doxygen` /
     // `dot`. The interpreter we picked may live in a venv that is NOT on the
     // host PATH (e.g. a venv python resolved from the conan runtime), in which
@@ -1809,7 +1914,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     // Prepend the interpreter's own directory so its venv tools always resolve.
     const pyDir = dirname(python);
     const docsEnv = prependPath({ ...process.env }, pyDir, delimiter);
-    channel?.appendLine(`[docs] PATH += ${pyDir}`);
+    log('docs', `PATH += ${pyDir}`);
     emitCockpitEvent({ type: 'log:start', title: `docs/build.py（本机）` });
     // §3.5 / F.41：文档是典型长动作，但**必须有界**（曾经 timeoutMs: 0 → 挂死就转两小时）
     let result: ExecResult;
@@ -1827,14 +1932,14 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log(`[docs] aborted: ${message}`);
+      log('docs', `aborted: ${message}`);
       emitCockpitEvent({ type: 'log:done', ok: false });
       finish(false);
       return { ok: false, message };
     }
     const artifacts = await locateArtifacts(root);
     const ok = result.code === 0;
-    log(`[docs] finished ok=${ok} artifacts=${artifacts.length}`);
+    log('docs', `finished ok=${ok} artifacts=${artifacts.length}`);
     emitCockpitEvent({ type: 'log:done', ok });
     finish(ok);
     if (!ok) {
@@ -1846,6 +1951,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
         message: hint ?? '文档生成失败：请查看“输出 → HeT DevTools”中的原始日志（常见：注释标注/工具缺失）。',
       };
     }
+    await registerArtifacts();
     return { ok: true, message: `文档生成完成，找到 ${artifacts.length} 个产物页面。` };
   };
 
@@ -2404,7 +2510,7 @@ async function preflightVerdict(): Promise<PreflightSummary | null> {
  * 刻意不自动 `git push` —— 智能提交的产物在 Copilot 面板里，推送前必须由人确认。
  */
 function pushHintTerminal(): void {
-  const term = vscode.window.createTerminal({ name: 'HeT DevTools · 推送提示' });
+  const term = vscode.window.createTerminal({ name: 'HeT DevTools 推送提示' });
   term.show(true);
   term.sendText('# 推送前自查：git status --short && git log --oneline -5   —— 确认无误后自己敲 git push', false);
 }
@@ -2417,10 +2523,77 @@ function busyHost(): BusyHost {
       notifyBusy: (action, on) => notifySinglePageBusy(action, on),
       // 发起方（面板）自己会弹结果提示 —— 这里不再叠一层 toast
       notifyDone: () => undefined,
+      // §3.5：阈值覆盖（同一个设置也喂给状态机的 `deadlineMs`，见 `runWithBusy`）
+      deadlineOverrides,
       register: (d) => contextRef?.subscriptions.push(d),
     });
   }
   return appBusyHost;
+}
+
+/**
+ * H 块：**长动作注入体**（一致性会话用）。
+ *
+ * 为什么不跑真实构建：H 要证的是"任务 × 输出 × 前端三面说的是不是同一件事"——这是
+ * `runWithBusy` 这一层的性质；真实工具链（conan / cmake / doxygen）由 c1 / c2 /
+ * real 覆盖。注入体让四种出口（成功 / 失败 / 超时 / 取消）在 30 秒内各跑一遍，而且
+ * **四种出口走的是同一条产品代码**（同一个 `runWithBusy` + 同一个 TaskStore + 同一个
+ * 通道 + 同一套三档投影）。
+ *
+ * 安全边界（两道）：① `quietHost()`（自动化宿主；与 `askModal` / toast 抑制同一个口子）；
+ * ② 还要 `HET_TASK_INJECT=1`（由 `scripts/run-c9.mjs` 显式打开）。
+ * 于是"用户能点到一个假的构建"这件事不存在：命令未声明（命令面板里根本搜不到），
+ * 而且只有被显式打开的自动化宿主才会认它。
+ *
+ * 为什么不用 `isTestHost`：那是"argv 里有 `--extensionTestsPath`"——实测在 1.134 的
+ * **扩展宿主**进程里根本没有这个参数（1.137 起连主进程也不再带），拿它当守卫会让
+ * 注入体永远打不开（第一次跑 c9 就踩了：`isTestHost=false`）。
+ */
+interface TaskInjection {
+  /** 真实 Intent 的 action id（动作名/域/阈值全部从 Intent 表推导，不许另传字串）。 */
+  action?: string;
+  mode?: 'ok' | 'fail' | 'hang';
+  ms?: number;
+}
+
+async function runInjectedTask(spec?: TaskInjection): Promise<BusyResult<unknown> | null> {
+  if (!quietHost() || process.env.HET_TASK_INJECT !== '1') {
+    // 不静默返回（"点了没反应"是我们一直在根治的毛病）：把拒绝原因直接说出来
+    throw new Error(
+      `长动作注入体未启用（quietHost=${quietHost()}，HET_TASK_INJECT=${process.env.HET_TASK_INJECT ?? '(unset)'}）—— 只有一致性会话（npm run test:c9）能跑它`,
+    );
+  }
+  const action = spec?.action ?? '';
+  const mode = spec?.mode ?? 'ok';
+  const ms = Number(spec?.ms ?? 200);
+  const wait = (ms2: number): Promise<void> => new Promise((r) => setTimeout(r, ms2));
+  return runWithBusy(
+    busyHost(),
+    action,
+    async (ctx) => {
+      if (mode === 'ok') {
+        // 注入体也登记一个**真产物**（工作区里的真文件）：这样
+        // "执行体登记产物 → Task → 任务中心模型 → 面板可点链接"这条链在会话里真的走一遍，
+        // 而不是只被单测盖住。
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (root) {
+          ctx.artifact('注入产物', { path: join(root, 'metadata.json') });
+        }
+        await wait(ms);
+        return 'ok';
+      }
+      if (mode === 'fail') {
+        await wait(ms);
+        throw new Error('注入失败（H 块一致性会话）');
+      }
+      // hang：**不心跳也不结束** —— 只等 abort（取消）或对账器判超时。
+      // 这正是"脚本挂住"的真实现场：没有心跳，UI 只能靠 deadline + 对账器把它收敛。
+      return await new Promise((_resolve, reject) => {
+        ctx.signal?.addEventListener('abort', () => reject(new Error('注入体被中止')), { once: true });
+      });
+    },
+    '注入体',
+  );
 }
 
 /** Pre-release gate (G-13): checklist aligned with CI gates. */
@@ -2677,44 +2850,31 @@ function openBenchPanel(context: vscode.ExtensionContext): void {
     return { ok: true, message: `已保存 ${configRel}（字段级写回，注释/结构保留）。` };
   };
 
-  const buildNoFlash = async () => {
-    const root = currentProject?.root;
-    if (!root) {
-      return { ok: false, message: '未检测到 fcpp 项目。' };
-    }
-    const python = await findPython();
-    if (!python) {
-      return { ok: false, message: '找不到 python/python3。' };
-    }
-    const script = 'benchmark/script/run_bench.py';
-    if (!(await pathExists(join(root, script)))) {
-      return { ok: false, message: `缺少 ${script}（fcpp 模板未含 benchmark 时跳过）。` };
-    }
-    channel?.appendLine(`[bench] ${python} ${script} --no-flash @ ${root}`);
-    // §7 忙语义 / §19.3：采集走统一 helper（输出通道「HeT DevTools · 上板」+ L1 忙点 + 幂等）
-    const busy = await runWithBusy(
-      busyHost(),
-      'board',
-      '上板构建（--no-flash）',
-      () => withDeadline('上板构建', 'board', (timeoutMs) =>
-        run(python, [script, '--no-flash'], { cwd: root, onStdout: (c) => channel?.append(c), onStderr: (c) => channel?.append(c), timeoutMs }),
-        deadlineOverrides(),
-      ),
-      `${python} ${script} --no-flash`,
-    );
-    if (busy.status === 'skipped') {
-      return { ok: false, message: busy.message };
-    }
-    if (busy.status === 'done' && busy.out?.code === 0) {
-      return { ok: true, message: '无板卡构建（--no-flash）成功。可粘贴串口输出解析结果，或接板后执行 ② 构建并上板。' };
-    }
-    return { ok: false, message: '无板卡构建失败：请查看“输出 → HeT DevTools · 上板”。（通常需先经 Conan 拉取 arm-toolchain）' };
-  };
+  // K 块：只构建 / 真的上板都走同一条前置检查 + 忙语义（面板不再自己拼命令 ——
+  // 否则"面板点的那条"与"命令跑的那条"会慢慢变成两条流水线）。
+  const buildNoFlash = (): Promise<{ ok: boolean; message: string }> => runBoardBuild('cross');
+  const flash = (): Promise<{ ok: boolean; message: string }> => runBoardBuild('on-board');
 
   showBenchPanel(context, {
     getState,
+    getBoard: async () => {
+      const projectRoot = currentProject?.root;
+      if (projectRoot) {
+        return boardPlanFor(await boardFactsNow('cross', projectRoot));
+      }
+      return boardPlanFor({
+        platform: 'unknown',
+        cpu: '',
+        configPresent: false,
+        flashTool: '',
+        probeVisibility: 'unknown',
+        toolPresent: () => true,
+        mode: 'cross',
+      });
+    },
     saveConfig,
     buildNoFlash,
+    flash,
     parseSim: (text) => {
       const p = parseBenchmarkProtocol(text);
       if (p.cases.length === 0) {
@@ -2736,6 +2896,400 @@ function openBenchPanel(context: vscode.ExtensionContext): void {
       }
     },
   });
+}
+
+/**
+ * **任务中心**（J 块）：只读观测面板 —— 在跑什么 / 跑过什么 / 结果如何。
+ *
+ * 三个依赖都是**已存在的**单一来源：CI 事实与「CI 状态」面板同一个取值器（`ciState()`）；
+ * 产物打开复用各面板已经在用的命令（如 `het.openDocsArtifact`），没有 command 的按路径打开。
+ */
+function openTaskCenter(context: vscode.ExtensionContext): void {
+  showTaskCenterPanel(context, {
+    getCi: () => ciState(),
+    openArtifact: async (a) => {
+      if (a.command) {
+        await vscode.commands.executeCommand(a.command, a.arg);
+        return;
+      }
+      if (!a.path) {
+        return;
+      }
+      if (!(await pathExists(a.path))) {
+        // 产物可能被清理过：说清"为什么没了 + 怎么办"，而不是一句"打开失败"
+        void vscode.window.showWarningMessage(
+          `产物不在了：${a.path}（构建产物可能被清理过，重跑一次就有了）。`,
+        );
+        return;
+      }
+      void vscode.env.openExternal(vscode.Uri.file(a.path));
+    },
+    openCi: async (url) => {
+      if (url) {
+        void vscode.env.openExternal(vscode.Uri.parse(url));
+      }
+    },
+  });
+}
+
+/**
+ * **交叉编译**（K 块：把原生交叉编译做成一等动作）。
+ *
+ * 一句话边界：它出**目标架构的包** + 一份 readelf 架构报告，**不跑测试**（`-tf=`），
+ * 也**不烧板**（那是「上板验证」）。
+ *
+ * 目标只有一个来源：`.hetai/build-matrix.yml`（G23）。缺文件/目标不存在时**显式说明**并给
+ * 同步入口，绝不静默回退到某个默认目标 —— "编出来的是 x86_64 却以为在编 arm"这种事故
+ * 一旦发生，用户在半小时后才发现。
+ */
+async function runCrossBuild(targetId?: string): Promise<{ ok: boolean; message: string }> {
+  const context = contextRef;
+  const root = currentProject?.root;
+  if (!context || !root) {
+    void vscode.window.showWarningMessage('未检测到工程（交叉编译需要工程根）。');
+    return { ok: false, message: '未检测到工程' };
+  }
+  // ── 1) 目标矩阵（唯一来源）──────────────────────────────────────────────
+  const matrixPath = join(root, BUILD_MATRIX_REL);
+  if (!(await pathExists(matrixPath))) {
+    const hint = missingMatrixHint();
+    log('build', hint.message);
+    for (const f of hint.fix) {
+      log('build', `怎么办：${f}`);
+    }
+    void vscode.window.showWarningMessage(`${hint.message}｜${hint.fix[0]}`);
+    return { ok: false, message: hint.message };
+  }
+  let matrix: BuildMatrix;
+  try {
+    matrix = parseBuildMatrix(await readText(matrixPath), BUILD_MATRIX_REL);
+  } catch (err) {
+    // 文件在、但读不懂：**不能**说成"没有这份文件"（那会把人引到错误的修法上）
+    const message = err instanceof Error ? err.message : String(err);
+    log('build', `目标矩阵解析失败：${message}`);
+    void vscode.window.showErrorMessage(message);
+    return { ok: false, message };
+  }
+  let target;
+  try {
+    target = pickTarget(matrix, targetId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log('build', message);
+    void vscode.window.showWarningMessage(message);
+    return { ok: false, message };
+  }
+
+  const profilePath = join(context.globalStorageUri.fsPath, 'conan-profiles', profileFileName(target, matrix));
+  const plan = crossPlanFor(matrix, target, profilePath);
+  await writeText(plan.profilePath, plan.profileText);
+  log('build', `profile 已生成：${plan.profilePath}（arch=${plan.arch} · os=${plan.os}）`);
+
+  // 目标切换守卫（K.1）：与账本里上次的目标不一致时先提示（并道不放任）
+  const ledgerFile = ledgerPath(context.globalStorageUri.fsPath, root);
+  const { ledger, issue } = parseLedger(await readText(ledgerFile).catch(() => ''), root);
+  const hash = profileHash(plan.profileText);
+  const check = checkTargetSwitch(
+    ledger,
+    { target: plan.targetId, arch: plan.arch, toolchain: plan.toolchainVersion, profileHash: hash },
+    ledger.lastTarget ? cacheReportNow().localBuilds.find((b) => b.target === ledger.lastTarget)?.bytes : undefined,
+  );
+  log('build', check.text);
+  if (issue) {
+    log('build', `账本提示：${issue}`);
+  }
+
+  // ── 2) 执行（工具链检查 → conan create → readelf 报告）─────────────────
+  const busy = await runWithBusy(
+    busyHost(),
+    'crossBuild',
+    async (ctx) => {
+      const toolchain = plan.toolchain;
+      // 工具链检查放在最前面：缺 gcc 时 conan 会在很久之后才报一句看不懂的错
+      const found = await Promise.all(
+        [toolchain?.cc, toolchain?.cxx, toolchain?.ar].filter((e): e is string => !!e).map(async (e) => [e, !!(await which(e))] as const),
+      );
+      const present = new Map(found);
+      const missing = missingTools(plan, (e) => present.get(e) === true);
+      if (missing.length > 0) {
+        const hint = missingHints(plan, missing);
+        for (const line of hint.lines) {
+          log('build', line);
+        }
+        // "怎么办"全部落到输出里（含 CI 那条路）—— 而失败行只带第一条，别把 4 行塞进一行
+        for (const fix of hint.fix) {
+          log('build', `怎么觡：${fix}`);
+        }
+        // 失败行里带第一条修法（任务中心/悬停都能看到"装哪个包 / 或去 CI"）
+        throw new Error(`${hint.lines[0]}｜${hint.fix[0]}`);
+      }
+
+      const conan = (await resolveConanRuntime())?.exe ?? 'conan';
+      log('build', `$ ${conan} ${plan.args.join(' ')}（cwd=${root}）`);
+      const tail: string[] = [];
+      const keep = (chunk: string): void => {
+        tail.push(chunk);
+        if (tail.length > 40) {
+          tail.shift();
+        }
+        // 裸写：子进程的**原始流**（半行也是常态）——结构化行只描述"动作的边界"，
+        // 中间这段是 conan 自己的输出，逐行改写它反而会失真。
+        logStream(chunk);
+      };
+      await withDeadline(
+        '交叉编译',
+        'cross',
+        (timeoutMs) =>
+          run(conan, plan.args, {
+            cwd: root,
+            timeoutMs,
+            signal: ctx.signal,
+            onStdout: keep,
+            onStderr: keep,
+          }),
+        deadlineOverrides(),
+      );
+
+      // 包目录：**问 conan**（不猜）—— 与模板里 CI 的 cross_compile_check.py 同一套推导
+      const meta = currentProject?.metadata;
+      const ref = `${meta?.name ?? ''}/${meta?.version ?? ''}`;
+      const listed = await run(conan, ['list', `${ref}:*`], { cwd: root, timeoutMs: 60_000 });
+      const uid = packageUidFromList(listed.stdout);
+      if (!uid) {
+        throw new Error(`conan list ${ref}:* 没有列出任何包 —— 这轮 create 没有产出包（看上面的原始输出）。`);
+      }
+      const folderOut = await run(conan, ['cache', 'path', `${ref}:${uid}`], { cwd: root, timeoutMs: 60_000 });
+      const folder = packageFolderFromCachePath(folderOut.stdout);
+      if (!folder) {
+        throw new Error(`conan cache path ${ref}:${uid} 没返回目录 —— 无法检查架构（报告不写假的）。`);
+      }
+      log('build', `包目录：${folder}`);
+
+      const facts = await readArchFacts(folder, plan);
+      if (facts.length === 0) {
+        throw new Error(`包目录里没有静态库（${folder}/lib/*.a）—— 无法验证目标架构。`);
+      }
+      for (const f of facts) {
+        log('build', `${matchesExpectation(f, plan.expectation) ? '✓' : '✗'} ${f.archive} — ${f.elfClass} · ${f.machine} · Tag_CPU_arch=${f.cpuArch}${plan.expectation?.thumb ? ` · Thumb=${f.thumb}` : ''}`);
+      }
+      const reportFile = join(context.globalStorageUri.fsPath, 'cross-reports', `${plan.targetId}-${Date.now()}.md`);
+      await writeText(reportFile, archReport(plan, facts));
+      ctx.artifact('架构报告', { path: reportFile });
+      ctx.artifact('目标包', { path: folder });
+
+      const bad = facts.filter((f) => !matchesExpectation(f, plan.expectation));
+      if (bad.length > 0) {
+        throw new Error(
+          `${bad.length} 个档案不符合目标架构（${plan.arch}）：${bad.map((f) => f.archive).join('、')} —— 报告：${reportFile}`,
+        );
+      }
+      return { target: plan.targetId, arch: plan.arch, facts: facts.length, report: reportFile };
+    },
+    `目标 ${plan.targetId} · arch=${plan.arch}`,
+  );
+
+  // 账本：这次用哪个目标编的（下次切换时才有依据提示）
+  const next = recordBuild(ledger, {
+    target: plan.targetId,
+    arch: plan.arch,
+    toolchain: plan.toolchainVersion,
+    profileHash: hash,
+    at: Date.now(),
+    buildDir: plan.buildDir,
+  });
+  await writeText(ledgerFile, `${JSON.stringify(next, null, 2)}\n`);
+
+  if (busy.status !== 'done') {
+    return { ok: false, message: busy.message };
+  }
+  const out = busy.out as { facts: number } | undefined;
+  const message = `交叉编译完成：目标 ${plan.targetId}（arch=${plan.arch}）· ${out?.facts ?? 0} 个档案架构已核对（未跑测试）。`;
+  void vscode.window.showInformationMessage(message);
+  return { ok: true, message };
+}
+
+/** 从包目录里读出每个静态库的架构事实（用**目标** ar 解包 + 本机 readelf 读头）。 */
+async function readArchFacts(folder: string, plan: CrossPlan): Promise<ArchFact[]> {
+  const libDir = join(folder, 'lib');
+  const names = await readdir(libDir).catch(() => [] as string[]);
+  const archives = names.filter((n) => n.endsWith('.a')).sort();
+  const ar = plan.toolchain?.ar ?? 'ar';
+  const out: ArchFact[] = [];
+  for (const archive of archives) {
+    const tmp = await mkdtemp(join(tmpdir(), 'het-arch-'));
+    try {
+      await run(ar, ['x', join(libDir, archive)], { cwd: tmp, timeoutMs: 30_000 });
+      const members = (await readdir(tmp)).filter((n) => !n.includes('CompilerId')).sort();
+      const member = members[0];
+      if (!member) {
+        continue;
+      }
+      // readelf 的字段名会被本地化 → LC_ALL=C（与 CI 脚本同一条纪律）
+      const env = { ...process.env, LC_ALL: 'C' };
+      const header = await run('readelf', ['-h', join(tmp, member)], { timeoutMs: 30_000, env });
+      const attrs = await run('readelf', ['-A', join(tmp, member)], { timeoutMs: 30_000, env });
+      out.push({ archive, member, ...parseReadelf(header.stdout, attrs.stdout) });
+    } finally {
+      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+  return out;
+}
+
+const BENCH_CONFIG_REL = 'benchmark/platform/bench_config.json';
+const BENCH_SCRIPT_REL = 'benchmark/script/run_bench.py';
+
+/**
+ * **板子看得见吗**（前置检查的输入之一）。
+ *
+ * 三条纪律：Windows 上我们**不枚举**设备（拿不到可靠的清单）→ `unknown`（“看不出”不等于
+ * “没连”）；只认常见的板载调试口（ACM/USB/by-id）；判断不了就如实说。
+ */
+async function probeVisibility(): Promise<ProbeVisibility> {
+  if (process.platform === 'win32') {
+    return 'unknown';
+  }
+  const patterns = ['/dev/ttyACM*', '/dev/ttyUSB*', '/dev/tty.usb*', '/dev/serial/by-id/*'];
+  const dirs = ['/dev', '/dev/serial/by-id'];
+  for (const dir of dirs) {
+    const names = await readdir(dir).catch(() => [] as string[]);
+    for (const n of names) {
+      const full = `${dir}/${n}`;
+      if (patterns.some((p) => new RegExp(`^${p.replace(/\*/gu, '.*')}$`, 'u').test(full))) {
+        return 'seen';
+      }
+    }
+  }
+  return 'none';
+}
+
+/** 上板前置检查的事实（宿主侧：读配置 + 探针可见性 + 工作流开关）。 */
+async function boardFactsNow(mode: BenchMode, root: string): Promise<BoardFacts> {
+  const loaded = await loadBenchConfig(root);
+  const cfg = loaded?.cfg ?? {};
+  const platform = configPlatform(cfg);
+  const trigger = currentProject?.metadata?.workflow_triggers?.cross_compile;
+  const base: BoardFacts = {
+    platform,
+    cpu: String(cfg.target_mcu ?? cfg.target_cpu ?? ''),
+    ...(typeof cfg.target_os === 'string' ? { targetOs: cfg.target_os } : {}),
+    configPresent: !!loaded,
+    flashTool: String(cfg.flash_tool ?? cfg.deploy_tool ?? ''),
+    ...(typeof cfg.serial_port === 'string' ? { serialPort: cfg.serial_port } : {}),
+    probeVisibility: await probeVisibility(),
+    toolPresent: () => false,
+    mode,
+    ...(trigger !== undefined ? { workflowTrigger: trigger } : {}),
+  };
+  // 先算一遍"需要哪些可执行"（注入 `toolPresent: () => true`），再真查那几个
+  // —— 比把整张表都 which 一遍快，也不会漏（计划自己知道它要用什么）。
+  const provisional = boardPlanFor({ ...base, toolPresent: () => true });
+  const need = new Set<string>(
+    provisional.toolchain ? [provisional.toolchain.cc, provisional.toolchain.cxx, provisional.toolchain.ar] : [],
+  );
+  if (mode === 'on-board') {
+    const flash = flashExeFor(base);
+    if (flash) {
+      need.add(flash);
+    }
+  }
+  const found = await Promise.all([...need].map(async (e) => [e, !!(await which(e))] as const));
+  const map = new Map(found);
+  return { ...base, toolPresent: (e) => map.get(e) === true };
+}
+
+/** 读 bench 配置（不存在/读不动都返回 null —— 由前置检查去解释"为什么"）。 */
+async function loadBenchConfig(root: string): Promise<{ text: string; cfg: Record<string, unknown> } | null> {
+  const abs = join(root, BENCH_CONFIG_REL);
+  if (!(await pathExists(abs))) {
+    return null;
+  }
+  try {
+    const text = await readText(abs);
+    return { text, cfg: JSON.parse(text) as Record<string, unknown> };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * **上板验证**（K 块）：`cross` = 只构建（--no-flash，**永不刷写**），`on-board` = 真的上板。
+ *
+ * 前置检查先跑：缺工具链/看不见探针就把**定向提示**写进输出并失败，而不是等 openocd 报一句
+ * 看不懂的错。上板前必须过 `askModal` 确认 —— 刷写芯片不可回滚。
+ */
+async function runBoardBuild(mode: BenchMode = 'cross'): Promise<{ ok: boolean; message: string }> {
+  const root = currentProject?.root;
+  if (!root) {
+    void vscode.window.showWarningMessage('未检测到工程（上板验证需要工程根）。');
+    return { ok: false, message: '未检测到工程' };
+  }
+  if (!(await pathExists(join(root, BENCH_SCRIPT_REL)))) {
+    const message = `缺少 ${BENCH_SCRIPT_REL}（fcpp 模板里的 benchmark 目录没同步过来）—— 上板验证跑不了。`;
+    log('bench', message);
+    void vscode.window.showWarningMessage(message);
+    return { ok: false, message };
+  }
+  const facts = await boardFactsNow(mode, root);
+  const plan = boardPlanFor(facts);
+  for (const line of plan.hints.lines) {
+    log('bench', line);
+  }
+  for (const f of plan.hints.fix) {
+    log('bench', `怎么办：${f}`);
+  }
+  if (mode === 'on-board') {
+    // 会真的刷写芯片：**先确认**（自动化宿主里 askModal 视作取消，不会静默刷）
+    const answer = await askModal(
+      `上板会**真的刷写芯片**（目标 ${facts.cpu || '未配置'} · flash_tool ${facts.flashTool || '未配置'}）。确认继续？`,
+      '上板刷写',
+    );
+    if (answer !== '上板刷写') {
+      return { ok: false, message: '已取消上板（没有刷写芯片）。' };
+    }
+  }
+  if (plan.missing.length > 0) {
+    // 前置检查没过就**不开任务**：这不是"跑了然后失败"，而是"现在跑不了" ——
+    // 但话必须说清（缺什么、怎么装、或者交给 CI），所以返回而不是抛：
+    // 面板拿到抛出会变成"点了没反应"。
+    return {
+      ok: false,
+      message: `${plan.hints.lines.find((l) => l.includes('本机缺')) ?? '前置检查未通过'}｜${boardNextStep(plan)}`,
+    };
+  }
+  const python = await findPython();
+  if (!python) {
+    return { ok: false, message: '找不到 python/python3（run_bench.py 要它）。' };
+  }
+  const args = [BENCH_SCRIPT_REL, ...(plan.mode === 'build-only' ? ['--no-flash'] : [])];
+  const busy = await runWithBusy(
+    busyHost(),
+    'board',
+    () =>
+      withDeadline(
+        plan.mode === 'build-only' ? '上板构建' : '上板验证',
+        'board',
+        (timeoutMs) =>
+          run(python, args, {
+            cwd: root,
+            onStdout: (c) => logStream(c),
+            onStderr: (c) => logStream(c),
+            timeoutMs,
+          }),
+        deadlineOverrides(),
+      ),
+    `${python} ${args.join(' ')}`,
+  );
+  if (busy.status !== 'done') {
+    return { ok: false, message: busy.message };
+  }
+  const ok = (busy.out as ExecResult | undefined)?.code === 0;
+  const message = ok
+    ? plan.mode === 'build-only'
+      ? `无板卡构建成功（目标 ${plan.arch ?? '?'}）—— 接板后可跑「构建并上板」，或粘贴串口输出解析结果。`
+      : '上板完成：串口输出可在面板里解析（没收到 BENCHMARK_END 会标出来）。'
+    : `上板${plan.mode === 'build-only' ? '构建' : '验证'}失败：看「输出 → HeT DevTools」里的 bench 行。下一步：${boardNextStep(plan)}`;
+  return { ok, message };
 }
 
 /** CI status view (G-19): GitHub Actions with D-9 tier + offline degradation. */
@@ -3036,7 +3590,7 @@ async function runAuditReport(): Promise<void> {
   const mdText = renderAuditMarkdown(input);
   const target = join(root, 'workspace', 'audit-report.md');
   await writeText(target, mdText);
-  log(`[audit] report written: ${target}`);
+  log('audit', `report written: ${target}`);
   void vscode.window.showInformationMessage('审计报告已生成：workspace/audit-report.md（可在 Copilot Chat 用 @workspace 引用）。');
   void vscode.window.showTextDocument(vscode.Uri.file(target), { preview: false });
 }
@@ -3074,7 +3628,7 @@ async function runPatentWizard(): Promise<void> {
   const draftFile = join(root, 'workspace', `patent-${slug}-disclosure.md`);
   await writeText(searchFile, renderSearchQuery(input));
   await writeText(draftFile, renderTechDisclosure(input));
-  log(`[patent] drafts written: ${searchFile} , ${draftFile}`);
+  log('patent', `drafts written: ${searchFile} , ${draftFile}`);
   void vscode.window.showInformationMessage('已生成检索式与交底书草稿（workspace/ 下，可 @workspace 引用）。');
   void vscode.window.showTextDocument(vscode.Uri.file(draftFile), { preview: false });
 }
@@ -3148,7 +3702,7 @@ async function newProjectFromTemplate(opts: NewProjectOpts): Promise<{ ok: boole
   if (gitMissing) {
     // T04 (E12): a bare Windows machine has no git. Project creation must not
     // depend on it — only the baseline commit does (degraded below, with a note).
-    log('[init] 未检测到 git：将跳过在线克隆与基线提交（本地/内置模板仍可用）');
+    log('init', '未检测到 git：将跳过在线克隆与基线提交（本地/内置模板仍可用）');
   }
   const source = templateSourceForInit();
   const repo = source.repo ?? TEMPLATE_REPO;
@@ -3182,7 +3736,7 @@ async function newProjectFromTemplate(opts: NewProjectOpts): Promise<{ ok: boole
     // host sets this so the online pin "fails" instantly and the local
     // candidate chain is exercised (same code path as a real network outage).
     if (process.env.HET_FORCE_TEMPLATE_OFFLINE === '1') {
-      log('[init] HET_FORCE_TEMPLATE_OFFLINE=1 → 跳过在线获取，演练本地回退');
+      log('init', 'HET_FORCE_TEMPLATE_OFFLINE=1 → 跳过在线获取，演练本地回退');
       return false;
     }
     // G17b：钉过 sha256 的 ref 先走 **tarball**（不需要 git、快、字节可校验）——
@@ -3212,20 +3766,20 @@ async function newProjectFromTemplate(opts: NewProjectOpts): Promise<{ ok: boole
             label = `${refLabel}（${tplan.note}）`;
             remoteUsed = true;
             if (got.degraded) {
-              log(`[init] ${got.degraded}`);
+              log('init', `${got.degraded}`);
             }
             return true;
           }
-          log(`[init] tarball 形状校验不通过：${ex.reason} → 回退 git clone`);
+          log('init', `tarball 形状校验不通过：${ex.reason} → 回退 git clone`);
         } else {
-          log(`[init] tarball 获取失败：${got.reason ?? '未知'} → 回退 git clone`);
+          log('init', `tarball 获取失败：${got.reason ?? '未知'} → 回退 git clone`);
         }
       }
     } else {
-      log(`[init] ${tplan.note}`);
+      log('init', `${tplan.note}`);
     }
     if (!git) {
-      log('[init] 未检测到 git → 跳过在线克隆，回退本地/内置模板');
+      log('init', '未检测到 git → 跳过在线克隆，回退本地/内置模板');
       return false;
     }
     const tmp = join(os.tmpdir(), `het-tpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
@@ -3323,7 +3877,7 @@ async function newProjectFromTemplate(opts: NewProjectOpts): Promise<{ ok: boole
       const patched = txt.replaceAll("open(report, 'r', encoding='utf-8')", "open(report, 'r', encoding='utf-8', errors='replace')");
       if (patched !== txt) {
         await writeText(cf, patched);
-        log('[init] Windows compat patch applied: test_package/conanfile.py (GBK LastTest.log)');
+        log('init', 'Windows compat patch applied: test_package/conanfile.py (GBK LastTest.log)');
       }
     }
   }
@@ -3380,10 +3934,10 @@ async function newProjectFromTemplate(opts: NewProjectOpts): Promise<{ ok: boole
     }
   } else {
     gitNote = '\n（未检测到 git：已跳过 git init/基线提交。装好 Git 后可在此目录自行 `git init`；winget 安装：winget install --id Git.Git -e）';
-    log('[init] git 缺失：项目已创建（跳过 git init/commit）');
+    log('init', 'git 缺失：项目已创建（跳过 git init/commit）');
   }
   const suffix = fallbackNote ? `\n${fallbackNote}` : '';
-  log(`[init] project created @ ${dest} (template ${label})${suffix}`);
+  log('init', `project created @ ${dest} (template ${label})${suffix}`);
   return { ok: true, message: `已从模板创建项目 ${name} @ ${dest}\n（模板源：${label}${suffix}，已记录到 .het/template-ref.json）${coverageNote}${gitNote}`, root: dest };
 }
 
@@ -3417,7 +3971,7 @@ async function runNewProjectWizard(): Promise<void> {
   }
   const r = await newProjectFromTemplate({ name, description, dest, confirmed: true });
   if (r.ok) {
-    log(`[wizard] created ${name} @ ${dest}`);
+    log('wizard', `created ${name} @ ${dest}`);
     await refreshStatus();
     await openProjectFolder(dest);
   } else {
@@ -3480,7 +4034,7 @@ async function runTemplateUpdateCheck(): Promise<void> {
   });
   const planFile = join(root, 'workspace', 'template-sync-plan.md');
   await writeText(planFile, plan);
-  log(`[template] update: ${marker.ref.slice(0, 12)} -> ${head.slice(0, 12)} (${commits.length} commits)`);
+  log('template', `update: ${marker.ref.slice(0, 12)} -> ${head.slice(0, 12)} (${commits.length} commits)`);
   void vscode.window.showInformationMessage(
     commits.length > 0
       ? `模板有更新：落后 ${commits.length} 个提交。同步计划已生成 workspace/template-sync-plan.md（只读，不会自动合入）。`
@@ -3548,11 +4102,11 @@ async function refreshStatus(): Promise<void> {
   if (currentProject?.metadata) {
     const m = currentProject.metadata;
     emitCockpitEvent({ type: 'project', name: m.name ?? '' });
-    log(`project detected: ${m.name} (level=${currentProject.level}) @ ${currentProject.root}`);
+    log('init', `project detected: ${m.name} (level=${currentProject.level}) @ ${currentProject.root}`);
   } else {
     currentProject = undefined;
     emitCockpitEvent({ type: 'project', name: '' });
-    log('no fcpp project in current workspace');
+    log('init', 'no fcpp project in current workspace');
     // Never block on the onboarding prompt — it is a gentle hint, not a gate.
     void maybeOnboardEmptyWorkspace();
   }
@@ -3584,26 +4138,6 @@ async function isWorkspaceEmpty(): Promise<boolean> {
   return true;
 }
 
-/** Rich one-line runtime description for chip/HUD. */
-function conanRuntimeDetail(): string | null {
-  if (!conanRuntime) {
-    return null;
-  }
-  const ver = conanRuntime.version ? `conan ${conanRuntime.version} · ` : '';
-  if (conanRuntime.overrideUser) {
-    return `${ver}用户自定义`;
-  }
-  if (conanRuntime.envName) {
-    return `${ver}conda env ${conanRuntime.envName}（启发式推断 · 极可能）`;
-  }
-  return `${ver}PATH`;
-}
-
-function hudFontSize(): number {
-  const n = vscode.workspace.getConfiguration('het').get<number>('hud.fontSize', 13.5);
-  return typeof n === 'number' && Number.isFinite(n) ? n : 13.5;
-}
-
 /** V4-3: user prefs for provider selection (reserved; no MinGW toggle). */
 function provisionPrefs(): ProvisionPrefs {
   // ADR-8（2026-09-16）：用户级车道偏好。优先级：项目 metadata.toolchain > 本设置 > auto 判定。
@@ -3613,111 +4147,6 @@ function provisionPrefs(): ProvisionPrefs {
 }
 
 /** V4-6: hide the chip for 5 minutes (Snooze), then it returns. */
-function snoozeChip(minutes = 5): void {
-  if (chipSnoozeTimer) {
-    clearTimeout(chipSnoozeTimer);
-  }
-  statusItem?.hide();
-  lastChip = null;
-  chipSnoozeTimer = setTimeout(() => {
-    chipSnoozeTimer = undefined;
-    void refreshStatus();
-  }, minutes * 60_000);
-}
-
-/** V4-6: chip click falls back to the QuickPick list instead of the HUD card. */
-function disableHud(): void {
-  void vscode.workspace.getConfiguration('het').update('hud.disableHud', true, vscode.ConfigurationTarget.Global);
-  maybeToast('info', '已改用快捷列表（可随时在设置 het.hud.disableHud 恢复 HUD）。');
-}
-
-async function assembleHudModel(): Promise<HudModel> {
-  const st = getCockpitState();
-  const plan = await getCurrentProvisionPlan(true, provisionPrefs()).catch(() => null);
-  const tools = await ensureToolDiscovery().catch(() => []);
-  // V5-6 (issue-1): under the WSL2 lane the rows must reflect the toolchain the
-  // extension ACTUALLY uses (lane venv conan/cmake/ninja/python), never the
-  // Windows-side sniff — a Windows box without local conan would otherwise show
-  // a red ✗ while builds succeed through the lane. A3: the same holds on Linux
-  // under the linux-managed provider (native Linux managed lane).
-  let lane: { conan?: string; cmake?: string; provisioned: boolean } | null = null;
-  let laneKind: 'wsl' | 'linux' | null = null;
-  if (process.platform === 'win32' && plan?.provider === 'win-wsl2') {
-    const wsl = await getWslLaneStatus(false).catch(() => null);
-    if (wsl?.tools.gcc) {
-      lane = { conan: wsl.tools.conan, cmake: wsl.tools.cmake, provisioned: !!wsl.tools.conan };
-      laneKind = 'wsl';
-    }
-  } else if (process.platform === 'linux' && plan?.provider === 'linux-managed') {
-    const laneStatus = await getLinuxLaneStatus(false).catch(() => null);
-    if (laneStatus?.tools.gcc) {
-      lane = { conan: laneStatus.tools.conan, cmake: laneStatus.tools.cmake, provisioned: !!laneStatus.tools.conan };
-      laneKind = 'linux';
-    }
-  }
-  const env: HudEnvRow[] = [];
-  const wanted = new Set(['conan', 'cmake', 'python', 'ninja', 'gtest']);
-  for (const t of tools) {
-    if (!wanted.has(t.key)) {
-      continue;
-    }
-    const missing = t.source === 'missing';
-    // Lane override: the used toolchain has it → ok, whatever Windows says.
-    const laneOk = lane !== null && (t.key === 'conan' || t.key === 'cmake' ? !!lane[t.key as 'conan' | 'cmake'] : lane.provisioned && (t.key === 'python' || t.key === 'ninja'));
-    let tone: HudEnvRow['tone'] = missing ? (t.managed ? 'ok' : t.optional ? 'plain' : 'fail') : 'ok';
-    let value = missing
-      ? t.managed
-        ? 'conan 托管（构建时获取）'
-        : t.optional
-          ? '可选（Linux/WSL 覆盖率）'
-          : '未找到'
-      : (t.sourceDetail || t.exe || t.source).slice(0, 60);
-    // V5-7 dual-line: the second line shows the REAL binding (lane path vs
-    // system path) so users can tell the managed toolchain from local tools.
-    let path = missing ? (t.managed ? 'Conan 缓存中的包（构建时自动获取）' : '本机未找到') : (t.exe || t.sourceDetail || '').slice(0, 96);
-    if (laneOk) {
-      tone = 'ok';
-      const bin =
-        laneKind === 'linux'
-          ? 'Linux 派生 managed lane · ~/.het-fti/managed-env/venv/bin'
-          : 'WSL2 车道 · ~/.het-fti/managed-env/venv/bin';
-      const kindTag = laneKind === 'linux' ? 'Linux lane venv' : 'WSL2 车道 venv';
-      value =
-        t.key === 'conan' && lane?.conan
-          ? `${kindTag} · ${lane.conan}`
-          : t.key === 'cmake' && lane?.cmake
-            ? `${kindTag} · ${lane.cmake}`
-            : t.key === 'python'
-              ? `${kindTag}（托管）`
-              : t.key === 'ninja'
-                ? `${kindTag}（托管）`
-                : value;
-      if (['conan', 'cmake', 'python', 'ninja'].includes(t.key)) {
-        path = `${bin}/${t.key}`;
-      }
-    }
-    env.push({ label: t.label, value, tone, path });
-  }
-  return {
-    title: currentProject?.metadata?.name ?? 'fcpp 项目',
-    health: lastHealth?.score ?? st.top.health,
-    // §F.35：HUD 的"正在跑"与 chip / 吸顶读同一份仓库级状态（单一来源）。
-    running: currentStatus()?.text ?? st.top.running,
-    runningAction: currentStatus()?.action ?? null,
-    lastBuildOk: lastBuildOk ?? null,
-    test: lastTestSummary
-      ? { passed: lastTestSummary.passed, failed: lastTestSummary.failed, skipped: lastTestSummary.skipped }
-      : null,
-    coverage: null,
-    buildAgo: agoText(lastBuildAt || undefined),
-    provider: plan ? { label: providerLabel(plan.provider), coverage: plan.coverage } : null,
-    runtime: conanRuntimeDetail(),
-    env,
-    actions: defaultHudActions(),
-    templateBehind: st.top.templateBehind,
-  };
-}
-
 /** V5-2: do the Sphinx/Doxygen build trees contain an index.html? (disk probe) */
 async function probeDocsArtifacts(root?: string): Promise<{ doxygen: boolean; sphinx: boolean }> {
   const out = { doxygen: false, sphinx: false };
@@ -3830,11 +4259,14 @@ async function probeCoverage(root?: string): Promise<{ found: boolean; line: num
   }
 }
 
-/** Push the latest model into the single status-bar chip (hide = invisible). */
-async function refreshChip(): Promise<void> {
-  if (!statusItem) {
-    return;
-  }
+/**
+ * **三档（芯片 / 悬停 / 页内）共用的状态事实**（§3.6）。
+ *
+ * 抽出来的理由：诊断命令 `het.getUiSnapshot` 必须能取到"用户此刻看到的那一份" ——
+ * 如果只有 `refreshChip` 内部会拼这个模型，测试就只能自己再拼一遍（那就是第二个真相，
+ * "chip 说成功、测试说失败"的老问题会以新形式回来）。
+ */
+async function buildChipModel(): Promise<ChipModel> {
   const st = getCockpitState();
   const [envSummary, docsArt, cov] = await Promise.all([
     currentEnvSummary(),
@@ -3845,7 +4277,7 @@ async function refreshChip(): Promise<void> {
   const docs = docsRunning
     ? { state: 'running' as const, doxygen: false, sphinx: false }
     : docsRowState(docsArt, lastDocs);
-  const spec = chipSpec({
+  return {
     projectName: currentProject?.metadata?.name ?? '',
     health: lastHealth?.score ?? null,
     running: currentStatus()?.text ?? (docsRunning ? '构建文档' : st.top.running),
@@ -3868,7 +4300,15 @@ async function refreshChip(): Promise<void> {
     healthVerdict: lastHealth?.verdict ? verdictZh(lastHealth.verdict) : null,
     healthGaps: lastHealth?.gaps ?? null,
     cache: chipCacheFacts(),
-  });
+  };
+}
+
+/** Push the latest model into the single status-bar chip (hide = invisible). */
+async function refreshChip(): Promise<void> {
+  if (!statusItem) {
+    return;
+  }
+  const spec = chipSpec(await buildChipModel());
   if (!spec) {
     statusItem.hide();
     lastChip = null;
@@ -3888,28 +4328,14 @@ async function refreshChip(): Promise<void> {
   notifyStateChange();
 }
 
-/** HUD 的依赖集合（开卡片与 1–9 按键命令共用同一份，避免两处各配一套）。 */
-function hudDeps(): HudDeps {
-  return {
-    getModel: assembleHudModel,
-    fontSize: hudFontSize,
-    onSnooze: () => snoozeChip(5),
-    onHideHud: disableHud,
-  };
-}
-
-/** V4-6: click the chip → Level-2 HUD card; disabled/automation → QuickPick. */
+/** chip 点击的去处：**唯一页签**（驾驶舱）——监控内容在悬停里看，要看全局就去页面上。
+ *  自动化/静默宿主不开窗（否则会凭空多一个页签，测试的“页签恒为 1”也失去意义）。*/
 async function showChipOverview(): Promise<void> {
-  const disabled = !hudEnabled(vscode.workspace.getConfiguration('het').get('hud.disableHud'));
-  if (disabled || quietHost()) {
+  if (quietHost() || !contextRef) {
     await showChipQuickPick();
     return;
   }
-  if (!contextRef) {
-    await showChipQuickPick();
-    return;
-  }
-  openHudPanel(contextRef, hudDeps());
+  await vscode.commands.executeCommand('het.dashboard');
 }
 
 /** V3-3 fallback / automation: keyboard-reachable QuickPick overview. */
@@ -3961,7 +4387,7 @@ async function openProjectFolder(dest: string): Promise<void> {
     await new Promise((r) => setTimeout(r, 350));
     await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(dest));
   } catch (err) {
-    log(`[init] auto-open failed: ${err instanceof Error ? err.message : String(err)}`);
+    log('init', `auto-open failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -4168,7 +4594,7 @@ function netFacts(): { profile: NetPlan['profile']; summary: string } {
 /** 把决策记录写进输出面板 + 卡片（同一份事实，两处显示，可诊断）。 */
 function logNetDecision(): NetPlan {
   const plan = currentNetPlan();
-  log(netDecisionLine(plan));
+  log('env', netDecisionLine(plan));
   setSinglePageFacts({ network: netFacts() });
   return plan;
 }
@@ -4191,7 +4617,7 @@ async function fetchTemplateReference(context: vscode.ExtensionContext): Promise
     accel: plan.chains.ghAccel,
     accelFirst: plan.effective !== 'global',
   });
-  log(`[template] 在线获取 ${ref}（profile=${plan.profile}）候选：${candidates.map((c) => c.label).join(' → ')}`);
+  log('template', `在线获取 ${ref}（profile=${plan.profile}）候选：${candidates.map((c) => c.label).join(' → ')}`);
   const cacheDir = join(context.globalStorageUri.fsPath, 'downloads');
   const destDir = join(context.globalStorageUri.fsPath, 'template-ref', ref);
 
@@ -4219,19 +4645,19 @@ async function fetchTemplateReference(context: vscode.ExtensionContext): Promise
     },
   );
   if (!got.ok || !got.path) {
-    log(`[template] ${got.reason ?? '未知失败'}`);
-    log(`[template] 下一步：${templateFetchNextStep(ident.owner, ident.repo, ref)}`);
+    log('template', `${got.reason ?? '未知失败'}`);
+    log('template', `下一步：${templateFetchNextStep(ident.owner, ident.repo, ref)}`);
     void vscode.window.showWarningMessage(`${got.reason ?? '模板下载失败'}。${snapshotFallbackNotice(TEMPLATE_SNAPSHOT_VERSION)}`);
     return;
   }
   const ex = await extractTemplateTarball({ tarPath: got.path, destDir, onLog: log });
   if (!ex.ok) {
-    log(`[template] 解压/形状校验失败：${ex.reason}`);
+    log('template', `解压/形状校验失败：${ex.reason}`);
     void vscode.window.showWarningMessage(`模板包校验不通过：${ex.reason}。${snapshotFallbackNotice(TEMPLATE_SNAPSHOT_VERSION)}`);
     return;
   }
   const via = got.cached ? '缓存' : got.via ?? '未知源';
-  log(`[template] ✓ ${ref} 已就绪：${destDir}（via ${via}；sha256 ${TEMPLATE_TARBALL_SHA256.slice(0, 12)}…）`);
+  log('template', `✓ ${ref} 已就绪：${destDir}（via ${via}；sha256 ${TEMPLATE_TARBALL_SHA256.slice(0, 12)}…）`);
   const pick = await vscode.window.showInformationMessage(
     `模板 ${ref} 已就绪（${via}${got.degraded ? `；${got.degraded}` : ''}），sha256 校验通过。`,
     '打开文件夹',
@@ -4273,7 +4699,7 @@ async function preflightEnvGate(): Promise<{ ok: boolean; message?: string }> {
  * 早退（扩展未就绪）留在内层：没干活就不该报"完成"。
  */
 async function runEnvRemove(): Promise<{ ok: boolean; message: string }> {
-  const busy = await runWithBusy(busyHost(), 'envRemove', '移除托管环境', () => runEnvRemoveInner());
+  const busy = await runWithBusy(busyHost(), 'envRemove', () => runEnvRemoveInner());
   return busy.status === 'done' && busy.out ? busy.out : { ok: false, message: busy.message };
 }
 
@@ -4298,7 +4724,7 @@ async function runEnvRemoveInner(): Promise<{ ok: boolean; message: string }> {
       rmSync(homeLane, { recursive: true, force: true });
       removed.push(`托管车道：${homeLane}`);
     } catch (err) {
-      log(`[env] 清理车道失败：${err instanceof Error ? err.message : String(err)}`);
+      log('env', `清理车道失败：${err instanceof Error ? err.message : String(err)}`);
     }
   }
   let unregisterHint = '';
@@ -4364,10 +4790,10 @@ async function switchToSystemToolchain(): Promise<{ ok: boolean; message: string
     if (process.platform !== 'linux') {
       const applied = await applyMetadataPatch(project.root, { activate_code_coverage: false }, { persist: true });
       if (!applied.ok) {
-        log('[env] 覆盖率开关未能自动关闭（可手动在 metadata.json 设置 activate_code_coverage=false）');
+        log('env', '覆盖率开关未能自动关闭（可手动在 metadata.json 设置 activate_code_coverage=false）');
       }
     }
-    log('[env] toolchain → system（用户显式切换，车道判定被绕过）');
+    log('env', 'toolchain → system（用户显式切换，车道判定被绕过）');
     await refreshStatus();
     maybeToast('info', '已切换为本机工具链（system · 兼容模式）：构建/测试走本机工具链，覆盖率不可用。');
     return { ok: true, message: '已切换为本机工具链（system）。' };
@@ -4407,7 +4833,7 @@ async function switchToManagedToolchain(): Promise<{ ok: boolean; message: strin
   try {
     const file = join(project.root, 'metadata.json');
     await writeText(file, withProjectToolchain(await readText(file), TOOLCHAIN_MANAGED));
-    log('[env] toolchain → managed（用户显式切换）');
+    log('env', 'toolchain → managed（用户显式切换）');
     await refreshStatus();
     maybeToast('info', '已改回托管车道（managed）：先在「环境与工具链」里一键准备。');
     return { ok: true, message: '已改回托管车道（managed）。' };
@@ -4497,7 +4923,7 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
   const lane = laneForPlatform(process.platform);
   if (lane) {
     // Diagnostics: which requirements this lane heals itself vs asks the user for.
-    log(`[env] lane matrix: ${laneMatrixLine(lane.id)}`);
+    log('env', `lane matrix: ${laneMatrixLine(lane.id)}`);
   }
   // T19: the lifecycle record is the single place the user's decision lives.
   const recorded = readEnvPhaseRecord(ctx.globalState);
@@ -4519,12 +4945,11 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
   // 待准备, and a reload during the run cannot pretend nothing happened.
   void writeEnvPhaseRecord(ctx.globalState, withPhase(readEnvPhaseRecord(ctx.globalState), 'provisioning', Date.now(), { lane: plan?.provider }));
   // §7 忙语义（F.32）：**干活的这一段**走统一 helper —— 转圈+禁用、输出通道
-  // 「HeT DevTools · 环境」的 ▶/■ 两行、L1 忙点、幂等（进行中重复点击直接忽略）。
+  // 唯一输出通道里的 ▶/■ 两行、L1 忙点、幂等（进行中重复点击直接忽略）。
   // 同意框有意留在外面：那是用户的决定，不是"正在进行的工作"。
   const busy = await runWithBusy(
     busyHost(),
     'envPrepare',
-    '准备托管环境',
     () => provisionLane(plan, ctx),
     plan?.provider ? `provider=${plan.provider}` : undefined,
   );
@@ -4565,7 +4990,8 @@ async function provisionLane(plan: ProviderDecision | null, ctx: vscode.Extensio
         const aptMirror = wslAptMirror();
         // §F.43：导入前先把源决策讲清楚（值不值得等 340 MB，取决于走哪个源）。
         log(
-          `[wsl-import] rootfs 源：${rootfsPlan.rootfs.url ?? '(未指定)'}` +
+          'env',
+          `rootfs 源：${rootfsPlan.rootfs.url ?? '(未指定)'}` +
             (rootfsPlan.fallback.length ? `（兜底 ${rootfsPlan.fallback.length} 个）` : '') +
             ` · ${netDecisionLine(currentNetPlan())}`,
         );
@@ -4575,7 +5001,7 @@ async function provisionLane(plan: ProviderDecision | null, ctx: vscode.Extensio
           rootfs: rootfsPlan.rootfs,
           rootfsFallback: rootfsPlan.fallback,
           ...(aptMirror ? { aptMirror } : {}),
-          onLog: (line) => log(`[wsl-import] ${line}`),
+          onLog: (_domain, line) => log('env', line),
         });
         if (imp.ok && imp.distro) {
           await vscode.commands.executeCommand('het.refresh');
@@ -4696,7 +5122,7 @@ async function runEnvDump(): Promise<{ ok: boolean; path?: string; message: stri
     } catch {
       /* clipboard is best-effort (headless hosts) */
     }
-    log(`[dump] written: ${file}`);
+    log('dump', `written: ${file}`);
     maybeToast('info', `环境诊断已导出（路径已复制到剪贴板）：\n${file}`);
     return { ok: true, path: file, message: '已导出环境诊断。' };
   } catch (err) {
@@ -4839,7 +5265,7 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
   // T18: corporate mirror/proxy (pip · conan remote · http proxy).
   const mirror = laneMirrorConfig();
   if (mirror) {
-    log(`[env] 镜像/代理：${mirrorSummary(mirror)}`);
+    log('env', `镜像/代理：${mirrorSummary(mirror)}`);
   }
   let wslDistro: string | null = null;
   if (isWin && tc !== 'system') {
@@ -4868,11 +5294,11 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
     if (plan?.provider === 'linux-managed') {
       linuxManaged = true;
     } else {
-      log(`[conan] Linux 无隔离车道（provider=${plan?.provider ?? '?'}）→ 走原生；需要 apt+免密 root 才会启用 managed lane。`);
+      log('conan', `Linux 无隔离车道（provider=${plan?.provider ?? '?'}）→ 走原生；需要 apt+免密 root 才会启用 managed lane。`);
     }
   }
   if (linuxManaged) {
-    log(`[conan] Linux 托管车道：${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
+    log('conan', `Linux 托管车道：${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
     emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · Linux lane` });
     let summary: { ok: boolean; stdout: string; stderr: string };
     try {
@@ -4882,28 +5308,28 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
         profiles: userProfiles,
         mirror,
         onStdout: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
         onStderr: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
       });
       summary = s;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      channel?.appendLine(msg);
+      log('build', msg);
       emitCockpitEvent({ type: 'log:done', ok: false });
       throw new Error(msg);
     }
     lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
-    channel?.appendLine('');
+    // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: summary.ok });
     return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
   }
   if (wslDistro) {
-    log(`[conan] WSL2 托管车道：distro=${wslDistro} · ${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
+    log('conan', `WSL2 托管车道：distro=${wslDistro} · ${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
     emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · WSL2 ${wslDistro}` });
     const summary = await runWslConanCreate(wslDistro, project.root, {
       buildType,
@@ -4911,16 +5337,16 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
       profiles: userProfiles,
       mirror,
       onStdout: (c) => {
-        channel?.append(c);
+        logStream(c);
         emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
       },
       onStderr: (c) => {
-        channel?.append(c);
+        logStream(c);
         emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
       },
     });
     lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
-    channel?.appendLine('');
+    // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: summary.ok });
     return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
   }
@@ -4929,7 +5355,7 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
   // coverage unsupported — Apple clang has no GNU gcov). Lane-first, so a CLT
   // problem surfaces as actionable guidance instead of a deep CMake error.
   if (process.platform === 'darwin' && tc !== 'system') {
-    log(`[conan] macOS 托管车道：${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
+    log('conan', `macOS 托管车道：${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
     emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · macOS lane` });
     let macSummary: { ok: boolean; stdout: string; stderr: string };
     try {
@@ -4939,22 +5365,22 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
         profiles: userProfiles,
         mirror,
         onStdout: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
         onStderr: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      channel?.appendLine(msg);
+      log('build', msg);
       emitCockpitEvent({ type: 'log:done', ok: false });
       throw new Error(msg);
     }
     lastConanOutput = `${macSummary.stdout}\n${macSummary.stderr}`;
-    channel?.appendLine('');
+    // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: macSummary.ok });
     return { ok: macSummary.ok, stdout: macSummary.stdout, stderr: macSummary.stderr };
   }
@@ -4976,10 +5402,10 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
   // if the default is missing (never overwrite an existing user profile).
   if (profiles.length === 0) {
     const okProfile = await ensureConanDefaultProfile(conanExe);
-    log(`[conan] native 默认 profile ${okProfile ? 'ok' : '缺失且 detect 失败（conan 将报错，建议手动 conan profile detect）'}`);
+    log('conan', `native 默认 profile ${okProfile ? 'ok' : '缺失且 detect 失败（conan 将报错，建议手动 conan profile detect）'}`);
   }
 
-  log(`[conan] ${conanExe} create . (${buildType}) in ${project.root}${profiles.length ? ` profiles=${profiles.join(',')}` : ''}`);
+  log('conan', `${conanExe} create . (${buildType}) in ${project.root}${profiles.length ? ` profiles=${profiles.join(',')}` : ''}`);
 
   // F1: "toolchain=system" must mean *the host's* tools. Until now the template
   // always pulled `cmake/<metadata.cmake_version>` from ConanCenter, so even a
@@ -4987,10 +5413,10 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
   // Now: host cmake ≥ floor → HET_CMAKE_BUILD_REQUIRE=none (host cmake is used);
   // otherwise keep the pinned cmake but SAY SO with the three ways out.
   const cmakePlan = await planNativeCmake(project.metadata?.cmake_version, conanExe);
-  log(`[cmake] ${cmakePlan.reason}`);
+  log('cmake', `${cmakePlan.reason}`);
   if (cmakePlan.guide) {
-    channel?.appendLine(cmakePlan.guide);
-    log('[cmake] 提示：宿主 CMake 低于模板下限，本次将联网拉取模板钉死的版本');
+    logBlock('cmake', '本机 CMake 与模板门限的差异', cmakePlan.guide);
+    log('cmake', '提示：本机 CMake 低于模板下限，本次将联网拉取模板钉死的版本');
   }
 
   emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · ${project.metadata?.name ?? project.root}` });
@@ -5004,11 +5430,11 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
         { buildType, profiles },
         {
           onStdout: (c) => {
-            channel?.append(c);
+            logStream(c);
             emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
           },
           onStderr: (c) => {
-            channel?.append(c);
+            logStream(c);
             emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
           },
           timeoutMs,
@@ -5019,7 +5445,7 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
     deadlineOverrides(),
   );
   lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
-  channel?.appendLine('');
+  // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
   emitCockpitEvent({ type: 'log:done', ok: summary.ok });
   return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
 }
@@ -5035,7 +5461,7 @@ async function buildProject(): Promise<void> {
     void vscode.window.showWarningMessage(L('notify.noProject'));
     return;
   }
-  await runWithBusy(busyHost(), 'build', '构建', (ctx) => buildProjectInner(ctx), project.metadata.name ?? undefined);
+  await runWithBusy(busyHost(), 'build', (ctx) => buildProjectInner(ctx), project.metadata.name ?? undefined);
 }
 
 /**
@@ -5053,13 +5479,13 @@ function cleanupInjectedBeforeRun(root: string | undefined): void {
   try {
     const { removed, skipped } = cleanupStaleInjection(root);
     if (removed.length) {
-      log(`[test] 清掉上一轮中断留下的注入文件 ${removed.length} 个：${removed.map((f) => baseName(f)).join('、')}`);
+      log('test', `清掉上一轮中断留下的注入文件 ${removed.length} 个：${removed.map((f) => baseName(f)).join('、')}`);
     }
     for (const f of skipped) {
-      log(`[test] 同名但内容不是系统生成的，未动：${f}`);
+      log('test', `同名但内容不是系统生成的，未动：${f}`);
     }
   } catch (err) {
-    log(`[test] 注入文件清理失败（继续跑，不拦）：${err instanceof Error ? err.message : String(err)}`);
+    log('test', `注入文件清理失败（继续跑，不拦）：${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -5106,7 +5532,7 @@ async function buildProjectInner(ctx?: TaskRunContext): Promise<void> {
 
   const issues = parseCompilerOutput(`${result.stdout}\n${result.stderr}`);
   mapIssues(issues, project.root);
-  log(`[build] finished ok=${result.ok} issues=${issues.length}`);
+  log('build', `finished ok=${result.ok} issues=${issues.length}`);
   markBuildOutcome(result.ok);
   emitCockpitEvent({ type: 'issue:summary', count: issues.length });
 
@@ -5152,7 +5578,8 @@ async function executeTestRun(ctx?: TaskRunContext): Promise<{ ok: boolean; stdo
   lastTestSummary = parseGTestOutput(fullOutput);
   emitCockpitEvent({ type: 'issue:summary', count: issues.length });
   log(
-    `[test] ok=${result.ok} gtest=${JSON.stringify({ p: lastTestSummary.passed, f: lastTestSummary.failed, s: lastTestSummary.skipped })}`,
+    'test',
+    `ok=${result.ok} gtest=${JSON.stringify({ p: lastTestSummary.passed, f: lastTestSummary.failed, s: lastTestSummary.skipped })}`,
   );
   void refreshChip();
   // V5-6: the lane may have been provisioned by this run — re-grade health now.
@@ -5168,7 +5595,7 @@ async function runTests(): Promise<void> {
     void vscode.window.showWarningMessage(L('notify.noProject'));
     return;
   }
-  await runWithBusy(busyHost(), 'test', '构建并测试', (ctx) => runTestsInner(ctx), project.metadata.name ?? undefined);
+  await runWithBusy(busyHost(), 'test', (ctx) => runTestsInner(ctx), project.metadata.name ?? undefined);
 }
 
 async function runTestsInner(ctx?: TaskRunContext): Promise<void> {
@@ -5367,6 +5794,9 @@ async function previewDanger(plan: CleanPlan): Promise<string> {
   }
 }
 
+/** 唯一输出通道的引用（D 块：页内视图用它做"在输出面板里打开"）。 */
+let outputChannelRef: () => import('vscode').OutputChannel | undefined = () => undefined;
+
 export function deactivate(): void {
-  log('deactivated');
+  log('init', 'deactivated');
 }

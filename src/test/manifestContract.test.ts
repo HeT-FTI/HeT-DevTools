@@ -1,7 +1,6 @@
 import * as assert from 'node:assert';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { HUD_CLOSE_COMMAND, HUD_DIGITS, digitCommand } from '../features/hud/keys';
 import { stripCommentsCode } from './support/htmlFacts';
 
 /**
@@ -70,17 +69,15 @@ function literalRegistrations(): Set<string> {
 }
 
 /**
- * **表驱动注册**：命令 id 由数据生成（现在只有 HUD 的 1–9/Esc）。
+ * **表驱动注册**：命令 id 由数据生成。
  *
  * 这类注册没法用字面量正则找出来，所以在这里显式登记"生成器"，并断言生成出来的
  * 每一条命令都在清单里声明（等于把这个特例纳回门禁，而不是放它一马）。
+ *
+ * E 块把 HUD 页签并入悬停档后，唯一一个生成器（HUD 的 1–9/Esc）随之删除 ——
+ * 现在没有生成器了，但**机制留着**：下次再有表驱动注册，必须回到这里登记。
  */
-const GENERATED_REGISTRATIONS: Array<{ why: string; commands: () => string[] }> = [
-  {
-    why: 'HUD 的数字键位（1–9）与 Esc 由 `hudKeyCommands()` 表驱动注册',
-    commands: () => [...HUD_DIGITS.map(digitCommand), HUD_CLOSE_COMMAND],
-  },
-];
+const GENERATED_REGISTRATIONS: Array<{ why: string; commands: () => string[] }> = [];
 
 /**
  * **内部命令**：注册了但**有意不声明**（自动化 / 集成测试入口，不该出现在命令面板）。
@@ -95,6 +92,11 @@ const INTERNAL_COMMANDS: Readonly<Record<string, string>> = {
   'het.getChipState': '集成测试读 chip 状态',
   'het.getSlotState': 'c8 集成测试读"当前页内 Slot + 页签数"（页签恒为 1 的运行时证据）',
   'het.getTasks': 'B 块集成测试/现场排查读任务状态（在跑什么、最近成不成、能否取消）',
+  'het.getUiSnapshot': 'H 块一致性会话（c9）一次取齐"任务 × 输出 × 前端"三面（也便于现场排查）',
+  'het.getOutputLines': 'H 块一致性会话读唯一通道的尾部若干行（与 Output 面板逐字一致）',
+  'het.testRunTask': 'H 块一致性会话的长动作注入体（只在测试宿主 + HET_TASK_INJECT=1 时生效）',
+  'het.getTaskCenter': 'J 块读任务中心的**模型**（面板渲染的就是它；会话据此断言面板与事实一致）',
+  'het.getBoardPlan': 'K 块读上板前置检查的计划（能不能上板/缺什么/怎么办；面板与会话共用同一份）',
   'het.getCacheReport': 'K.1 集成测试/现场排查读缓存报表（分区与按架构体积）',
   'het.getBuildMatrix': 'K.1 集成测试读目标矩阵（证明目标只来自 .hetai/build-matrix.yml）',
   'het.getConanRuntime': '安装后校验读 conan 运行时',
@@ -134,11 +136,15 @@ describe('§F.47 manifest ↔ 代码 对账（命令 / 快捷键 / nls）', () =
       [],
       '内部名单里的命令已经声明了 → 请把它从名单删掉（名单必须与事实一致）',
     );
-    // 内部命令必须看着就像内部（统一前缀），别和用户可见命令混成一个样子
+    // 内部命令必须看着就像内部（统一前缀），别和用户可见命令混成一个样子。
+    // `testRun` 是 H 块加的注入入口：它**不能**叫 `het.test*`（会和用户可见的
+    // `het.testgen` 看着像一家），也不能叫 `get*`（它确实会起一个任务）。
+    // 而且未声明的命令根本不会出现在命令面板里 —— 用户永远搜不到它。
+    const INTERNAL_PREFIXES = ['get', 'has', 'env', 'new', 'testRun'] as const;
     for (const c of Object.keys(INTERNAL_COMMANDS)) {
       assert.ok(
-        /^het\.(get|has|env|new)/u.test(c),
-        `${c} 命名看不出是内部命令（内部命令要用 get/has/env/new 这类前缀，避免和用户命令混淆）`,
+        INTERNAL_PREFIXES.some((p) => c.startsWith(`het.${p}`)),
+        `${c} 命名看不出是内部命令（内部命令要用 ${INTERNAL_PREFIXES.join('/')} 这类前缀，避免和用户命令混淆）`,
       );
     }
   });
