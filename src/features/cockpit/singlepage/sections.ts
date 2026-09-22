@@ -301,11 +301,14 @@ export const SECTIONS: SectionDef[] = [
       card({
         id: 'release',
         tab: 'release',
-        label: '运行预检 / 发布',
-        sub: '与 CI `semver-release › release-gate` 同一套门禁',
+        // §11.2 走查：卡片名必须说“这一个按钮到底干什么” ——
+        // 以前叫「运行预检 / 发布」，但那个按钮只跑预检（发布中心是另一个入口）。
+        label: '发布前检查',
+        sub: '与 CI `semver-release.yml › gate`（Release Gate）同一套门禁；发布中心走 📦 流程（写 metadata + 提交）',
         state: 'idle',
         fact: '—',
         action: { id: 'preflight', label: '运行预检', kind: 'action' },
+        secondary: { id: 'release', label: '发布中心…', kind: 'action' },
         stage: 'panel',
         lazy: true,
       }),
@@ -323,8 +326,10 @@ export const SECTIONS: SectionDef[] = [
       card({
         id: 'audit',
         tab: 'collab',
-        label: '审计 / 模板',
-        sub: '工程域体检报告 + 模板落后上游多少提交',
+        // §11.2 走查：它只生成**一份报告**（结构/metadata/工具链/CI/Git → 结论），
+        // 以前的名字里带着“/ 模板”却根本没碰模板 —— 那是另一个入口的事。
+        label: '工程审计',
+        sub: '一份体检报告：结构 · metadata · 工具链 · 构建/测试 · 文档/覆盖率 · CI 配置 · Git 门禁 → 结论与建议',
         state: 'idle',
         fact: '—',
         action: { id: 'audit', label: '生成审计', kind: 'action' },
@@ -359,7 +364,8 @@ export const SECTIONS: SectionDef[] = [
       card({
         id: 'board',
         tab: 'bench',
-        label: '上板（bench）',
+        // §11.2 走查：动作名与 Intent 对齐（“上板验证”，不是内部词 bench）
+        label: '上板验证（真机采集）',
         sub: '真机烧录/部署 + 在板采集（Cortex-M: JLink/OpenOCD；Cortex-A: ADB/SSH）',
         state: 'idle',
         fact: '—',

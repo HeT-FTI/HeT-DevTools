@@ -56,6 +56,44 @@ describe('D-1 只允许一个 Output 通道', () => {
     );
   });
 
+  it('写通道只有三个入口（`log` / `logBlock` / `logStream`）—— 裸写 `channel.append*` 一律禁止', () => {
+    // 为什么：D 块只扫了 `log(` 调用点，于是 `extension.ts` 里留下了 35 处直接
+    // `channel?.appendLine(...)` —— 它们**绕过结构化行、也绕过环形缓冲**，
+    // 后果是页内「输出」视图少一段、按域过滤看不到。裸写多了就是"两套写法"，
+    // 这正是 D 块想根治的事。
+    // 两个例外，各有硬理由：
+    //   · `constants.ts` 是唯一的写入口本身；
+    //   · `core/busy.ts` 拿的是**注入的** BusyHost 通道（纯逻辑层不许 import vscode），
+    //     它用 `formatLogLine` 写行 + 同时进环形缓冲 —— 断言这一点，免得例外变成后门。
+    const allowed = [join('src', 'constants.ts'), join('src', 'core', 'busy.ts')];
+    const bad: string[] = [];
+    for (const f of sourceFiles()) {
+      if (allowed.some((a) => f.endsWith(a))) {
+        continue;
+      }
+      const text = stripComments(readFileSync(f, 'utf8'));
+      for (const m of text.matchAll(/\bchannel\??\.append(Line)?\(/gu)) {
+        bad.push(`${relative('.', f)}: ${m[0]}`);
+      }
+    }
+    assert.deepStrictEqual(
+      bad,
+      [],
+      `这些地方绕过了唯一写入口（请改用 log(domain,…) / logBlock(…, 标签, 文本) / logStream(原始流)）：\n${bad.join('\n')}`,
+    );
+    // 入口本身必须真的存在（否则是把检查架空）
+    const constants = readFileSync(join('src', 'constants.ts'), 'utf8');
+    for (const fn of ['export function log(', 'export function logBlock(', 'export function logStream(']) {
+      assert.ok(constants.includes(fn), `constants.ts 必须提供 ${fn}）`);
+    }
+    // 例外也要继续成立：busy.ts 必须用**共享的**行格式写注入通道
+    const busy = readFileSync(join('src', 'core', 'busy.ts'), 'utf8');
+    assert.ok(
+      busy.includes('formatLogLine(entry)') && busy.includes('outputLog.append(entry)'),
+      'core/busy.ts 的例外理由变了（它必须既用共享格式器、又进环形缓冲）—— 要么恢复这两件事，要么把它从白名单里删掉',
+    );
+  });
+
   it('不再有逐域通道名（`HeT DevTools · 构建` 这类写法）', () => {
     const bad: string[] = [];
     for (const f of sourceFiles()) {

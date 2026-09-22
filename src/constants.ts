@@ -39,3 +39,36 @@ export function log(domain: LogDomain, message: string): void {
   outputChannel().appendLine(formatLogLine(entry));
   outputLog.append(entry);
 }
+
+/**
+ * **外来文本块**（子进程输出 / 报表 / tail 片段）—— 唯一允许"原样写"的两种之一。
+ *
+ * 为什么需要它：这些不是我们的行（是 cmake/quality/审计的输出），逐行重写成
+ * `[domain] level text` 会**失真**（用户就是要原样拷出去搜）。但也不能让它消失在
+ * 结构化体系之外，所以：
+ *   · 通道里：先一行结构化**头**（谁打印的、多少行），再原样块；
+ *   · 环形缓冲里：**只放头那一行** —— 500 行的环形不该被一份报表吃光，而"按域过滤
+ *     能看到发生了什么"这个能力必须保留。
+ */
+export function logBlock(domain: LogDomain, label: string, text: string): void {
+  const lines = text.split(/\r?\n/u).filter((l) => l.length > 0);
+  const entry = {
+    at: Date.now(),
+    domain,
+    level: 'info' as const,
+    text: `${label}（${lines.length} 行原始输出，下面原样保留）`,
+  };
+  outputChannel().appendLine(formatLogLine(entry));
+  outputLog.append(entry);
+  outputChannel().append(text.endsWith('\n') ? text : `${text}\n`);
+}
+
+/**
+ * **实时流**（子进程的 stdout/stderr，半行也是常态）—— 唯一允许"逐块追加"的入口。
+ *
+ * 不进环形缓冲：流的"边界"由动作自己的结构化行给出（`▶ 开始` / `✓✗⌛⊘ 结束`），
+ * 中间的原始字节属于工具本身。
+ */
+export function logStream(text: string): void {
+  outputChannel().append(text);
+}

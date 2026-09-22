@@ -3,7 +3,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import * as vscode from 'vscode';
-import { outputChannel as outputChannelSingleton, log } from './constants';
+import { outputChannel as outputChannelSingleton, log, logBlock, logStream } from './constants';
 import { locateConan, runConanCreate, resolveConanRuntime, ensureConanDefaultProfile } from './core/conanService';
 import { parseGTestOutput, GTestRunSummary } from './core/gtestRunner';
 import { runHealthCheck, healthGapLabels, verdictZh } from './core/healthCheck';
@@ -662,7 +662,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand('het.cacheUsage', async () => {
       const report = cacheReportNow();
-      channel?.appendLine(cacheReportText(report));
+      logBlock('cache', '缓存报表', cacheReportText(report));
       channel?.show?.(true);
       void vscode.window.showInformationMessage(cacheVerdict(report));
       return report;
@@ -727,16 +727,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         busyHost(),
         'cacheClean',
         async (ctx) => {
-          channel?.appendLine(`[cache] ${plan.effect}`);
+          log('cache', plan.effect);
           if (plan.dirs?.length && projectRoot) {
             for (const dir of plan.dirs) {
               const abs = join(projectRoot, dir);
               rmSync(abs, { recursive: true, force: true });
-              channel?.appendLine(`[cache] 已删 ${abs}`);
+              log('cache', `已删 ${abs}`);
             }
           }
           for (const command of plan.commands) {
-            channel?.appendLine(`[cache] $ ${[command.cmd, ...command.args].join(' ')}`);
+            log('cache', `$ ${[command.cmd, ...command.args].join(' ')}`);
             await run(command.cmd, command.args, { cwd: projectRoot, timeoutMs: 30 * 60_000, signal: ctx.signal });
           }
           return true;
@@ -750,7 +750,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const freed = cleanResultText(before, after);
       lastCacheCleanAt = Date.now();
       cacheFactsMemo = undefined; // 清完立刻让下一次刷新重新算
-      channel?.appendLine(`[cache] ${freed}`);
+      log('cache', freed);
       void vscode.window.showInformationMessage(`清理完成：${freed}`);
       void refreshStatus();
     }),
@@ -815,13 +815,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       await writeText(ledgerFile, `${JSON.stringify(next, null, 2)}\n`);
       const busy = await runWithBusy(busyHost(), 'targetSwitch', async () => {
-        channel?.appendLine(`[target] ${check.text}`);
-        channel?.appendLine(`[target] profile: ${profileFile}（hash ${hash}）`);
+        log('target', check.text);
+        log('target', `profile: ${profileFile}（hash ${hash}）`);
         return check.text;
       });
       const text = busy.status === 'done' ? check.text : busy.message;
       if (issue) {
-        channel?.appendLine(`[target] 账本提示：${issue}`);
+        log('target', `账本提示：${issue}`);
       }
       void vscode.window.showInformationMessage(text);
     }),
@@ -1770,7 +1770,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     };
     const stream = (c: string): void => {
       lastDocsOutput += c;
-      channel?.append(c);
+      logStream(c);
       emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
     };
     // V5-4: Windows + managed → build docs INSIDE the WSL2 lane (docs stack is
@@ -1778,14 +1778,14 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (process.platform === 'win32' && currentProject && (await projectToolchainFor(currentProject)) !== 'system') {
       const laneDistro = await managedLaneDistro(currentProject);
       if (laneDistro) {
-        channel?.appendLine(`[docs] WSL2 车道文档构建：distro=${laneDistro} · ${root}`);
+        log('docs', `WSL2 车道文档构建：distro=${laneDistro} · ${root}`);
         emitCockpitEvent({ type: 'log:start', title: `docs/build.py · WSL2 ${laneDistro}` });
         let summary;
         try {
           summary = await runWslDocs(laneDistro, root, { onStdout: stream, onStderr: stream });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          channel?.appendLine(msg);
+          log('docs', msg);
           emitCockpitEvent({ type: 'log:done', ok: false });
           finish(false);
           return { ok: false, message: msg };
@@ -1815,14 +1815,14 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     // T07: macOS + managed → docs INSIDE the macOS lane (venv sphinx; doxygen/
   // graphviz must come from brew — we guide instead of installing).
   if (process.platform === 'darwin' && currentProject && (await projectToolchainFor(currentProject)) !== 'system') {
-    channel?.appendLine(`[docs] macOS 托管车道文档构建：${root}`);
+    log('docs', `macOS 托管车道文档构建：${root}`);
     emitCockpitEvent({ type: 'log:start', title: 'docs/build.py · macOS lane' });
     let summary;
     try {
       summary = await runMacDocs(root, { onStdout: stream, onStderr: stream, mirror: laneMirrorConfig() });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      channel?.appendLine(msg);
+      log('docs', msg);
       emitCockpitEvent({ type: 'log:done', ok: false });
       finish(false);
       return { ok: false, message: msg };
@@ -1844,14 +1844,14 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     if (process.platform === 'linux' && currentProject && (await projectToolchainFor(currentProject)) !== 'system') {
       const plan = await getCurrentProvisionPlan(false, provisionPrefs()).catch(() => null);
       if (plan?.provider === 'linux-managed') {
-        channel?.appendLine(`[docs] Linux 托管车道文档构建：${root}`);
+        log('docs', `Linux 托管车道文档构建：${root}`);
         emitCockpitEvent({ type: 'log:start', title: 'docs/build.py · Linux lane' });
         let summary;
         try {
           summary = await runLinuxDocs(root, { onStdout: stream, onStderr: stream });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          channel?.appendLine(msg);
+          log('docs', msg);
           emitCockpitEvent({ type: 'log:done', ok: false });
           finish(false);
           return { ok: false, message: msg };
@@ -1903,9 +1903,9 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
       finish(false);
       return { ok: false, message: '找不到 python（docs/build.py 需要）。请先安装 Python 3.10+。' };
     }
-    const preamble = `[docs] ${python} docs/build.py @ ${root}`;
-    lastDocsOutput += `${preamble}\n`;
-    channel?.appendLine(preamble);
+    const preamble = `${python} docs/build.py @ ${root}`;
+    lastDocsOutput += `[docs] ${preamble}\n`;
+    log('docs', preamble);
     // `docs/build.py` shells out to `sphinx-build` / `sphinx-intl` / `doxygen` /
     // `dot`. The interpreter we picked may live in a venv that is NOT on the
     // host PATH (e.g. a venv python resolved from the conan runtime), in which
@@ -1914,7 +1914,7 @@ function openDocsPanel(context: vscode.ExtensionContext): void {  const locateAr
     // Prepend the interpreter's own directory so its venv tools always resolve.
     const pyDir = dirname(python);
     const docsEnv = prependPath({ ...process.env }, pyDir, delimiter);
-    channel?.appendLine(`[docs] PATH += ${pyDir}`);
+    log('docs', `PATH += ${pyDir}`);
     emitCockpitEvent({ type: 'log:start', title: `docs/build.py（本机）` });
     // §3.5 / F.41：文档是典型长动作，但**必须有界**（曾经 timeoutMs: 0 → 挂死就转两小时）
     let result: ExecResult;
@@ -3034,7 +3034,7 @@ async function runCrossBuild(targetId?: string): Promise<{ ok: boolean; message:
         }
         // 裸写：子进程的**原始流**（半行也是常态）——结构化行只描述"动作的边界"，
         // 中间这段是 conan 自己的输出，逐行改写它反而会失真。
-        channel?.append(chunk);
+        logStream(chunk);
       };
       await withDeadline(
         '交叉编译',
@@ -3272,8 +3272,8 @@ async function runBoardBuild(mode: BenchMode = 'cross'): Promise<{ ok: boolean; 
         (timeoutMs) =>
           run(python, args, {
             cwd: root,
-            onStdout: (c) => channel?.append(c),
-            onStderr: (c) => channel?.append(c),
+            onStdout: (c) => logStream(c),
+            onStderr: (c) => logStream(c),
             timeoutMs,
           }),
         deadlineOverrides(),
@@ -5308,23 +5308,23 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
         profiles: userProfiles,
         mirror,
         onStdout: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
         onStderr: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
       });
       summary = s;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      channel?.appendLine(msg);
+      log('build', msg);
       emitCockpitEvent({ type: 'log:done', ok: false });
       throw new Error(msg);
     }
     lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
-    channel?.appendLine('');
+    // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: summary.ok });
     return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
   }
@@ -5337,16 +5337,16 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
       profiles: userProfiles,
       mirror,
       onStdout: (c) => {
-        channel?.append(c);
+        logStream(c);
         emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
       },
       onStderr: (c) => {
-        channel?.append(c);
+        logStream(c);
         emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
       },
     });
     lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
-    channel?.appendLine('');
+    // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: summary.ok });
     return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
   }
@@ -5365,22 +5365,22 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
         profiles: userProfiles,
         mirror,
         onStdout: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
         onStderr: (c) => {
-          channel?.append(c);
+          logStream(c);
           emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
         },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      channel?.appendLine(msg);
+      log('build', msg);
       emitCockpitEvent({ type: 'log:done', ok: false });
       throw new Error(msg);
     }
     lastConanOutput = `${macSummary.stdout}\n${macSummary.stderr}`;
-    channel?.appendLine('');
+    // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: macSummary.ok });
     return { ok: macSummary.ok, stdout: macSummary.stdout, stderr: macSummary.stderr };
   }
@@ -5415,8 +5415,8 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
   const cmakePlan = await planNativeCmake(project.metadata?.cmake_version, conanExe);
   log('cmake', `${cmakePlan.reason}`);
   if (cmakePlan.guide) {
-    channel?.appendLine(cmakePlan.guide);
-    log('cmake', '提示：宿主 CMake 低于模板下限，本次将联网拉取模板钉死的版本');
+    logBlock('cmake', '本机 CMake 与模板门限的差异', cmakePlan.guide);
+    log('cmake', '提示：本机 CMake 低于模板下限，本次将联网拉取模板钉死的版本');
   }
 
   emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · ${project.metadata?.name ?? project.root}` });
@@ -5430,11 +5430,11 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
         { buildType, profiles },
         {
           onStdout: (c) => {
-            channel?.append(c);
+            logStream(c);
             emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
           },
           onStderr: (c) => {
-            channel?.append(c);
+            logStream(c);
             emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
           },
           timeoutMs,
@@ -5445,7 +5445,7 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
     deadlineOverrides(),
   );
   lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
-  channel?.appendLine('');
+  // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
   emitCockpitEvent({ type: 'log:done', ok: summary.ok });
   return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
 }

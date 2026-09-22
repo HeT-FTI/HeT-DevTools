@@ -502,6 +502,17 @@ export async function run(): Promise<void> {
   console.log('[c9] 上板前置检查 OK — 默认只构建 · 上板要确认 · 缺东西给定向提示');
   assertOneTab(await snapshot(), 'K 块会话结束');
 
+  // ── ⑤ 输出写入口（收尾）：`logBlock` 的头行必须进环形缓冲 ──────────────
+  // 收尾轮把 35 处 `channel.appendLine` 收进三个入口；这里在真宿主里验证
+  // 「外来文本块」那条路真的落地（报表走 logBlock，头行进环形缓冲、原文进通道）。
+  await vscode.commands.executeCommand('het.cacheUsage');
+  const cacheEntries = (await outputEntries()).filter((e) => e.domain === 'cache');
+  assert.ok(
+    cacheEntries.some((e) => e.text.includes('缓存报表')),
+    `logBlock 的头行必须进环形缓冲（否则页内「输出」按域过滤看不到报表）：${cacheEntries.map((e) => e.text).join(' | ')}`,
+  );
+  console.log('[c9] 输出写入口 OK — 报表走 logBlock（头行进环形缓冲）');
+
   const end = await snapshot();
   assertOneTab(end, '会话结束');
   assert.strictEqual(end.tasks.active.length, 0, '会话结束时不该有还在跑的任务（喂狗之外的第二道兜底）');
