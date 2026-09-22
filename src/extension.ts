@@ -1,7 +1,7 @@
 import { isAbsolute, join, dirname, delimiter } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 import { outputChannel as outputChannelSingleton, log } from './constants';
 import { locateConan, runConanCreate, resolveConanRuntime, ensureConanDefaultProfile } from './core/conanService';
@@ -122,6 +122,19 @@ import {
   type BuildMatrix,
 } from './core/buildMatrix';
 import { checkTargetSwitch, ledgerPath, parseLedger, recordBuild } from './core/buildLedger';
+import {
+  archReport,
+  crossPlanFor,
+  matchesExpectation,
+  missingHints,
+  missingMatrixHint,
+  missingTools,
+  packageFolderFromCachePath,
+  packageUidFromList,
+  parseReadelf,
+  type ArchFact,
+  type CrossPlan,
+} from './core/crossCompile';
 import { cacheReportText, cacheVerdict, formatBytes, scanCache, type CacheReport } from './core/cacheUsage';
 import {
   CLEAN_SCOPES,
@@ -733,6 +746,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage(`清理完成：${freed}`);
       void refreshStatus();
     }),
+    // K 块：交叉编译（目标架构的包 + readelf 架构报告；目标只来自矩阵）
+    vscode.commands.registerCommand('het.crossBuild', (target?: string) => runCrossBuild(target)),
     vscode.commands.registerCommand('het.targetSwitch', async () => {
       const root = currentProject?.root;
       if (!root) {
@@ -2902,6 +2917,210 @@ function openTaskCenter(context: vscode.ExtensionContext): void {
       }
     },
   });
+}
+
+/**
+ * **交叉编译**（K 块：把原生交叉编译做成一等动作）。
+ *
+ * 一句话边界：它出**目标架构的包** + 一份 readelf 架构报告，**不跑测试**（`-tf=`），
+ * 也**不烧板**（那是「上板验证」）。
+ *
+ * 目标只有一个来源：`.hetai/build-matrix.yml`（G23）。缺文件/目标不存在时**显式说明**并给
+ * 同步入口，绝不静默回退到某个默认目标 —— "编出来的是 x86_64 却以为在编 arm"这种事故
+ * 一旦发生，用户在半小时后才发现。
+ */
+async function runCrossBuild(targetId?: string): Promise<{ ok: boolean; message: string }> {
+  const context = contextRef;
+  const root = currentProject?.root;
+  if (!context || !root) {
+    void vscode.window.showWarningMessage('未检测到工程（交叉编译需要工程根）。');
+    return { ok: false, message: '未检测到工程' };
+  }
+  // ── 1) 目标矩阵（唯一来源）──────────────────────────────────────────────
+  const matrixPath = join(root, BUILD_MATRIX_REL);
+  if (!(await pathExists(matrixPath))) {
+    const hint = missingMatrixHint();
+    log('build', hint.message);
+    for (const f of hint.fix) {
+      log('build', `怎么办：${f}`);
+    }
+    void vscode.window.showWarningMessage(`${hint.message}｜${hint.fix[0]}`);
+    return { ok: false, message: hint.message };
+  }
+  let matrix: BuildMatrix;
+  try {
+    matrix = parseBuildMatrix(await readText(matrixPath), BUILD_MATRIX_REL);
+  } catch (err) {
+    // 文件在、但读不懂：**不能**说成"没有这份文件"（那会把人引到错误的修法上）
+    const message = err instanceof Error ? err.message : String(err);
+    log('build', `目标矩阵解析失败：${message}`);
+    void vscode.window.showErrorMessage(message);
+    return { ok: false, message };
+  }
+  let target;
+  try {
+    target = pickTarget(matrix, targetId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log('build', message);
+    void vscode.window.showWarningMessage(message);
+    return { ok: false, message };
+  }
+
+  const profilePath = join(context.globalStorageUri.fsPath, 'conan-profiles', profileFileName(target, matrix));
+  const plan = crossPlanFor(matrix, target, profilePath);
+  await writeText(plan.profilePath, plan.profileText);
+  log('build', `profile 已生成：${plan.profilePath}（arch=${plan.arch} · os=${plan.os}）`);
+
+  // 目标切换守卫（K.1）：与账本里上次的目标不一致时先提示（并道不放任）
+  const ledgerFile = ledgerPath(context.globalStorageUri.fsPath, root);
+  const { ledger, issue } = parseLedger(await readText(ledgerFile).catch(() => ''), root);
+  const hash = profileHash(plan.profileText);
+  const check = checkTargetSwitch(
+    ledger,
+    { target: plan.targetId, arch: plan.arch, toolchain: plan.toolchainVersion, profileHash: hash },
+    ledger.lastTarget ? cacheReportNow().localBuilds.find((b) => b.target === ledger.lastTarget)?.bytes : undefined,
+  );
+  log('build', check.text);
+  if (issue) {
+    log('build', `账本提示：${issue}`);
+  }
+
+  // ── 2) 执行（工具链检查 → conan create → readelf 报告）─────────────────
+  const busy = await runWithBusy(
+    busyHost(),
+    'crossBuild',
+    async (ctx) => {
+      const toolchain = plan.toolchain;
+      // 工具链检查放在最前面：缺 gcc 时 conan 会在很久之后才报一句看不懂的错
+      const found = await Promise.all(
+        [toolchain?.cc, toolchain?.cxx, toolchain?.ar].filter((e): e is string => !!e).map(async (e) => [e, !!(await which(e))] as const),
+      );
+      const present = new Map(found);
+      const missing = missingTools(plan, (e) => present.get(e) === true);
+      if (missing.length > 0) {
+        const hint = missingHints(plan, missing);
+        for (const line of hint.lines) {
+          log('build', line);
+        }
+        // "怎么办"全部落到输出里（含 CI 那条路）—— 而失败行只带第一条，别把 4 行塞进一行
+        for (const fix of hint.fix) {
+          log('build', `怎么觡：${fix}`);
+        }
+        // 失败行里带第一条修法（任务中心/悬停都能看到"装哪个包 / 或去 CI"）
+        throw new Error(`${hint.lines[0]}｜${hint.fix[0]}`);
+      }
+
+      const conan = (await resolveConanRuntime())?.exe ?? 'conan';
+      log('build', `$ ${conan} ${plan.args.join(' ')}（cwd=${root}）`);
+      const tail: string[] = [];
+      const keep = (chunk: string): void => {
+        tail.push(chunk);
+        if (tail.length > 40) {
+          tail.shift();
+        }
+        // 裸写：子进程的**原始流**（半行也是常态）——结构化行只描述"动作的边界"，
+        // 中间这段是 conan 自己的输出，逐行改写它反而会失真。
+        channel?.append(chunk);
+      };
+      await withDeadline(
+        '交叉编译',
+        'cross',
+        (timeoutMs) =>
+          run(conan, plan.args, {
+            cwd: root,
+            timeoutMs,
+            signal: ctx.signal,
+            onStdout: keep,
+            onStderr: keep,
+          }),
+        deadlineOverrides(),
+      );
+
+      // 包目录：**问 conan**（不猜）—— 与模板里 CI 的 cross_compile_check.py 同一套推导
+      const meta = currentProject?.metadata;
+      const ref = `${meta?.name ?? ''}/${meta?.version ?? ''}`;
+      const listed = await run(conan, ['list', `${ref}:*`], { cwd: root, timeoutMs: 60_000 });
+      const uid = packageUidFromList(listed.stdout);
+      if (!uid) {
+        throw new Error(`conan list ${ref}:* 没有列出任何包 —— 这轮 create 没有产出包（看上面的原始输出）。`);
+      }
+      const folderOut = await run(conan, ['cache', 'path', `${ref}:${uid}`], { cwd: root, timeoutMs: 60_000 });
+      const folder = packageFolderFromCachePath(folderOut.stdout);
+      if (!folder) {
+        throw new Error(`conan cache path ${ref}:${uid} 没返回目录 —— 无法检查架构（报告不写假的）。`);
+      }
+      log('build', `包目录：${folder}`);
+
+      const facts = await readArchFacts(folder, plan);
+      if (facts.length === 0) {
+        throw new Error(`包目录里没有静态库（${folder}/lib/*.a）—— 无法验证目标架构。`);
+      }
+      for (const f of facts) {
+        log('build', `${matchesExpectation(f, plan.expectation) ? '✓' : '✗'} ${f.archive} — ${f.elfClass} · ${f.machine} · Tag_CPU_arch=${f.cpuArch}${plan.expectation?.thumb ? ` · Thumb=${f.thumb}` : ''}`);
+      }
+      const reportFile = join(context.globalStorageUri.fsPath, 'cross-reports', `${plan.targetId}-${Date.now()}.md`);
+      await writeText(reportFile, archReport(plan, facts));
+      ctx.artifact('架构报告', { path: reportFile });
+      ctx.artifact('目标包', { path: folder });
+
+      const bad = facts.filter((f) => !matchesExpectation(f, plan.expectation));
+      if (bad.length > 0) {
+        throw new Error(
+          `${bad.length} 个档案不符合目标架构（${plan.arch}）：${bad.map((f) => f.archive).join('、')} —— 报告：${reportFile}`,
+        );
+      }
+      return { target: plan.targetId, arch: plan.arch, facts: facts.length, report: reportFile };
+    },
+    `目标 ${plan.targetId} · arch=${plan.arch}`,
+  );
+
+  // 账本：这次用哪个目标编的（下次切换时才有依据提示）
+  const next = recordBuild(ledger, {
+    target: plan.targetId,
+    arch: plan.arch,
+    toolchain: plan.toolchainVersion,
+    profileHash: hash,
+    at: Date.now(),
+    buildDir: plan.buildDir,
+  });
+  await writeText(ledgerFile, `${JSON.stringify(next, null, 2)}\n`);
+
+  if (busy.status !== 'done') {
+    return { ok: false, message: busy.message };
+  }
+  const out = busy.out as { facts: number } | undefined;
+  const message = `交叉编译完成：目标 ${plan.targetId}（arch=${plan.arch}）· ${out?.facts ?? 0} 个档案架构已核对（未跑测试）。`;
+  void vscode.window.showInformationMessage(message);
+  return { ok: true, message };
+}
+
+/** 从包目录里读出每个静态库的架构事实（用**目标** ar 解包 + 本机 readelf 读头）。 */
+async function readArchFacts(folder: string, plan: CrossPlan): Promise<ArchFact[]> {
+  const libDir = join(folder, 'lib');
+  const names = await readdir(libDir).catch(() => [] as string[]);
+  const archives = names.filter((n) => n.endsWith('.a')).sort();
+  const ar = plan.toolchain?.ar ?? 'ar';
+  const out: ArchFact[] = [];
+  for (const archive of archives) {
+    const tmp = await mkdtemp(join(tmpdir(), 'het-arch-'));
+    try {
+      await run(ar, ['x', join(libDir, archive)], { cwd: tmp, timeoutMs: 30_000 });
+      const members = (await readdir(tmp)).filter((n) => !n.includes('CompilerId')).sort();
+      const member = members[0];
+      if (!member) {
+        continue;
+      }
+      // readelf 的字段名会被本地化 → LC_ALL=C（与 CI 脚本同一条纪律）
+      const env = { ...process.env, LC_ALL: 'C' };
+      const header = await run('readelf', ['-h', join(tmp, member)], { timeoutMs: 30_000, env });
+      const attrs = await run('readelf', ['-A', join(tmp, member)], { timeoutMs: 30_000, env });
+      out.push({ archive, member, ...parseReadelf(header.stdout, attrs.stdout) });
+    } finally {
+      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+  return out;
 }
 
 /** CI status view (G-19): GitHub Actions with D-9 tier + offline degradation. */

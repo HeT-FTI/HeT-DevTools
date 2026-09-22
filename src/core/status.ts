@@ -32,6 +32,7 @@ const STATUS_TEXT: Readonly<Record<string, string>> = {
   setupCopilot: '环境答疑',
   cacheClean: '清理缓存',
   targetSwitch: '切换目标',
+  crossBuild: '交叉编译中',
 };
 
 /** 忙语义落在哪个**域**：悬停卡用它把"上一次结果"换成"进行中"（表意准确）。 */
@@ -47,6 +48,8 @@ const STATUS_DOMAIN: Readonly<Record<string, StatusDomain>> = {
   envPrepare: 'env',
   envRemove: 'env',
   wslImport: 'env',
+  // 交叉编译也是"构建"这件事：状态栏 chip 与悬停的「构建验证」行要说"交叉编译中"
+  crossBuild: 'build',
 };
 
 export interface ActiveStatus {

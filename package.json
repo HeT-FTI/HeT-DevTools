@@ -382,6 +382,11 @@
         "command": "het.openTasks",
         "title": "任务（正在运行与最近完成；只读，唯一动作是取消）",
         "category": "HeT DevTools"
+      },
+      {
+        "command": "het.crossBuild",
+        "title": "交叉编译（目标来自 .hetai/build-matrix.yml；出目标架构包 + readelf 报告，不跑测试）",
+        "category": "HeT DevTools"
       }
     ],
     "menus": {

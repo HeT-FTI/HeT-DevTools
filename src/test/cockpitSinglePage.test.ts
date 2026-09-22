@@ -212,9 +212,9 @@ describe('cockpit 单页壳（A 批）', () => {
     assert.ok(busyHtml.includes('检查环境'), '忙时显示动作名');
   });
 
-  it('卡片行数 = 21，且按段归位；模板落后时给一行提示', () => {
-    assert.strictEqual(allCards().length, 21, '§5.1 的 21 张卡（删掉“只读摘要段”的 4 张重复卡）');
-    assert.strictEqual(html.split('data-card-row=').length - 1, 21);
+  it('卡片行数 = 22，且按段归位；模板落后时给一行提示', () => {
+    assert.strictEqual(allCards().length, 22, '§5.1 的 21 张卡 + K 块的「交叉编译」（删掉“只读摘要段”的 4 张重复卡）');
+    assert.strictEqual(html.split('data-card-row=').length - 1, 22);
     assert.ok(!html.includes('模板落后上游 0'), '不落后时不提示');
     const behind = cockpitSinglePageHtml({ ...model, templateBehind: 64 });
     assert.ok(behind.includes('模板落后上游 64 个提交'), '落后时提示（§11 联动）');

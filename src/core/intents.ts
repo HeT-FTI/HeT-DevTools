@@ -286,6 +286,26 @@ export const INTENTS: readonly Intent[] = [
 
   // ── 构建验证 ────────────────────────────────────────────────────────────
   {
+    id: 'crossBuild',
+    name: '交叉编译',
+    kind: 'task',
+    idem: 'crossBuild',
+    deadline: 'cross',
+    status: 'build',
+    output: { domain: 'build', focus: true },
+    command: 'het.crossBuild',
+    prompt: {
+      command: '/het-setup',
+      expect: '预期：目标架构的工具链怎么装（或指向 CI），以及目标包是否符合预期架构',
+      tags: ['[platform: cross]', '[arch: <matrix 目标 id>]'],
+      required: ['[arch'],
+      hint: '交叉编译不跑测试也不烧板：只关心目标架构的包与 readelf 报告；测试用「全量测试」，上板用「上板验证」。',
+    },
+    vscode: ['output', 'status'],
+    onFail: { next: '交叉编译失败：先看缺哪个交叉工具链（提示里给了 apt 包名），或把这一步交给 CI 的 cross-compile.yml。', needsHuman: true },
+    ci: { workflow: 'cross-compile.yml', job: 'cross-compile' },
+  },
+  {
     id: 'build',
     name: '编译打包',
     kind: 'task',

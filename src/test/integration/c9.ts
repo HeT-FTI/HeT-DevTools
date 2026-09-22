@@ -35,6 +35,28 @@ import { intentForBusy } from '../../core/intents';
 import { parseLogLine, type LogEntry } from '../../core/outputChannels';
 import { SECTIONS } from '../../features/cockpit/singlepage/sections';
 import { statusText } from '../../core/status';
+import { which } from '../../utils/exec';
+
+/** 模板里的目标矩阵（夹具里没有这份文件：先验"没有时的说法"，再写进去验"目标只来自它"）。 */
+const MATRIX_YAML = [
+  'package_ref: mini-fcpp/1.0.0',
+  '',
+  'defaults:',
+  '  mode: default',
+  '  toolchain_version: 11.3.rel1',
+  '  create_extra_args: --build=missing --test-folder=',
+  '',
+  'targets:',
+  '  - id: linux-armv7',
+  '    default: true',
+  '    enabled: true',
+  '    build_kind: linux',
+  '    os: Linux',
+  '    arch: armv7',
+  '    toolchain_versions:',
+  '      - 11.3.rel1',
+  '',
+].join('\n');
 
 /** 会话压力：Section/Slot 来回切换次数（计划要求 ≥50）。 */
 const SWITCHES = 52;
@@ -373,6 +395,60 @@ export async function run(): Promise<void> {
     ['succeeded', 'failed', 'cancelled', 'timedOut'],
     '四种出口都要在会话里真的跑到（成功/失败/取消/超时）',
   );
+
+  // ── ③ K 块：交叉编译（目标只来自矩阵；缺工具链时给定向提示）──────────
+  // 夹具里**没有** .hetai/build-matrix.yml：先验"没有它时的说法"（不许静默空下拉），
+  // 再把矩阵写进去 —— 目标必须跟着文件变（单一来源）。
+  const noMatrix = (await vscode.commands.executeCommand('het.crossBuild')) as { ok: boolean; message: string };
+  assert.strictEqual(noMatrix.ok, false, '没有矩阵时不许"编一个默认目标"');
+  assert.match(noMatrix.message, /build-matrix\.yml/u, `要说清缺哪份文件：${noMatrix.message}`);
+  const matrixHint = (await vscode.commands.executeCommand('het.getBuildMatrix')) as { error?: string };
+  assert.match(matrixHint.error ?? '', /build-matrix\.yml/u, '诊断命令也要如实报错（不许返回空目标表）');
+
+  const ws = vscode.workspace.workspaceFolders?.[0];
+  assert.ok(ws, '会话必须有工作区');
+  const matrixFile = vscode.Uri.joinPath(ws.uri, '.hetai', 'build-matrix.yml');
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(ws.uri, '.hetai'));
+  await vscode.workspace.fs.writeFile(matrixFile, Buffer.from(MATRIX_YAML, 'utf8'));
+  const matrix = (await vscode.commands.executeCommand('het.getBuildMatrix')) as {
+    packageRef?: string;
+    targets?: Array<{ id: string; arch?: string; toolchain?: string }>;
+  };
+  assert.strictEqual(matrix.targets?.length, 1, '目标表必须来自刚写的文件（没有第二份清单）');
+  assert.strictEqual(matrix.targets?.[0].id, 'linux-armv7');
+  assert.strictEqual(matrix.targets?.[0].arch, 'armv7');
+
+  const cc = 'arm-linux-gnueabihf-gcc';
+  const hasCc = !!(await which(cc));
+  const cross = (await vscode.commands.executeCommand('het.crossBuild', 'linux-armv7')) as { ok: boolean; message: string };
+  const crossLines = (await outputEntries()).filter((e) => e.text.includes('交叉编译'));
+  assert.strictEqual(crossLines.filter((e) => e.level === 'step').length, 1, '交叉编译只留一行开始');
+  assert.strictEqual(
+    crossLines.filter((e) => ['ok', 'fail', 'timeout', 'cancel'].includes(e.level)).length,
+    1,
+    '交叉编译只留一行终态',
+  );
+  if (!hasCc) {
+    // 本机没有交叉工具链（开发机的常态）：失败必须是**定向的** —— 点名包名 + 指一条 CI 路
+    assert.strictEqual(cross.ok, false);
+    // 找"定向"的两行要看整段输出（“怎么觡”行不一定带动作名）
+    const tail = (await outputEntries()).slice(0, 30).map((e) => e.text).join('\n');
+    const msg = `${cross.message}\n${tail}`;
+    assert.match(msg, new RegExp(cc, 'u'), `要说清缺哪个可执行：${msg}`);
+    assert.match(msg, /apt-get install/u, '要给可复制的安装命令');
+    assert.match(msg, /cross-compile\.yml/u, '要给"交给 CI"这条路');
+    const tc = await taskCenter();
+    const row = [...tc.running, ...tc.recent].find((r) => r.id === 'crossBuild');
+    assert.ok(row, '交叉编译必须进任务中心');
+    assert.strictEqual(row?.state, 'failed');
+    assert.match(row?.reasonText ?? '', /arm-linux-gnueabihf-gcc|工具链/u, '任务中心也要能看到原因');
+    assert.ok((row?.nextStep ?? '').length > 0, '失败必须给下一步');
+  } else {
+    console.log(`[c9] 本机装了 ${cc}：交叉编译走了真实路径（结论：${cross.ok ? 'ok' : cross.message}）`);
+    assert.ok(crossLines.some((e) => e.level === 'ok' || e.level === 'fail'), '必须有终态行');
+  }
+  console.log(`[c9] 交叉编译 OK — 目标来自矩阵 · ${hasCc ? '本机有工具链' : '缺工具链时提示含包名与 CI 路线'}`);
+  assertOneTab(await snapshot(), 'K 块会话结束');
 
   const end = await snapshot();
   assertOneTab(end, '会话结束');

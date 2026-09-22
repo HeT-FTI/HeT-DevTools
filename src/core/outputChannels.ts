@@ -186,8 +186,8 @@ export function nextStepHint(action: string): string {
     case 'wslImport':
       return '可换源重试（配置 › 网络与源），或手动下载 rootfs 后指定本地路径。';
     case 'docsBuild':
-      return '若要补源码注释，用「文档注释补全（Copilot）」，再回来编译。';
-    case 'quality':
+      return '若要补源码注释，用「文档注释补全（Copilot）」，再回来编译。';    case 'crossBuild':
+      return '缺交叉工具链时提示里给了包名（本机装需要 root）；也可以交给 CI：cross-compile.yml 已在 Linux runner 上备好工具链。';    case 'quality':
       return '若提示某工具未安装，按面板里的"谁装、怎么装"处理；`--fix` 类命令可在终端里自己跑。';
     case 'commitCopilot':
       return '若 Chat 没打开：在 Copilot Chat 里执行 `/het-commit`；不想用 Copilot 就走「手动提交」。';

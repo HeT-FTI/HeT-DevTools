@@ -110,7 +110,7 @@ export const SECTIONS: SectionDef[] = [
     rail: '🔨',
     railLabel: '构建',
     icon: 'beaker',
-    hint: '消费依赖 · 编译打包 · 全量测试 · 覆盖率',
+    hint: '消费依赖 · 编译打包 · 交叉编译 · 全量测试 · 覆盖率',
     foldedByDefault: true,
     cards: [
       card({
@@ -136,6 +136,18 @@ export const SECTIONS: SectionDef[] = [
         action: { id: 'build', label: '编译打包', kind: 'action' },
         stage: 'output',
         lazy: false,
+      }),
+      card({
+        id: 'crossBuild',
+        tab: 'buildTest',
+        label: '交叉编译（目标架构 · 不跑测试）',
+        sub: '目标只来自 .hetai/build-matrix.yml：按 arch/os 生成 conan profile，出目标架构的包 + readelf 架构报告',
+        state: 'idle',
+        fact: '—',
+        action: { id: 'crossBuild', label: '交叉编译', kind: 'action' },
+        stage: 'output',
+        // 懒加载：这一段默认折叠，展开时才会渲染出这张卡的动作按钮
+        lazy: true,
       }),
       card({
         id: 'testFull',
