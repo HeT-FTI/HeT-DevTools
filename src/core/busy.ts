@@ -21,7 +21,7 @@ import { BUSY_ACTIONS, OUTPUT_CHANNEL_NAME, channelDef, formatLogLine, nextStepH
 import { intentForBusy } from './intents';
 import { outputLog } from './outputLog';
 import { pickActiveStatus, type ActiveStatus } from './status';
-import type { DeadlineKind } from './deadlines';
+import type { DeadlineKind, DeadlineOverrides } from './deadlines';
 import { TaskStore, type Task, type TaskSnapshot } from './tasks';
 
 /** single writer：整个扩展只有这一份 Task 仓库（UI 与功能模块只读）。 */
@@ -174,6 +174,8 @@ export interface BusyHost {
   now?(): number;
   /** 谁发起的这次执行（问责用）。缺省 = 'card'。 */
   owner?(): string;
+  /** §3.5 阈值覆盖（宿主从设置 `het.task.deadlines` 读；缺省 = 只用表里的默认值）。 */
+  deadlineOverrides?(): DeadlineOverrides;
 }
 
 export type BusyStatus = 'done' | 'skipped' | 'failed';
@@ -210,6 +212,9 @@ export async function runWithBusy<T>(
   // 单一来源：Intent 名 → 通道 label → action id（三级兜底，绝不显示 undefined）
   const shown = intentForBusy(action)?.name || def?.label || action;
   store.useClock(host.now ?? (() => Date.now()));
+  // 阈值覆盖（§3.5 的设置）必须同时作用于**执行层**（`withDeadline`）与**对账器**
+  // （`deadlineMs`）—— 否则用户调大设置后，对账器仍按默认值把任务判超时。
+  store.useDeadlineOverrides(host.deadlineOverrides ?? (() => ({})));
   const decision = store.dispatch({
     action,
     label: shown,

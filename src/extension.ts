@@ -25,14 +25,18 @@ import { ReleaseState, showReleasePanel } from './features/release/panel';
 import { PreflightState, PreflightItem, showPreflightPanel } from './features/preflight/panel';
 import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './features/slots/host';
 import { showOutputPanel } from './features/output/panel';
-import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
+import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, getSinglePageFacts, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
 import { showSettingsPanel } from './features/settings/panel';
 import { showTestResultsPanel } from './features/testResults/panel';
 import { DashboardSnapshot } from './features/ui';
 import { registerTestController } from './features/testExplorer/controller';
-import { chipSpec } from './features/statusChip';
+import { chipSpec, chipStatusItems, type ChipModel } from './features/statusChip';
+import { hetTabCount, tabReport } from './features/tabs';
+import { outputLog } from './core/outputLog';
+import { formatLogLine } from './core/outputChannels';
+import { busyDomainOf } from './core/status';
 import {
   addDependency,
   listDependencies,
@@ -50,7 +54,7 @@ import { pathExists, readText, writeText } from './utils/fs';
 import { fcppStyleStringify } from './core/metadataText';
 import { findPython, run, which, type ExecResult } from './utils/exec';
 import { docsOptions, graphvizMismatch } from './core/docsService';
-import { currentStatus, runWithBusy, type BusyHost, type TaskRunContext } from './core/busy';
+import { currentStatus, runWithBusy, type BusyHost, type BusyResult, type TaskRunContext } from './core/busy';
 import {
   activeTasks,
   busySnapshot,
@@ -473,6 +477,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const offTaskChange = taskStore().onChange(() => persistTasks());
   context.subscriptions.push({ dispose: offTaskChange });
+  // 2b) **忙语义一变就重画状态栏 chip**（H 块查出来的真问题）。
+  //
+  // 为什么必须在这里：chip 是唯一"永远看得见"的那一档（悬停要点、页内要开着窗口），
+  // 而它只由 `refreshChip()` 推。以前只有"激活 / 工作区变化 / 动作**结束**后取数"
+  // 会走到那儿 —— 于是长动作**进行中**的时候，chip 还在显示上一次的健康分：
+  // 用户看到的是"点了没反应"，而 §F.35 想要的恰恰是"进行中"（那正是"构建时 chip
+  // 飘红"修完之后的下一个坑）。
+  //
+  // 只在"在跑什么"真的变了时才重画：心跳/进度也会触发 onChange，每个心跳重画一遍
+  // 是无意义的开销（也是"状态栏闪烁"的来源）。
+  let lastBusySig = '';
+  const offBusyChip = taskStore().onChange(() => {
+    const sig = activeTasks().map((t) => `${t.id}:${t.state}`).join(',');
+    if (sig === lastBusySig) {
+      return;
+    }
+    lastBusySig = sig;
+    void refreshChip();
+  });
+  context.subscriptions.push({ dispose: offBusyChip });
   // 3) 对账器：每 15s 把"超 deadline / 心跳断了"的任务收敛成 timedOut（并写日志便于复盘）
   const reconciler = setInterval(() => {
     const changed = reconcileBusy();
@@ -534,6 +558,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       active: activeTasks(),
       recent: taskStore().list().slice(0, 10),
     })),
+    // H 块：**三元组诊断**（Task / 输出 / 前端）—— 一致性会话与现场排查共用。
+    // 为什么要一次取齐：会话断言的正是"三面说的是不是同一件事"；分三次取数，
+    // 中间的忙/闲一变就会随机红/绿（那是测试的错，不是产品的错）。
+    vscode.commands.registerCommand('het.getUiSnapshot', async () => {
+      const model = await buildChipModel();
+      const status = currentStatus();
+      return {
+        tabs: hetTabCount(),
+        tabReport: tabReport(),
+        slot: { open: currentDetailView() ?? null, dropped: slotHostDiagnostics().droppedCount },
+        chip: lastChip,
+        // 三档（芯片/悬停/页内）共用的状态项：悬停文案与页内卡片都由它推导
+        items: chipStatusItems(model),
+        busy: status ? { action: status.action, text: status.text, domain: busyDomainOf(status.action) ?? null } : null,
+        // 页内（第 3 档）读的就是 Facts.status（`notifySinglePageBusy` 写）
+        page: { status: getSinglePageFacts().status ?? null },
+        sections: getCockpitView(),
+        tasks: { active: activeTasks(), recent: taskStore().list().slice(0, 10) },
+      };
+    }),
+    // H 块：唯一通道的尾部 N 行（结构化字符串，与 Output 面板里看到的一模一样）
+    vscode.commands.registerCommand('het.getOutputLines', (arg?: number) => {
+      const n = Math.max(1, Math.min(outputLog.cap, Number(arg) || 200));
+      return outputLog.tail({}, n).map(formatLogLine);
+    }),
+    // H 块：长动作注入体（只在测试宿主 + `HET_TASK_INJECT=1` 时生效）
+    vscode.commands.registerCommand('het.testRunTask', (spec?: TaskInjection) => runInjectedTask(spec)),
     // 取消：只有一个在跑就直接取消；多个则让用户选（**不做静默选择**）
     vscode.commands.registerCommand('het.task.cancel', async () => {
       const running = activeTasks();
@@ -742,7 +793,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('het.getSlotState', () => ({
       open: currentDetailView() ?? null,
       dropped: slotHostDiagnostics().droppedCount,
-      tabs: vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => String((t.input as { viewType?: string } | undefined)?.viewType ?? '').startsWith('het.')).length,
+      tabs: hetTabCount(),
     })),
     vscode.commands.registerCommand('het.getConanRuntime', async () => ensureConanRuntime()),
     vscode.commands.registerCommand('het.getEnvRows', async () => ensureToolDiscovery()),
@@ -2401,10 +2452,70 @@ function busyHost(): BusyHost {
       notifyBusy: (action, on) => notifySinglePageBusy(action, on),
       // 发起方（面板）自己会弹结果提示 —— 这里不再叠一层 toast
       notifyDone: () => undefined,
+      // §3.5：阈值覆盖（同一个设置也喂给状态机的 `deadlineMs`，见 `runWithBusy`）
+      deadlineOverrides,
       register: (d) => contextRef?.subscriptions.push(d),
     });
   }
   return appBusyHost;
+}
+
+/**
+ * H 块：**长动作注入体**（一致性会话用）。
+ *
+ * 为什么不跑真实构建：H 要证的是"任务 × 输出 × 前端三面说的是不是同一件事"——这是
+ * `runWithBusy` 这一层的性质；真实工具链（conan / cmake / doxygen）由 c1 / c2 /
+ * real 覆盖。注入体让四种出口（成功 / 失败 / 超时 / 取消）在 30 秒内各跑一遍，而且
+ * **四种出口走的是同一条产品代码**（同一个 `runWithBusy` + 同一个 TaskStore + 同一个
+ * 通道 + 同一套三档投影）。
+ *
+ * 安全边界（两道）：① `quietHost()`（自动化宿主；与 `askModal` / toast 抑制同一个口子）；
+ * ② 还要 `HET_TASK_INJECT=1`（由 `scripts/run-c9.mjs` 显式打开）。
+ * 于是"用户能点到一个假的构建"这件事不存在：命令未声明（命令面板里根本搜不到），
+ * 而且只有被显式打开的自动化宿主才会认它。
+ *
+ * 为什么不用 `isTestHost`：那是"argv 里有 `--extensionTestsPath`"——实测在 1.134 的
+ * **扩展宿主**进程里根本没有这个参数（1.137 起连主进程也不再带），拿它当守卫会让
+ * 注入体永远打不开（第一次跑 c9 就踩了：`isTestHost=false`）。
+ */
+interface TaskInjection {
+  /** 真实 Intent 的 action id（动作名/域/阈值全部从 Intent 表推导，不许另传字串）。 */
+  action?: string;
+  mode?: 'ok' | 'fail' | 'hang';
+  ms?: number;
+}
+
+async function runInjectedTask(spec?: TaskInjection): Promise<BusyResult<unknown> | null> {
+  if (!quietHost() || process.env.HET_TASK_INJECT !== '1') {
+    // 不静默返回（"点了没反应"是我们一直在根治的毛病）：把拒绝原因直接说出来
+    throw new Error(
+      `长动作注入体未启用（quietHost=${quietHost()}，HET_TASK_INJECT=${process.env.HET_TASK_INJECT ?? '(unset)'}）—— 只有一致性会话（npm run test:c9）能跑它`,
+    );
+  }
+  const action = spec?.action ?? '';
+  const mode = spec?.mode ?? 'ok';
+  const ms = Number(spec?.ms ?? 200);
+  const wait = (ms2: number): Promise<void> => new Promise((r) => setTimeout(r, ms2));
+  return runWithBusy(
+    busyHost(),
+    action,
+    async (ctx) => {
+      if (mode === 'ok') {
+        await wait(ms);
+        return 'ok';
+      }
+      if (mode === 'fail') {
+        await wait(ms);
+        throw new Error('注入失败（H 块一致性会话）');
+      }
+      // hang：**不心跳也不结束** —— 只等 abort（取消）或对账器判超时。
+      // 这正是"脚本挂住"的真实现场：没有心跳，UI 只能靠 deadline + 对账器把它收敛。
+      return await new Promise((_resolve, reject) => {
+        ctx.signal?.addEventListener('abort', () => reject(new Error('注入体被中止')), { once: true });
+      });
+    },
+    '注入体',
+  );
 }
 
 /** Pre-release gate (G-13): checklist aligned with CI gates. */
@@ -3688,11 +3799,14 @@ async function probeCoverage(root?: string): Promise<{ found: boolean; line: num
   }
 }
 
-/** Push the latest model into the single status-bar chip (hide = invisible). */
-async function refreshChip(): Promise<void> {
-  if (!statusItem) {
-    return;
-  }
+/**
+ * **三档（芯片 / 悬停 / 页内）共用的状态事实**（§3.6）。
+ *
+ * 抽出来的理由：诊断命令 `het.getUiSnapshot` 必须能取到"用户此刻看到的那一份" ——
+ * 如果只有 `refreshChip` 内部会拼这个模型，测试就只能自己再拼一遍（那就是第二个真相，
+ * "chip 说成功、测试说失败"的老问题会以新形式回来）。
+ */
+async function buildChipModel(): Promise<ChipModel> {
   const st = getCockpitState();
   const [envSummary, docsArt, cov] = await Promise.all([
     currentEnvSummary(),
@@ -3703,7 +3817,7 @@ async function refreshChip(): Promise<void> {
   const docs = docsRunning
     ? { state: 'running' as const, doxygen: false, sphinx: false }
     : docsRowState(docsArt, lastDocs);
-  const spec = chipSpec({
+  return {
     projectName: currentProject?.metadata?.name ?? '',
     health: lastHealth?.score ?? null,
     running: currentStatus()?.text ?? (docsRunning ? '构建文档' : st.top.running),
@@ -3726,7 +3840,15 @@ async function refreshChip(): Promise<void> {
     healthVerdict: lastHealth?.verdict ? verdictZh(lastHealth.verdict) : null,
     healthGaps: lastHealth?.gaps ?? null,
     cache: chipCacheFacts(),
-  });
+  };
+}
+
+/** Push the latest model into the single status-bar chip (hide = invisible). */
+async function refreshChip(): Promise<void> {
+  if (!statusItem) {
+    return;
+  }
+  const spec = chipSpec(await buildChipModel());
   if (!spec) {
     statusItem.hide();
     lastChip = null;

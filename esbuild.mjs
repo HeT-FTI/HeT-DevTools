@@ -23,6 +23,7 @@ const c5 = args.includes('--c5');
 const c6 = args.includes('--c6');
 const c7 = args.includes('--c7');
 const c8 = args.includes('--c8');
+const c9 = args.includes('--c9');
 const real = args.includes('--real');
 
 /** @type {import('esbuild').BuildOptions} */
@@ -161,6 +162,15 @@ function buildOptions() {
       ...common,
       entryPoints: [join(srcDir, 'test', 'integration', 'c8.ts')],
       outfile: join(outDir, 'test-integration', 'c8.js'),
+    });
+  }
+
+  // 10c) C9 consistency session (§6-H: 三元组一致 + 四出口，0 人工)
+  if (c9) {
+    options.push({
+      ...common,
+      entryPoints: [join(srcDir, 'test', 'integration', 'c9.ts')],
+      outfile: join(outDir, 'test-integration', 'c9.js'),
     });
   }
 

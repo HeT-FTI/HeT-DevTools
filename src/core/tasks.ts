@@ -15,7 +15,7 @@
  * 纯逻辑：不 import vscode，时间与副作用全部由调用方注入，因此可以在无人值守测试里
  * 把超时/取消/重启恢复全跑一遍（门禁 G4）。
  */
-import { deadlineFor, type DeadlineKind } from './deadlines';
+import { deadlineFor, type DeadlineKind, type DeadlineOverrides } from './deadlines';
 
 export type TaskState =
   | 'queued'
@@ -144,6 +144,14 @@ export class TaskStore {
   private readonly aborts = new Map<string, AbortController>();
   private nowFn: () => number;
   private readonly listeners = new Set<(task: Task) => void>();
+  /**
+   * 阈值覆盖的来源（H 块修的坑）：设置 `het.task.deadlines` 从 B 块起就写在
+   * 文档与错误提示里（"仍超时就调大设置 …"），但**只有 exec 层读了它**，
+   * 状态机的 `deadlineMs` 一直取表里的默认值 —— 于是用户调大设置后，
+   * 对账器照样按默认值把任务收敛成 `timedOut` 并 abort 子进程。
+   * 现在两条路径读**同一份**覆盖值。
+   */
+  private overridesFn: () => DeadlineOverrides = () => ({});
 
   constructor(now: () => number = () => Date.now()) {
     this.nowFn = now;
@@ -152,6 +160,11 @@ export class TaskStore {
   /** 换时间源（宿主注入 `host.now` / 单测用假时钟）。 */
   useClock(now: () => number): void {
     this.nowFn = now;
+  }
+
+  /** 换阈值覆盖来源（宿主注入设置读取；缺省 = 只用 `core/deadlines.ts` 的表）。 */
+  useDeadlineOverrides(fn: () => DeadlineOverrides): void {
+    this.overridesFn = fn;
   }
 
   /** 订阅状态变化（宿主用它持久化快照；返回退订函数）。 */
@@ -221,7 +234,7 @@ export class TaskStore {
       };
     }
     const now = this.now();
-    const deadlineMs = deadlineFor(input.deadlineKind);
+    const deadlineMs = deadlineFor(input.deadlineKind, this.overridesFn());
     const task: Task = {
       id,
       action: input.action,
@@ -382,6 +395,7 @@ export class TaskStore {
     }
     this.tasks.clear();
     this.aborts.clear();
+    this.overridesFn = () => ({});
   }
 
   private require(id: string): Task {

@@ -240,8 +240,15 @@ describe('§F.46 用户流 ⑤：编译文档（含"缺工具"这条最常见的
       templateBehind: 0,
       docs: 'fail',
     })!;
-    assert.ok(html.tooltip.includes('$(sync~spin) 构建中'), '正在编译 → 该行显示进行中');
+    assert.ok(html.tooltip.includes('$(sync~spin) 进行中'), '正在编译 → 该行显示进行中');
     assert.ok(!html.tooltip.includes('技术文档 | ✗'), '不许把上一次失败当结论');
+    // H 块：忙的**写法**只有一种 —— 模块文档以前自己写「构建中」，同一张表里
+    // 构建验证说「进行中」而它说「构建中」（一个概念两种字）。这一条钉住统一口径。
+    const runningCell = html.tooltip.split('\n').find((l) => l.includes('模块文档')) ?? '';
+    assert.ok(
+      runningCell.includes('进行中'),
+      `忙时该行必须用与其它域同一串字「进行中」：${runningCell}`,
+    );
 
     // 缺 doxygen 这条半路：错误里要是**可执行**的说明，不是"检查失败"
     resetBusy();

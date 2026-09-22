@@ -21,6 +21,8 @@ export interface BusyHostOptions {
   notifyDone?(action: string, ok: boolean, message: string): void;
   /** 该通道是否允许被 reveal（默认允许；**是否真的 reveal 由 Intent 的 `output.focus` 决定**）。 */
   reveal?(name: string): boolean;
+  /** §3.5 阈值覆盖（宿主从设置 `het.task.deadlines` 读；缺省 = 只用表里的默认值）。 */
+  deadlineOverrides?(): Record<string, number | undefined>;
   /** 创建的 OutputChannel 交给调用方登记（deactivate 时释放）。 */
   register?(d: vscode.Disposable): void;
 }
@@ -40,6 +42,7 @@ export function createBusyHost(opts: BusyHostOptions): BusyHost {
         : { appendLine: (line: string) => ch.appendLine(line) };
     },
     notifyBusy: opts.notifyBusy,
+    deadlineOverrides: opts.deadlineOverrides,
     notifyDone:
       opts.notifyDone ??
       ((_action: string, ok: boolean, message: string): void => {

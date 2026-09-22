@@ -161,7 +161,12 @@ function templateCell(m: ChipModel): string {
  */
 export function chipStatusItems(m: ChipModel): StatusItem[] {
   const busyDom = busyDomainOf(m.runningAction ?? null);
-  /** 忙时该域只表达"进行中"（不变题 4：不与上一次失败并列）。 */
+  /** 忙时该域只表达"进行中"（不变题 4：不与上一次失败并列）——**所有域用同一串字**。
+   *
+   * H 块踩到的一次：模块文档那一行以前自己写了个「构建中」，于是同一张悬停表里
+   * 构建验证/构建时说「进行中」而文档说「构建中」—— 同一个概念两种写法（C 块的
+   * 单一来源就是为这个设的）。现在只有"不在 Task 里、由 docs 模块自己的在跑标志"
+   * 那一条旧路径还留着「构建中」（它不是一次 Task，没有 busy 状态可读）。 */
   const busyText = busyDom ? '进行中' : '';
   const cacheBits: string[] = [];
   if (m.cache) {
@@ -204,7 +209,7 @@ export function chipStatusItems(m: ChipModel): StatusItem[] {
             : (m.docs ?? 'none') === 'fail'
               ? 'fail'
               : 'unknown',
-      text: busyDom === 'docs' || (m.docs ?? 'none') === 'running' ? '构建中' : docsCell(m),
+      text: busyDom === 'docs' ? busyText : (m.docs ?? 'none') === 'running' ? '构建中' : docsCell(m),
     },
     {
       id: 'coverage',
