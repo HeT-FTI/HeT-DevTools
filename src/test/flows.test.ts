@@ -19,7 +19,6 @@ import { COPILOT_ENTRIES, copilotEntryFor, prefillText } from '../features/cockp
 import {
   BUSY_ACTIONS,
   CHANNELS,
-  channelDef,
   nextStepHint,
   type BusyAction,
 } from '../core/outputChannels';
@@ -78,7 +77,7 @@ describe('§F.46 用户流 ①：点"构建" → 忙语义 → 状态栏/吸顶/
     const state = initialCockpitState();
 
     // ① 用户点了「构建」→ 统一 helper 记账
-    const promise = runWithBusy(host, 'build', channelDef('build')!.label, async () => {
+    const promise = runWithBusy(host, 'build', async () => {
       // ② 此刻：单一状态源能答出来"在构建"，而且是用户能看懂的话
       const st = currentStatus();
       assert.strictEqual(st?.action, 'build');
@@ -222,7 +221,7 @@ describe('§F.46 用户流 ⑤：编译文档（含"缺工具"这条最常见的
   it('跑起来 → chip 文档格说"构建中" → 成功给 ✓/耗时、失败给可执行原因与下一步', async () => {
     resetBusy();
     const ok = docsHost();
-    await runWithBusy(ok, 'docsBuild', '编译文档', async () => true);
+    await runWithBusy(ok, 'docsBuild', async () => true);
     assert.ok(ok.lines.some((l) => l.includes('▶') && l.includes('编译文档')), '开始要有回显');
     assert.ok(ok.lines.some((l) => l.includes('✓')), '结束要有 ✓ 与耗时');
     assert.ok(ok.lines.some((l) => l.includes('完成（')), '耗时是可读的秒数');
@@ -247,7 +246,7 @@ describe('§F.46 用户流 ⑤：编译文档（含"缺工具"这条最常见的
     // 缺 doxygen 这条半路：错误里要是**可执行**的说明，不是"检查失败"
     resetBusy();
     const bad = docsHost();
-    const res = await runWithBusy(bad, 'docsBuild', '编译文档', async () => {
+    const res = await runWithBusy(bad, 'docsBuild', async () => {
       throw new Error("doxygen is not recognized as an internal or external command");
     });
     assert.strictEqual(res.status, 'failed');

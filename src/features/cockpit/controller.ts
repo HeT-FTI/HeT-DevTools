@@ -297,7 +297,6 @@ async function runCopilotEntry(command: string): Promise<void> {
   const res = await runWithBusy(
     host(),
     def.action,
-    channelDef(def.action)?.label ?? command,
     () => openCopilotChat(query),
     `预填 ${command}（复用当前会话，不新建）`,
   );

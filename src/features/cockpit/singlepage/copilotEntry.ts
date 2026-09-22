@@ -10,6 +10,7 @@
  * 2. **点 N 次只有一次动作** —— 同一入口 1.5s 内的重复点击直接忽略（宿主侧闸门）；
  * 3. **命名只做一次** —— 成功/失败都记账，同一次 VS Code 会话内不反复尝试。
  */
+import { intentFor } from '../../../core/intents';
 
 /** 会话标题（§8.1：用户要求以它命名）。 */
 export const COPILOT_SESSION_TITLE = 'HeT DevTools Agent';
@@ -61,7 +62,7 @@ export const RENAME_COMMANDS: readonly string[] = [
 export interface CopilotEntryDef {
   /** 斜杠命令（必须在最前，否则 VS Code 不认）。 */
   command: string;
-  /** 忙语义/输出通道的动作 id（必须已在 `core/outputChannels.ts` 登记）。 */
+  /** 忙语义/输出通道的动作 id（= Intent id；必须已在 `core/intents.ts` 登记）。 */
   action: string;
   /** 卡片 id（必须已在 `singlepage/sections.ts` 登记）。 */
   card: string;
@@ -71,49 +72,34 @@ export interface CopilotEntryDef {
   hint: string;
 }
 
-/** 入口表（§8 表格里"我们要做的 UI"那一列；§F.44 起模块走 `/het-module`）。 */
-export const COPILOT_ENTRIES: readonly CopilotEntryDef[] = [
-  {
-    command: '/het-commit',
-    action: 'commitCopilot',
-    card: 'commit',
-    expect: '预期：拆分提交预览（不 push）',
-    hint: '先把当前改动拆成几个规范的提交，给我逐条预览，**不要 push**。',
-  },
-  {
-    command: '/het-docs',
-    action: 'docsCopilot',
-    card: 'docsAuthoring',
-    expect: '预期：Doxygen 注释补全',
-    hint: '给这次改动涉及的源码补 Doxygen 注释；只做注释，不顺手改行为。',
-  },
-  {
-    command: '/het-testgen',
-    action: 'testgenCopilot',
-    card: 'testgen',
-    expect: '预期：GTest 骨架（从代码 / 从蓝图）',
-    hint: '先问我用「从代码」还是「从蓝图」，再生成 GTest 骨架。',
-  },
-  {
-    command: '/het-module',
-    action: 'moduleCopilot',
-    card: 'moduleAgent',
-    expect: '预期：设计稿 → 接口设计 → 骨架计划 → diff 预览（不自动落盘）',
-    // §5.1 / C6：模块入口 = **AI 框架设计&实现**（输入 PRD + 设计框图 → 主导核心架构实现）。
-    // 所以预填必须**带设计稿维度的回填 tag**：没有设计稿就当场问，而不是凭名字猜架构。
-    hint:
-      '我要给这个库加模块：先读设计稿（PRD + PlantUML 框图：`[workspace/design/*.md]`，没有就先问我要素），' +
-      '把接口定下来（配对命名、ImportStart/End、双语注释），给出 include/ + src/ 骨架计划与 diff 预览，' +
-      '**我确认后再写盘**，并告诉我该补哪些 GTest。',
-  },
-  {
-    command: '/het-setup',
-    action: 'setupCopilot',
-    card: 'env',
-    expect: '预期：环境诊断 + 安装清单',
-    hint: '按当前环境自检结果讲清缺什么、谁装、怎么装；需要 root 的给可复制命令，别静默改我的系统。',
-  },
-];
+/**
+ * Intent id → 它对应的卡片（**插入顺序 = 入口表的展示顺序**，§8 表格的顺序）。
+ *
+ * 顺序是**展示**约定（用户先看到提交、再是文档/测试/模块/环境），所以写在这里；
+ * 其余字段（命令、必备 tag、预填、预期产物）全部来自 `core/intents.ts`，不手抄。
+ */
+const ENTRY_CARDS: Readonly<Record<string, string>> = {
+  commitCopilot: 'commit',
+  docsCopilot: 'docsAuthoring',
+  testgenCopilot: 'testgen',
+  moduleCopilot: 'moduleAgent',
+  setupCopilot: 'env',
+};
+
+/** 入口表：按 `ENTRY_CARDS` 的展示顺序投影 Intent（纯函数，可直接单测）。 */
+export const COPILOT_ENTRIES: readonly CopilotEntryDef[] = Object.keys(ENTRY_CARDS).map((id) => {
+  const it = intentFor(id);
+  if (!it?.prompt) {
+    throw new Error(`Intent ${id} 缺少 prompt（入口表不能指向不存在的出口）`);
+  }
+  return {
+    command: it.prompt.command,
+    action: it.id,
+    card: ENTRY_CARDS[id],
+    expect: it.prompt.expect,
+    hint: it.prompt.hint,
+  };
+});
 
 export function copilotEntryFor(command: string): CopilotEntryDef | undefined {
   return COPILOT_ENTRIES.find((e) => e.command === command);
@@ -124,11 +110,18 @@ export function copilotEntryForCard(card: string): CopilotEntryDef | undefined {
 }
 
 /**
- * 预填正文：**命令在最前**（否则斜杠命令不生效），标记在末尾独立一行（可检索）。
+ * 预填正文：**命令在最前**（否则斜杠命令不生效），随后是**必备输入 tag**（§3.4.3：
+ * `required` 缺一个即门禁失败），再是附言；标记在末尾独立一行（可检索）。
+ *
+ * tag 的值优先来自 Fact（如 `[bt: Release]` 取 `metadata.build_type`）—— 那些由宿主在
+ * 打开 Chat 前替换；未确定的以 `[key]` 留在预填里，让用户一眼看到"要补什么"。
  */
 export function prefillText(def: CopilotEntryDef): string {
-  const head = def.hint ? `${def.command} ${def.hint}` : def.command;
-  return `${head}\n\n${COPILOT_PROMPT_MARKER}`;
+  const it = intentFor(def.action);
+  const tags = (it?.prompt?.tags ?? []).join(' ');
+  const head = [def.command, tags].filter(Boolean).join(' ');
+  const body = def.hint ? `${head}\n${def.hint}` : head;
+  return `${body}\n\n${COPILOT_PROMPT_MARKER}`;
 }
 
 /** `workbench.action.chat.open` 的预填参数（`isPartialQuery: true` = 只填不发，用户可先看）。 */

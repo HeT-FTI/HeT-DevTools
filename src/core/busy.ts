@@ -17,7 +17,8 @@
  * 本文件仍是**纯逻辑**（不 import vscode）：OutputChannel / 通知 / 时钟由 `BusyHost`
  * 注入，因此可以在无人值守环境里把超时/取消/恢复全跑一遍。
  */
-import { channelDef, nextStepHint } from './outputChannels';
+import { BUSY_ACTIONS, channelDef, nextStepHint } from './outputChannels';
+import { intentForBusy } from './intents';
 import { pickActiveStatus, type ActiveStatus } from './status';
 import type { DeadlineKind } from './deadlines';
 import { TaskStore, type Task, type TaskSnapshot } from './tasks';
@@ -31,35 +32,25 @@ export function taskStore(): TaskStore {
 }
 
 /**
- * 长动作 → §3.5 阈值类别。**每个 busy action 都必须显式登记**（门禁会逼你登记，
- * 不许悄悄落进兜底档：兜底 10min 对"环境准备"这种是错的）。
+ * 长动作 → §3.5 阈值类别（I 块后**从 Intent 表推导**：阈值只在 `deadlines.ts` 定稿，
+ * 动作→类别的对应只在 `intents.ts` 登记一处）。
+ *
+ * `wslImport` 没有卡片/命令入口（它在环境准备流程里被调用）→ 单列，仍然显式登记。
  */
-const DEADLINE_KIND_FOR_ACTION: Readonly<Record<string, DeadlineKind>> = {
-  build: 'build',
-  clean: 'build',
-  test: 'test',
-  docsBuild: 'docs',
-  docsCopilot: 'docs',
-  quality: 'quality',
-  envPrepare: 'envPrepare',
-  envRemove: 'envPrepare',
-  envCheck: 'misc',
+const EXTRA_DEADLINE_KINDS: Readonly<Record<string, DeadlineKind>> = {
   wslImport: 'envPrepare',
-  board: 'board',
-  commitCopilot: 'misc',
-  testgenCopilot: 'misc',
-  setupCopilot: 'misc',
-  moduleCopilot: 'misc',
-  cacheClean: 'cacheClean',
-  targetSwitch: 'switchTarget',
 };
 
 export function deadlineKindForAction(action: string): DeadlineKind {
-  return DEADLINE_KIND_FOR_ACTION[action] ?? 'misc';
+  return intentForBusy(action)?.deadline ?? EXTRA_DEADLINE_KINDS[action] ?? 'misc';
 }
 
 export function deadlineKindsForActions(): Readonly<Record<string, DeadlineKind>> {
-  return DEADLINE_KIND_FOR_ACTION;
+  const out: Record<string, DeadlineKind> = { ...EXTRA_DEADLINE_KINDS };
+  for (const a of BUSY_ACTIONS) {
+    out[a] = deadlineKindForAction(a);
+  }
+  return out;
 }
 
 /**
@@ -207,17 +198,21 @@ function ts(now: number): string {
 /**
  * 跑一个长动作：转圈 → 输出 → 结论 → 恢复。
  *
+ * **显示名不再由调用方传字串**（I 块）：它取自 Intent 表的领域术语名（§5.2 定稿）。
+ * 以前 8 个调用点各写一个中文名，于是同一个动作在输出里叫"构建并测试"、在卡片上叫"全量测试" ——
+ * 一个概念两个写法，而改一处忘了另一处没人会发现。
+ *
  * `skipped` 表示"同一动作已在跑"（幂等；webview 侧也会禁用按钮，这里是最后一道保险）。
  */
 export async function runWithBusy<T>(
   host: BusyHost,
   action: string,
-  label: string,
   fn: (ctx: TaskRunContext) => Promise<T>,
   detail?: string,
 ): Promise<BusyResult<T>> {
   const def = channelDef(action);
-  const shown = label || def?.label || action;
+  // 单一来源：Intent 名 → 通道 label → action id（三级兜底，绝不显示 undefined）
+  const shown = intentForBusy(action)?.name || def?.label || action;
   store.useClock(host.now ?? (() => Date.now()));
   const decision = store.dispatch({
     action,

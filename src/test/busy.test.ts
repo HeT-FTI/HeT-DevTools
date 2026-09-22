@@ -10,7 +10,7 @@ import {
   runWithBusy,
   type BusyHost,
 } from '../core/busy';
-import { COPILOT_ENTRIES } from '../features/cockpit/singlepage/copilotEntry';
+import { intentForBusy } from '../core/intents';
 import {
   BUSY_ACTIONS,
   CHANNELS,
@@ -79,22 +79,23 @@ describe('长耗时动作的统一语义（§7）', () => {
   it('成功：开始行含动作名与时间、结束行含耗时；忙点开→关；有完成通知', async () => {
     resetBusy();
     const host = fakeHost();
-    const res = await runWithBusy(host, 'build', '构建', async () => 'ok', 'conan create');
+    const res = await runWithBusy(host, 'build', async () => 'ok', 'conan create');
     assert.strictEqual(res.status, 'done');
     assert.strictEqual(res.out, 'ok');
-    assert.match(host.lines[0], /▶ 构建 — conan create/, '开始行带动作名与细节');
+    // 动作名来自 Intent 表（§5.2 定稿：`build` = 「编译打包」），不再由调用方传字串
+    assert.match(host.lines[0], /▶ 编译打包 — conan create/, '开始行带动作名与细节');
     assert.ok(/\[\d{2}:\d{2}:\d{2}\]/.test(host.lines[0]), '开始行带时间戳');
     host.at += 1500;
     assert.deepStrictEqual(host.busy, ['on:build', 'off:build'], '忙点开→关');
     assert.strictEqual(host.done.length, 1);
-    assert.match(host.done[0], /^ok:build:构建完成/);
+    assert.match(host.done[0], /^ok:build:编译打包完成/);
     assert.strictEqual(isBusy('build'), false, '结束后注册表必须清空（否则永久禁用）');
   });
 
   it('失败：把错误写进输出、给出"下一步"、并**清空忙状态**（不卡死）', async () => {
     resetBusy();
     const host = fakeHost();
-    const res = await runWithBusy(host, 'envPrepare', '准备托管环境', async () => {
+    const res = await runWithBusy(host, 'envPrepare', async () => {
       throw new Error('apt 不可用');
     });
     assert.strictEqual(res.status, 'failed');
@@ -112,13 +113,13 @@ describe('长耗时动作的统一语义（§7）', () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    const first = runWithBusy(host, 'test', '构建并测试', async () => {
+    const first = runWithBusy(host, 'test', async () => {
       await gate;
       return 1;
     });
-    const second = await runWithBusy(host, 'test', '构建并测试', async () => 2);
+    const second = await runWithBusy(host, 'test', async () => 2);
     assert.strictEqual(second.status, 'skipped');
-    assert.match(second.message, /正在执行：构建并测试/, '告诉用户"已经在跑了"');
+    assert.match(second.message, /正在执行：全量测试/, '告诉用户"已经在跑了"（动作名来自 Intent 表）');
     release?.();
     const done = await first;
     assert.strictEqual(done.status, 'done');
@@ -129,7 +130,7 @@ describe('长耗时动作的统一语义（§7）', () => {
   it('耗时按注入时钟计算（无人值守下时间断言可复现）', async () => {
     resetBusy();
     const host = fakeHost();
-    const p = runWithBusy(host, 'docsBuild', '编译文档', async () => {
+    const p = runWithBusy(host, 'docsBuild', async () => {
       host.at += 2500;
       return null;
     });
@@ -221,11 +222,13 @@ describe('长耗时动作的统一语义（§7）', () => {
       quality: '质量门禁直接在终端里跑（kind: terminal），不由扩展托管那段执行',
     };
     const declared = Object.keys(CHANNELS).filter((id) => !explicit.includes(id));
-    // §F.44：动态接线名单**从 Copilot 入口表推导**（以前是手写四个 —— 新增 /het-module
-    // 时这条门禁立刻报"既没接线也没写理由"，正是它该干的事：别再手维护第二份名单）。
-    const dynamic = COPILOT_ENTRIES.map((e) => e.action);
-    const unexplained = declared.filter((id) => !dynamic.includes(id) && exceptions[id] === undefined);
-    assert.deepStrictEqual(unexplained, [], `这些动作既没接线也没写理由：${unexplained.join('、')}`);
+    // I 块后：**唯一的动作表是 `core/intents.ts`** —— 凡是在 Intent 表里登记过的动作，
+    // 就已经声明了"输出去哪、超时多少、失败怎么办"，不必再在忙语义里重复接线。
+    // 这条门禁的作用因此变成：每个忙动作要么是 Intent，要么在例外名单里写清理由。
+    const unexplained = declared.filter(
+      (id) => intentForBusy(id) === undefined && exceptions[id] === undefined,
+    );
+    assert.deepStrictEqual(unexplained, [], `这些动作既不是 Intent 也没写理由：${unexplained.join('、')}`);
     assert.deepStrictEqual(
       Object.keys(exceptions).filter((id) => wired(id)),
       [],

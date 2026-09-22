@@ -646,7 +646,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const busy = await runWithBusy(
         busyHost(),
         'cacheClean',
-        plan.label,
         async (ctx) => {
           channel?.appendLine(`[cache] ${plan.effect}`);
           if (plan.dirs?.length && projectRoot) {
@@ -723,7 +722,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         buildDir: join('build', target.id),
       });
       await writeText(ledgerFile, `${JSON.stringify(next, null, 2)}\n`);
-      const busy = await runWithBusy(busyHost(), 'targetSwitch', '切换目标', async () => {
+      const busy = await runWithBusy(busyHost(), 'targetSwitch', async () => {
         channel?.appendLine(`[target] ${check.text}`);
         channel?.appendLine(`[target] profile: ${profileFile}（hash ${hash}）`);
         return check.text;
@@ -791,7 +790,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return { ok: false, message: '文档中心未初始化：请先运行 het.docs 再调用 het.docsRun。' };
       }
       // §7 忙语义（F.32）：编译文档是分钟级动作（doxygen + sphinx）→ 统一 helper
-      const busy = await runWithBusy(busyHost(), 'docsBuild', '编译文档', (ctx) => impl(ctx));
+      const busy = await runWithBusy(busyHost(), 'docsBuild', (ctx) => impl(ctx));
       return busy.status === 'done' ? busy.out : { ok: false, message: busy.message };
     }),
     vscode.commands.registerCommand('het.getLastDocsOutput', () => lastDocsOutput.slice(-3000)),
@@ -824,7 +823,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const busy = await runWithBusy(
         busyHost(),
         'envCheck',
-        '检查环境',
         async () => {
           // V5-6: fresh env sample — invalidate the summary cache AND the cached
           // WSL lane probe so the check reflects reality (not a 60 s-old snapshot).
@@ -2676,7 +2674,6 @@ function openBenchPanel(context: vscode.ExtensionContext): void {
     const busy = await runWithBusy(
       busyHost(),
       'board',
-      '上板构建（--no-flash）',
       () => withDeadline('上板构建', 'board', (timeoutMs) =>
         run(python, [script, '--no-flash'], { cwd: root, onStdout: (c) => channel?.append(c), onStderr: (c) => channel?.append(c), timeoutMs }),
         deadlineOverrides(),
@@ -4115,7 +4112,7 @@ async function preflightEnvGate(): Promise<{ ok: boolean; message?: string }> {
  * 早退（扩展未就绪）留在内层：没干活就不该报"完成"。
  */
 async function runEnvRemove(): Promise<{ ok: boolean; message: string }> {
-  const busy = await runWithBusy(busyHost(), 'envRemove', '移除托管环境', () => runEnvRemoveInner());
+  const busy = await runWithBusy(busyHost(), 'envRemove', () => runEnvRemoveInner());
   return busy.status === 'done' && busy.out ? busy.out : { ok: false, message: busy.message };
 }
 
@@ -4366,7 +4363,6 @@ async function runEnvPrepare(): Promise<{ ok: boolean; state: string; message: s
   const busy = await runWithBusy(
     busyHost(),
     'envPrepare',
-    '准备托管环境',
     () => provisionLane(plan, ctx),
     plan?.provider ? `provider=${plan.provider}` : undefined,
   );
@@ -4877,7 +4873,7 @@ async function buildProject(): Promise<void> {
     void vscode.window.showWarningMessage(L('notify.noProject'));
     return;
   }
-  await runWithBusy(busyHost(), 'build', '构建', (ctx) => buildProjectInner(ctx), project.metadata.name ?? undefined);
+  await runWithBusy(busyHost(), 'build', (ctx) => buildProjectInner(ctx), project.metadata.name ?? undefined);
 }
 
 /**
@@ -5010,7 +5006,7 @@ async function runTests(): Promise<void> {
     void vscode.window.showWarningMessage(L('notify.noProject'));
     return;
   }
-  await runWithBusy(busyHost(), 'test', '构建并测试', (ctx) => runTestsInner(ctx), project.metadata.name ?? undefined);
+  await runWithBusy(busyHost(), 'test', (ctx) => runTestsInner(ctx), project.metadata.name ?? undefined);
 }
 
 async function runTestsInner(ctx?: TaskRunContext): Promise<void> {
