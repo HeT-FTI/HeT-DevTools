@@ -29,7 +29,7 @@ import { closeCurrentDetail, currentDetailView, slotHostDiagnostics } from './fe
 import { showOutputPanel } from './features/output/panel';
 import { showTaskCenterPanel } from './features/tasks/panel';
 import { taskCenterModel } from './core/taskCenter';
-import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, getSinglePageFacts, setSinglePageFacts, notifySinglePageBusy, setFactsCollector } from './features/cockpit/controller';
+import { openCockpitPanel, emitCockpitEvent, getCockpitState, getCockpitView, getSinglePageFacts, setSinglePageFacts, notifySinglePageBusy, requestFacts, setFactsCollector } from './features/cockpit/controller';
 import { BenchState, showBenchPanel } from './features/bench/panel';
 import { CiState, CiRunInfo, showCiPanel } from './features/ci/panel';
 import { showSettingsPanel } from './features/settings/panel';
@@ -70,7 +70,7 @@ import { pathExists, readText, writeText } from './utils/fs';
 import { fcppStyleStringify } from './core/metadataText';
 import { findPython, run, which, type ExecResult } from './utils/exec';
 import { docsOptions, graphvizMismatch } from './core/docsService';
-import { currentStatus, runWithBusy, type BusyHost, type BusyResult, type TaskRunContext } from './core/busy';
+import { currentStatus, ReportedError, runWithBusy, type BusyHost, type BusyResult, type TaskRunContext } from './core/busy';
 import {
   activeTasks,
   busySnapshot,
@@ -231,6 +231,15 @@ function markBuildOutcome(ok: boolean): void {
   lastBuildAt = Date.now();
   // 合同的最后一条是"整个工程能构建" → 构建结果一变，自检快照就作废（否则卡片停在旧结论）
   newLibAuditCache = null;
+  // 结论一变，**单页驾驶舱的事实要重取一遍**。
+  //
+  // 2026-10-12 真机走查的问题 ④：构建失败后状态栏 chip 变红了、通知也弹了，但窗口里的
+  // ② 构建站**还显示 ✓**。两个原因叠加：① 站壳（rail 点 / 站头状态字）历史上只在首帧画一次
+  // （已在 `postSinglePage` 修）；② 这条结论变化没有**显式**触发取数 —— 平时靠"忙点排空
+  // 补一次取数"顺带刷到，但 Test Explorer 那条路径（`executeTestRun`）根本不走忙语义，
+  // 于是同一件事在两条入口上一个刷、一个不刷。所以在**结论落定处**显式刷一次：
+  // 不管是哪条入口触发的构建/测试，卡片与站壳都不会停在旧结论上。
+  requestFacts();
 }
 
 /** '刚刚' / '3 分钟前' / '2 小时前' from a timestamp. */
@@ -6169,20 +6178,34 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
     emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · Linux lane` });
     let summary: { ok: boolean; stdout: string; stderr: string };
     try {
-      const s = await runLinuxConanCreate(project.root, {
-        buildType,
-        forceSelf,
-        profiles: userProfiles,
-        mirror,
-        onStdout: (c) => {
-          logStream(c);
-          emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-        },
-        onStderr: (c) => {
-          logStream(c);
-          emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-        },
-      });
+      // §3.5 + §3.3：**车道分支也必须是有界且可取消的**。
+      //
+      // 2026-10-12 真机走查的问题 ① 就在这里：这条分支以前直接调 `runLinuxConanCreate`，
+      // 既没传 `timeoutMs`（车道里是 `?? 0` = 无界，"挂住就转两小时"）也没传 `signal`
+      // （取消/对账器的 abort 杀不掉真正在跑的 conan —— 于是长动作被判超时后"动作还正常结束"，
+      // 输出里同时出现 ✓ 完成与超时）。子进程活着还会顺带报活（`utils/liveness`）。
+      const s = await withDeadline(
+        '编译打包',
+        'build',
+        (timeoutMs) =>
+          runLinuxConanCreate(project.root, {
+            buildType,
+            forceSelf,
+            profiles: userProfiles,
+            mirror,
+            timeoutMs,
+            signal: ctx?.signal,
+            onStdout: (c) => {
+              logStream(c);
+              emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+            },
+            onStderr: (c) => {
+              logStream(c);
+              emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+            },
+          }),
+        deadlineOverrides(),
+      );
       summary = s;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -6196,22 +6219,32 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
     return { ok: summary.ok, stdout: summary.stdout, stderr: summary.stderr };
   }
   if (wslDistro) {
-    log('conan', `WSL2 托管车道：distro=${wslDistro} · ${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
+    // 窄化在箭头函数里会丢 → 先绑成局部常量（而不是用 `as string` 捂嘴）
+    const distro: string = wslDistro;
+    log('conan', `WSL2 托管车道：distro=${distro} · ${project.root}${forceSelf ? ` forceSelf=${forceSelf}` : ''}`);
     emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · WSL2 ${wslDistro}` });
-    const summary = await runWslConanCreate(wslDistro, project.root, {
-      buildType,
-      forceSelf,
-      profiles: userProfiles,
-      mirror,
-      onStdout: (c) => {
-        logStream(c);
-        emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-      },
-      onStderr: (c) => {
-        logStream(c);
-        emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-      },
-    });
+    const summary = await withDeadline(
+      '编译打包',
+      'build',
+      (timeoutMs) =>
+        runWslConanCreate(distro, project.root, {
+          buildType,
+          forceSelf,
+          profiles: userProfiles,
+          mirror,
+          timeoutMs,
+          signal: ctx?.signal,
+          onStdout: (c) => {
+            logStream(c);
+            emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+          },
+          onStderr: (c) => {
+            logStream(c);
+            emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+          },
+        }),
+      deadlineOverrides(),
+    );
     lastConanOutput = `${summary.stdout}\n${summary.stderr}`;
     // （空行分隔不需要了：流的边界由 runWithBusy 的结构化行给出）
     emitCockpitEvent({ type: 'log:done', ok: summary.ok });
@@ -6226,20 +6259,28 @@ async function runConanOnce(project: FcppProject, ctx?: TaskRunContext): Promise
     emitCockpitEvent({ type: 'log:start', title: `conan create . (${buildType}) · macOS lane` });
     let macSummary: { ok: boolean; stdout: string; stderr: string };
     try {
-      macSummary = await runMacConanCreate(project.root, {
-        buildType,
-        forceSelf,
-        profiles: userProfiles,
-        mirror,
-        onStdout: (c) => {
-          logStream(c);
-          emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-        },
-        onStderr: (c) => {
-          logStream(c);
-          emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
-        },
-      });
+      macSummary = await withDeadline(
+        '编译打包',
+        'build',
+        (timeoutMs) =>
+          runMacConanCreate(project.root, {
+            buildType,
+            forceSelf,
+            profiles: userProfiles,
+            mirror,
+            timeoutMs,
+            signal: ctx?.signal,
+            onStdout: (c) => {
+              logStream(c);
+              emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+            },
+            onStderr: (c) => {
+              logStream(c);
+              emitCockpitEvent({ type: 'log:append', line: c.replace(/\s+$/u, '') });
+            },
+          }),
+        deadlineOverrides(),
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log('build', msg);
@@ -6377,7 +6418,9 @@ async function buildProjectInner(ctx?: TaskRunContext): Promise<void> {
     } else if (pick === '导出环境诊断') {
       void vscode.commands.executeCommand('het.envDump');
     }
-    return;
+    // 没干活 ≠ 完成：让忙语义层把任务落成 `failed`（否则卡片/chip 会显示"✓ 编译打包完成"）。
+    // 结论已经由上面那个对话框给出，所以用 `ReportedError` —— 不再补一条通知（结论只许有一条）。
+    throw new ReportedError(lastBuildError);
   }
 
   let result: { ok: boolean; stdout: string; stderr: string };
@@ -6394,7 +6437,7 @@ async function buildProjectInner(ctx?: TaskRunContext): Promise<void> {
     } else if (pick === '导出环境诊断') {
       void vscode.commands.executeCommand('het.envDump');
     }
-    return;
+    throw new ReportedError(message);
   }
 
   const issues = parseCompilerOutput(`${result.stdout}\n${result.stderr}`);
@@ -6402,16 +6445,19 @@ async function buildProjectInner(ctx?: TaskRunContext): Promise<void> {
   log('build', `finished ok=${result.ok} issues=${issues.length}`);
   markBuildOutcome(result.ok);
   emitCockpitEvent({ type: 'issue:summary', count: issues.length });
-
-  if (result.ok) {
-    maybeToast('info', `构建成功 — ${project.metadata.name} (Debug)`);
-  } else {
-    const detail = issues.length > 0 ? `${issues.length} 个错误/警告，详见“问题”面板` : '详见“输出 → HeT DevTools”';
-    maybeToast('error', `构建失败：${detail}`);
-  }
   void refreshChip();
   // V5-6: after a real run the lane is provisioned — re-grade health (env.conan).
   void ensureHealthCached(true);
+
+  // 构建失败要**穿过忙语义层**（§7「结论只从一个出口出」）。
+  //
+  // 2026-10-12 真机走查的问题 ②：以前这里自己 `maybeToast('error', '构建失败：…')` 然后正常
+  // 返回 —— 于是同一个动作在输出里写 `✓ 编译打包完成（101.6s）`、在右下角弹「构建失败」，
+  // 两条结论并列，用户不知道该信哪条。现在失败就是失败：输出一行 `✗ 编译打包失败（…）`、
+  // 通知一条（含"下一步"），任务状态 / chip / 卡片也全部一致。
+  if (!result.ok) {
+    throw new Error(issues.length > 0 ? `${issues.length} 个错误/警告，详见“问题”面板` : '详见“输出 → HeT DevTools”');
+  }
 }
 
 /**
@@ -6475,12 +6521,15 @@ async function runTestsInner(ctx?: TaskRunContext): Promise<void> {
   cleanupInjectedBeforeRun(project.root);
   const result = await executeTestRun(ctx);
   if (!result) {
-    return;
+    // `executeTestRun` 自己弹过错误框了（结论已给出）→ 只让忙语义层落 `failed`，不再补通知
+    throw new ReportedError(lastBuildError || '测试未执行：构建/测试没跑起来。');
   }
 
   if (!result.ok) {
-    void vscode.window.showErrorMessage('构建/测试失败：先修复构建错误（见问题面板），再重新测试。');
-    return;
+    // 与构建同一条规矩（问题 ②）：失败要穿过忙语义层，否则任务会被记成「✓ 全量测试完成」
+    throw new Error(
+      lastTestSummary?.failed ? `${lastTestSummary.failed} 个用例未通过（见“问题”面板）` : '构建/测试未通过（见“问题”面板）',
+    );
   }
   if (lastTestSummary?.empty) {
     void vscode.window.showInformationMessage(

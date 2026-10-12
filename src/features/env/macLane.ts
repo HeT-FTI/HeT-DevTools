@@ -149,7 +149,10 @@ export async function runMacConanCreate(
     mirror?: LaneMirror;
     onStdout?: (chunk: string) => void;
     onStderr?: (chunk: string) => void;
+    /** §3.5 阈值：由调用方（`runConanOnce` 的 `withDeadline`）给。 */
     timeoutMs?: number;
+    /** 取消信号（同 Linux 车道：不传下去就是“假取消”）。 */
+    signal?: AbortSignal;
   } = {},
 ): Promise<BuildSummary> {
   const { home } = await ensureMacLane({ mirror: opts.mirror });
@@ -161,6 +164,7 @@ export async function runMacConanCreate(
     const r = await run('bash', [f], {
       cwd,
       timeoutMs: opts.timeoutMs ?? 0,
+      signal: opts.signal,
       onStdout: (c) => {
         stdout += c;
         opts.onStdout?.(c);

@@ -32,6 +32,8 @@ export const COCKPIT_RESERVED_TYPES: readonly string[] = [
   'l1',
   'section',
   'busy',
+  // 站壳（rail 状态点 + 站头状态字）—— 2026-10-12 走查问题 ④ 之后新增的一份补丁
+  'chrome',
   'copilotResult',
   'action',
   'nav',

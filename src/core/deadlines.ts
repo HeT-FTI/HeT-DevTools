@@ -61,6 +61,22 @@ export function isTimeoutError(err: unknown): boolean {
   return /timed out after \d+ms/u.test(msg);
 }
 
+/**
+ * **真超时**（§3.5 阈值命中）—— 特意做成一个**类型**。
+ *
+ * 为什么：超时在任务状态机里是 `timedOut` 这个**独立出口**（不是 `failed`），
+ * 而"调大设置 `het.task.deadlines.*`"这种下一步只对超时有意义。以前 exec 层的真超时
+ * 被当成普通错误 → 状态落 `failed`、图标是 ✗，而结论行里写的是"超时" ——
+ * 同一件事两种说法（2026-10-12 真机走查问题 ① 的同类）。有了类型，`core/busy.ts`
+ * 就能把状态/图标/结论行一次性对齐。
+ */
+export class DeadlineExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeadlineExceededError';
+  }
+}
+
 /** 超时错误的人话版本（含"下一步"，否则用户只知道"失败了"）。 */
 export function timeoutError(
   subject: string,
@@ -68,7 +84,7 @@ export function timeoutError(
   overrides: DeadlineOverrides = {},
 ): Error {
   const ms = deadlineFor(kind, overrides);
-  return new Error(
+  return new DeadlineExceededError(
     `⏱ ${subject} 超过 ${deadlineLabel(ms)} 仍未结束，已中止（子进程已杀掉）。` +
       `首次运行要拉依赖/装工具链，偶发偏慢可重跑一次；仍超时就调大设置 ${DEADLINE_SETTING}.${kind}`,
   );

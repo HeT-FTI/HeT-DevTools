@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { env as processEnv } from 'node:process';
+import { beatLiveness } from './liveness';
 
 /** Result of a completed external process. */
 export interface ExecResult {
@@ -10,6 +11,14 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
 }
+
+/**
+ * 报活间隔（见 `utils/liveness.ts`）。
+ *
+ * **必须显著小于 `core/tasks.ts` 的 `HEARTBEAT_STALE_MS`（10s）**，否则对账器会在两次报活
+ * 之间把任务判成"僵死" —— 那正是 2026-10-12 真机走查抓到的 bug。有测试钉住这个关系。
+ */
+export const LIVENESS_TICK_MS = 3_000;
 
 export interface ExecOptions {
   cwd?: string;
@@ -20,7 +29,21 @@ export interface ExecOptions {
   onStdout?: (chunk: string) => void;
   /** Streamed stderr chunks (utf8, raw). */
   onStderr?: (chunk: string) => void;
-  /** Abort support: kills the child when the signal fires. */
+  /**
+   * 报活节拍（默认 `LIVENESS_TICK_MS`）。
+   *
+   * 只给**测试**留的口子（否则验证这条机制每个用例都要真等 3 秒）；生产一律用默认值 ——
+   * "默认值必须显著小于僵死阈值"由单测钉住（`LIVENESS_TICK_MS * 2 <= HEARTBEAT_STALE_MS`）。
+   */
+  livenessTickMs?: number;
+  /**
+   * Abort support: kills the child when the signal fires.
+   *
+   * **它还承担第二件事**（2026-10-12 真机走查，问题 ①）：只要给了它，`run` 就会在子进程
+   * 活着期间按 `LIVENESS_TICK_MS` 向"这个信号对应的长动作"报活（绑定见 `utils/liveness.ts`）。
+   * 没有它，一个静默几十秒的 `conan create` 会被任务对账器误判成僵死并 abort ——
+   * 而"还会 abort 谁"与"谁该为它的存活负责"本来就是同一件事。
+   */
   signal?: AbortSignal;
 }
 
@@ -49,6 +72,10 @@ export function run(
         env: options.env ?? processEnv,
         windowsHide: true,
         shell: false,
+        // **自己成一个进程组**（POSIX）。为什么必须：托管车道走的是 `bash <脚本>`，
+        // 脚本里再起真正的 conan/cmake —— 只 kill 直接子进程，真正的工具会变成孤儿继续跑完，
+        // 那就是"假取消"（用户点了取消，构建还在后台写产物）。成组之后 `kill(-pid)` 一次收干净。
+        detached: process.platform !== 'win32',
       });
     } catch (err) {
       reject(new ExecError(`failed to start "${command}": ${(err as Error).message}`));
@@ -60,6 +87,15 @@ export function run(
     let settled = false;
 
     const killChild = (): void => {
+      const pid = child.pid;
+      if (process.platform !== 'win32' && typeof pid === 'number' && pid > 0) {
+        try {
+          process.kill(-pid, 'SIGTERM'); // 负号 = 整个进程组
+          return;
+        } catch {
+          /* 组没了/权限不够 → 退回单进程 */
+        }
+      }
       try {
         child.kill();
       } catch {
@@ -75,9 +111,15 @@ export function run(
       fn();
     };
 
+    /** 报活：绝不许让回调里的异常影响子进程本身（它只是"我还在"的通知）。 */
+    const beat = (): void => {
+      beatLiveness(options.signal);
+    };
+
     const timer = options.timeoutMs
       ? setTimeout(() => {
           killChild();
+          stopTimers();
           finish(() =>
             reject(
               new ExecError(`command timed out after ${options.timeoutMs}ms`, {
@@ -91,8 +133,22 @@ export function run(
         }, options.timeoutMs)
       : undefined;
 
+    // 静默期也要报活（`LIVENESS_TICK_MS`）：子进程没退出 = 它还没失败。
+    const beatTimer = options.signal
+      ? setInterval(beat, options.livenessTickMs ?? LIVENESS_TICK_MS)
+      : undefined;
+    const stopTimers = (): void => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      if (beatTimer) {
+        clearInterval(beatTimer);
+      }
+    };
+
     const onAbort = (): void => {
       killChild();
+      stopTimers();
       finish(() => reject(new ExecError('command aborted', { code: null, signal: null, stdout, stderr })));
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -101,25 +157,24 @@ export function run(
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk;
+      // 有输出 = 有进展：比"还没退出"更强的信号
+      beat();
       options.onStdout?.(chunk);
     });
     child.stderr?.on('data', (chunk: string) => {
       stderr += chunk;
+      beat();
       options.onStderr?.(chunk);
     });
 
     child.on('error', (err) => {
-      if (timer) {
-        clearTimeout(timer);
-      }
+      stopTimers();
       options.signal?.removeEventListener('abort', onAbort);
       finish(() => reject(new ExecError(`cannot run "${command}": ${err.message}`)));
     });
 
     child.on('close', (code, signal) => {
-      if (timer) {
-        clearTimeout(timer);
-      }
+      stopTimers();
       options.signal?.removeEventListener('abort', onAbort);
       finish(() => resolve({ code, signal, stdout, stderr }));
     });

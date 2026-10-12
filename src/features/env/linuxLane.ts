@@ -244,7 +244,14 @@ export async function runLinuxConanCreate(
     mirror?: LaneMirror;
     onStdout?: (chunk: string) => void;
     onStderr?: (chunk: string) => void;
+    /** §3.5 阈值：由调用方（`runConanOnce` 的 `withDeadline`）给，**不是 0**。 */
     timeoutMs?: number;
+    /**
+     * 取消信号（2026-10-12 走查的问题 ① 的真根因）：车道走 `bash <脚本>`，
+     * 不把信号传下去 ⇒ 取消/超时杀不掉真正在跑的 conan（假取消），
+     * 而且任务侧也拿不到“子进程还活着”的报活（静默几十秒就被判僵死）。
+     */
+    signal?: AbortSignal;
   } = {},
 ): Promise<BuildSummary> {
   const { home } = await ensureLinuxLane({ mirror: opts.mirror });
@@ -256,6 +263,7 @@ export async function runLinuxConanCreate(
     const r = await run('bash', [f], {
       cwd,
       timeoutMs: opts.timeoutMs ?? 0,
+      signal: opts.signal,
       onStdout: (c) => {
         stdout += c;
         opts.onStdout?.(c);

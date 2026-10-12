@@ -21,8 +21,9 @@ import { BUSY_ACTIONS, OUTPUT_CHANNEL_NAME, channelDef, formatLogLine, nextStepH
 import { intentForBusy } from './intents';
 import { outputLog } from './outputLog';
 import { pickActiveStatus, type ActiveStatus } from './status';
-import type { DeadlineKind, DeadlineOverrides } from './deadlines';
-import { TaskStore, exitWord, type Task, type TaskArtifact, type TaskSnapshot } from './tasks';
+import { bindLiveness, unbindLiveness } from '../utils/liveness';
+import { DeadlineExceededError, type DeadlineKind, type DeadlineOverrides } from './deadlines';
+import { TaskStore, STATE_TEXT, exitWord, type Task, type TaskArtifact, type TaskSnapshot } from './tasks';
 
 /** single writer：整个扩展只有这一份 Task 仓库（UI 与功能模块只读）。 */
 const store = new TaskStore();
@@ -188,6 +189,23 @@ export interface BusyHost {
 
 export type BusyStatus = 'done' | 'skipped' | 'failed';
 
+/**
+ * **动作自己已经给过结论**时抛它（例如弹了一个带按钮的对话框）。
+ *
+ * 为什么需要这个出口（2026-10-12 真机走查）：`runWithBusy` 是动作结论的**唯一出口**
+ * （一行输出 + 一条通知），但有些失败必须**带交互** —— "改用本机工具链（兼容模式）/
+ * 导出环境诊断" 那个对话框本身就是用户看到的结果。于是只剩两条路：
+ *   · 抛普通 Error → 同一个结果弹两次（两条通知都在说失败，用户不知道看哪条）；
+ *   · 不抛 → 任务停在 `✓ …完成`，而实际什么都没干成（走查里的问题 ②）。
+ * 所以给第三条：状态照落 `failed`（chip/卡片/任务中心必须一致），通知**不补**。
+ */
+export class ReportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReportedError';
+  }
+}
+
 export interface BusyResult<T> {
   status: BusyStatus;
   /** status === 'done' 时的返回值。 */
@@ -259,6 +277,13 @@ export async function runWithBusy<T>(
 
   /** 执行体登记的产物（成功时才落到 Task 上） */
   const artifacts: TaskArtifact[] = [];
+  const beat = (): void => {
+    try {
+      store.heartbeat(taskId);
+    } catch {
+      /* 已经结束的任务再心跳：忽略（可能是刚被取消） */
+    }
+  };
   const ctx: TaskRunContext = {
     signal: store.signalFor(taskId),
     heartbeat: (message?: string) => {
@@ -286,13 +311,31 @@ export async function runWithBusy<T>(
       }
     },
   };
+  // 把"报活"绑到这个动作的取消信号上（`utils/liveness.ts`）：执行体起的**子进程**只要还活着
+  // 就自动打点 —— 于是"静默几十秒的构建被判僵死"从机制上不再可能，而不是靠每个调用点记得传回调。
+  bindLiveness(ctx.signal, beat);
 
   try {
     const out = await fn(ctx);
     const end = host.now?.() ?? Date.now();
     const durationMs = Math.max(0, end - now);
-    line('ok', `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`, end);
-    const message = `${shown}完成（${(durationMs / 1000).toFixed(1)}s）`;
+    const dur = `${(durationMs / 1000).toFixed(1)}s`;
+    // 用户取消**在先**、动作**随后**才结束：终态保持「已取消」（用户意图不许被动作的返回改写），
+    // 但要如实记一行 —— "它其实跑完了"是事实，复盘时看得见（而不是静默丢失）。
+    if (store.get(taskId)?.state === 'cancelled') {
+      const cancelledMsg = `${shown}已取消（动作随后结束，结果不采纳）`;
+      line('info', `${cancelledMsg}（${dur}）`, end);
+      host.notifyDone(action, false, cancelledMsg);
+      return { status: 'done', out, durationMs, message: cancelledMsg };
+    }
+    // 对账器是**启发式**（心跳断了/超阈值），动作的返回才是**事实**：两者冲突时让事实落地。
+    // 没有这一段，`succeed()` 会撞上"非法状态转换"抛错 → 变成一条假的"失败"，界面结论与实际相反。
+    const lateCorrection = store.get(taskId)?.state === 'timedOut';
+    line('ok', `${shown}完成（${dur}）`, end);
+    if (lateCorrection) {
+      line('info', `${shown}：对账器曾判超时，但动作随后正常结束 —— 以这次真实结论为准`, end);
+    }
+    const message = `${shown}完成（${dur}）`;
     store.succeed(taskId, { message, artifacts: artifacts.length ? artifacts : undefined });
     host.notifyDone(action, true, message);
     return { status: 'done', out, durationMs, message };
@@ -300,23 +343,35 @@ export async function runWithBusy<T>(
     const end = host.now?.() ?? Date.now();
     const durationMs = Math.max(0, end - now);
     const error = err instanceof Error ? err : new Error(String(err));
-    // 取消/超时是**不同的出口**（语义不同，UI 也要分开显示）：这里不再重复落状态
+    // 注意：此刻 state **往往还是 running**（落终态发生在写日志之后）—— 所以下面走 `exitWord`。
     const state = store.get(taskId)?.state;
-    const cancelled = state === 'cancelled' || state === 'timedOut';
-    // 终态用词来自 `STATE_TEXT`（唯一来源：任务中心的结论列也读它）；
-    // 注意此刻 state 往往还是 running —— 所以走 `exitWord` 而不是直接查表。
-    const word = exitWord(state);
-    line(state === 'timedOut' ? 'timeout' : state === 'cancelled' ? 'cancel' : 'fail', `${shown}${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`, end);
-    if (!cancelled) {
-      line('info', `下一步：${nextStepHint(action)}`, end);
-    }
-    const message = `${shown}${word}：${error.message}`;
-    if (!cancelled) {
+    // **真超时**（exec 层按 §3.5 的阈值杀掉子进程）是 `timedOut` 这个**独立出口**，不是"失败"：
+    // 状态、图标（⌛ vs ✗）、结论行、任务中心都必须说同一件事。
+    // 以前这条路径落的是 `failed`，而结论行里写着"超时" —— 同一件事两种说法
+    // （2026-10-12 真机走查问题 ① 的同类：用户不知道信哪一条）。
+    const deadlineHit = error instanceof DeadlineExceededError && state === 'running';
+    const word = deadlineHit ? STATE_TEXT.timedOut : exitWord(state);
+    const level: LogLevel =
+      deadlineHit || state === 'timedOut' ? 'timeout' : state === 'cancelled' ? 'cancel' : 'fail';
+    const message = `${shown}${word}（${(durationMs / 1000).toFixed(1)}s）：${error.message}`;
+    line(level, message, end);
+    if (deadlineHit) {
+      store.timeout(taskId, message);
+    } else if (state === 'running') {
       store.fail(taskId, { message, errorTail: error.message, nextStep: nextStepHint(action) });
     }
-    host.notifyDone(action, false, message);
+    // 对账器（超时）/ 用户（取消）已经落过终态时只如实记一行，不改写 —— 但"下一步"仍然要给。
+    if (deadlineHit || state === 'running') {
+      line('info', `下一步：${nextStepHint(action)}`, end);
+    }
+    // 结论只许有一条：动作自己已经给过结论（`ReportedError`）时不再补通知，免得同一个结果弹两次。
+    if (!(error instanceof ReportedError)) {
+      host.notifyDone(action, false, message);
+    }
     return { status: 'failed', error, durationMs, message };
   } finally {
+    // 动作结束就撤掉报活（子进程即使还在收尾也不该再给这个任务续命）
+    unbindLiveness(ctx.signal);
     host.notifyBusy(action, false);
   }
 }

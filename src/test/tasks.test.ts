@@ -60,8 +60,12 @@ describe('B. Task 生命周期（§3.2 穷举转换 + 不变量）', () => {
       'succeeded',
       'timedOut',
     ]);
-    // 出口状态不许再动（除了 succeeded/failed → stale）
-    assert.deepStrictEqual(TRANSITIONS.timedOut, []);
+    // 出口状态基本不许再动（除了 succeeded/failed → stale），**唯一的例外**是
+    // `timedOut → succeeded/failed`：对账器是启发式（心跳断了 / 超阈值），动作的返回才是事实；
+    // 两者冲突时必须让事实落地，否则界面会一直停在和实际相反的结论上（2026-10-12 真机走查
+    // 的问题 ①：`timedOut → succeeded` 撞上"非法转换"，输出里同时出现"✓ 完成"和"超时"）。
+    // `cancelled` 没有出口 —— 那是**用户意图**，不许被动作的返回改写。
+    assert.deepStrictEqual(TRANSITIONS.timedOut, ['succeeded', 'failed']);
     assert.deepStrictEqual(TRANSITIONS.cancelled, []);
     assert.deepStrictEqual(TRANSITIONS.stale, []);
     assert.deepStrictEqual(TRANSITIONS.succeeded, ['stale']);
@@ -178,6 +182,22 @@ describe('B. Task 生命周期（§3.2 穷举转换 + 不变量）', () => {
     assert.match(t.message ?? '', /超过 10 分钟仍未结束/);
     assert.notStrictEqual(t.state, 'failed');
     assert.ok(isTerminal(t.state));
+  });
+
+  it('迟到的真实结论能覆盖对账器的超时判定（否则界面停在和实际相反的结论上）', () => {
+    const { store: s, clock: c } = store();
+    const d = s.dispatch(dispatchBase);
+    const id = d.task!.id;
+    s.start(id);
+    c.at += HEARTBEAT_STALE_MS + 1;
+    s.reconcile();
+    assert.strictEqual(s.get(id)!.state, 'timedOut', '对账器先按启发式判了超时');
+    // 动作其实自己正常结束了（真机现场：事件循环被饿死 / 子进程刚死而 close 还没处理）
+    s.succeed(id, { message: '编译打包完成（101.6s）' });
+    assert.strictEqual(s.get(id)!.state, 'succeeded', '事实必须落地（改前这里抛"非法转换"→变成假失败）');
+    assert.match(s.get(id)!.message ?? '', /101\.6s/);
+    // 纠正之后仍然不许回到 running（不是"复活"，只是"结论改正"）
+    assert.throws(() => s.heartbeat(id), TaskError);
   });
 
   it('取消：abort 信号会被触发（执行层据此杀子进程），且取消后不再接受心跳', () => {

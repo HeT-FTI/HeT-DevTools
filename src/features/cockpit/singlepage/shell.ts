@@ -21,6 +21,7 @@ import {
   cardStateText,
   stateIcon,
   type CardRow,
+  type CardState,
   type SectionId,
   type SinglePageModel,
   type SpineNextStep,
@@ -144,6 +145,47 @@ function sectionLabel(id: string): string {
  * 两处刻意不用编号也不用进位字：§6.0 第 4 条 —— "第几段"是**我们自己的分类法**，
  * 用户不需要知道；状态点已经把"该看哪一站"说清楚了。
  */
+/**
+ * 站头（折叠箭头 + **站状态点** + 站名 + 是下一步时的标记 + 一句说明）。
+ *
+ * 单独抽出来是因为它和 rail 同属于"站壳"：`postSinglePage` 只推 L1 与已展开站的正文，
+ * 站壳必须被**单独重推**，否则状态点永远停在首帧 —— 2026-10-12 真机走查的问题 ④：
+ * 构建失败后状态栏红了、通知弹了，② 构建站却还挂着 ✓。
+ */
+function secHeadHtml(def: SectionDef, state: CardState, isFolded: boolean, isNext: boolean): string {
+  return `<button class="sec-head" data-action="toggle" data-section="${esc(def.id)}" aria-expanded="${isFolded ? 'false' : 'true'}">
+        <span class="ic">${isFolded ? '▸' : '▾'}</span>
+        <span class="st st-${esc(state)}" title="本站状态：${esc(cardStateText(state))}">${esc(stateIcon(state))}</span>
+        <span class="sec-label">${esc(def.label)}</span>
+        ${isNext ? '<span class="next-chip">下一步</span>' : ''}
+        <span class="hint">${esc(def.hint)}</span>
+      </button>`;
+}
+
+/**
+ * **站壳**（rail 的 8 格 + 每站站头）—— 它们承载"站状态"，所以刷新时得整块重推。
+ *
+ * 两个坑都在这里收口：
+ * 1. 站状态是从**卡**聚合出来的（`spine.ts` 禁自算），卡一变，壳就必须跟着变；
+ * 2. rail 与站头在 `<header class="l1">` **之外**，旧的 `postSinglePage` 推不到它们 ——
+ *    于是"卡片说失败、站头还说 ✓"（真机走查问题 ④）。
+ */
+export function stationChrome(model: SinglePageModel): {
+  rail: string;
+  heads: { id: SectionId; html: string }[];
+} {
+  const spine = spineOf(model);
+  const next = spineNextStep(spine, model.cards);
+  const stateOf = new Map(spine.map((s) => [s.id as string, s.state]));
+  return {
+    rail: railHtml(model),
+    heads: SECTIONS.map((def) => ({
+      id: def.id,
+      html: secHeadHtml(def, stateOf.get(def.id) ?? 'na', model.folded.includes(def.id), next?.station === def.id),
+    })),
+  };
+}
+
 function sectionHtml(
   def: SectionDef,
   cards: CardRow[],
@@ -167,13 +209,7 @@ function sectionHtml(
           .join(' · ')} —— 需要时补上对应事实就会出现</div>`
       : '';
   return `<section class="sec" id="sec-${esc(def.id)}" data-section="${esc(def.id)}" data-collapsed="${isFolded ? '1' : '0'}" data-station-state="${esc(state)}">
-      <button class="sec-head" data-action="toggle" data-section="${esc(def.id)}" aria-expanded="${isFolded ? 'false' : 'true'}">
-        <span class="ic">${isFolded ? '▸' : '▾'}</span>
-        <span class="st st-${esc(state)}" title="本站状态：${esc(cardStateText(state))}">${esc(stateIcon(state))}</span>
-        <span class="sec-label">${esc(def.label)}</span>
-        ${isNext ? '<span class="next-chip">下一步</span>' : ''}
-        <span class="hint">${esc(def.hint)}</span>
-      </button>
+      ${secHeadHtml(def, state, isFolded, isNext)}
       <div class="sec-body" data-sec-body="${esc(def.id)}" data-busy="${model.busy ? esc(model.busy) : ''}">
         ${hiddenLine}
         <div class="cards">${body}</div>
@@ -266,6 +302,8 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
     <script>
       (function () {
         var opened = {};
+        // 高亮的站（rail 被重推后要重新套一次，否则刚重画的 rail 会丢掉当前位置）
+        var activeSec = null;
         // 按钮"原文案"暂存/还原：不留下"进行中…"这种假状态（F.29 教训，任何时候都要能回到可点）
         function stash(b) {
           if (b && !b.getAttribute('data-label')) { b.setAttribute('data-label', b.textContent); }
@@ -279,6 +317,7 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
           }
         }
         function setActive(id) {
+          activeSec = id;
           var items = document.querySelectorAll('.rail-item[data-section]');
           for (var i = 0; i < items.length; i++) {
             var on = items[i].getAttribute('data-section') === id;
@@ -455,6 +494,23 @@ export function cockpitSinglePageBody(model: SinglePageModel): string {
           if (m.type === 'l1') {
             var bar = document.querySelector('[data-l1]');
             if (bar && typeof m.html === 'string') { bar.innerHTML = m.html; }
+            return;
+          }
+          // 站壳（rail 状态点 + 站头状态字）：它们在 L1 之外，所以单独一份补丁。
+          // 少了它，构建失败后 ② 构建站会一直挂着 ✓（真机走查问题 ④）。
+          if (m.type === 'chrome') {
+            var rail = document.querySelector('[data-rail]');
+            if (rail && typeof m.rail === 'string') { rail.innerHTML = m.rail; }
+            if (Array.isArray(m.heads)) {
+              for (var hi = 0; hi < m.heads.length; hi++) {
+                var h = m.heads[hi];
+                var sec0 = document.getElementById('sec-' + h.id);
+                var oldHead = sec0 && sec0.querySelector('.sec-head');
+                if (oldHead) { oldHead.outerHTML = h.html; }
+              }
+            }
+            // 重画之后把当前位置套回去（点事件是委托的，重建节点不需要重新绑定）
+            if (activeSec) { setActive(activeSec); }
             return;
           }
           if (m.type === 'section') {

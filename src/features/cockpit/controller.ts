@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import { initialCockpitState, reduceCockpit, CockpitEvent, CockpitState } from './state';
-import { cockpitSinglePageHtml, cockpitSinglePageBody, cardsBySection } from './singlepage/shell';
+import { cockpitSinglePageHtml, cockpitSinglePageBody, cardsBySection, stationChrome } from './singlepage/shell';
 import { EMPTY_FACTS, singlePageModelFrom, type SinglePageFacts } from './singlepage/modelFrom';
 import { normalizeFolded, DEFAULT_OPEN, SECTION_IDS, type SectionId, type SinglePageModel } from './singlepage/model';
 import { commandForAction } from './singlepage/actions';
 import { SECTIONS, sectionForTab } from './singlepage/sections';
 import { channelDef, nextStepHint } from '../../core/outputChannels';
+import { log } from '../../constants';
 import { currentStatus, runWithBusy, type BusyHost } from '../../core/busy';
 import { IDLE_GATE, beginRefresh, endRefresh, type RefreshGate } from '../../core/refreshGate';
 import { createBusyHost } from '../busyHost';
@@ -176,6 +177,12 @@ function postSinglePage(): void {
   const grouped = cardsBySection(model);
   void cockpitPanel.webview.postMessage({ type: 'folded', folded: model.folded });
   void cockpitPanel.webview.postMessage({ type: 'l1', html: l1HtmlOf(model) });
+  // **站壳**（rail 的 8 个状态点 + 每站站头的状态字）也要推。
+  //
+  // 它们在 `<header class="l1">` 之外，所以历史上只被推了**一次**（首帧）——
+  // 于是构建失败之后状态栏红了、卡片（展开时）也红了，② 构建站却还挂着 ✓
+  // （2026-10-12 真机走查的问题 ④：同一个状态在三处说法不同）。
+  void cockpitPanel.webview.postMessage({ type: 'chrome', ...stationChrome(model) });
   for (const def of SECTIONS) {
     if (!openedSections.has(def.id)) {
       continue;
@@ -433,19 +440,28 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
       }
       if (message.type === 'action' && message.action) {
         const cmd = commandForAction(message.action);
-        if (cmd) {
-          // 动作跑完再刷事实（成功/失败都刷，卡片上的数字要跟得上）
-          void vscode.commands.executeCommand(cmd).then(
-            () => requestFacts(),
-            () => requestFacts(),
-          );
+        if (!cmd) {
+          // **点了没反应是用户最不能接受的失败方式**，所以这里绝不静默丢弃
+          // （2026-10-12 真机走查的问题 ③：按钮点下去看不出点上没点上）。
+          // 走到这里 = 卡片挂了一个 Intent 表里查不到的动作 id（接线错误）：把它说出来。
+          log('ui', `未接线的卡片动作：${message.action}（Intent 表里没有 → 命令没执行）`, 'warn');
+          void vscode.window.showWarningMessage(`「${message.action}」还没有接线，这次点击没有生效（已记进输出通道）。`);
+          return;
         }
+        // 动作跑完再刷事实（成功/失败都刷，卡片上的数字要跟得上）
+        void vscode.commands.executeCommand(cmd).then(
+          () => requestFacts(),
+          () => requestFacts(),
+        );
       } else if (message.type === 'nav' && message.id) {
         // J 块：导航动作（如 L1 忙点 → 任务中心）。与 action 的区别只有一条：
         // 导航**不会**产生"在跑"的语义，所以页面不改按钮文字、这里也不刷事实。
         const cmd = commandForAction(message.id);
         if (cmd) {
           void vscode.commands.executeCommand(cmd);
+        } else {
+          log('ui', `未接线的卡片导航：${message.id}（Intent 表里没有 → 命令没执行）`, 'warn');
+          void vscode.window.showWarningMessage(`「${message.id}」还没有接线，这次点击没有生效（已记进输出通道）。`);
         }
       } else if (message.type === 'copilot' && message.command) {
         void runCopilotEntry(message.command);

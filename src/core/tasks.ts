@@ -15,7 +15,7 @@
  * 纯逻辑：不 import vscode，时间与副作用全部由调用方注入，因此可以在无人值守测试里
  * 把超时/取消/重启恢复全跑一遍（门禁 G4）。
  */
-import { deadlineFor, type DeadlineKind, type DeadlineOverrides } from './deadlines';
+import { deadlineFor, deadlineLabel, type DeadlineKind, type DeadlineOverrides } from './deadlines';
 
 export type TaskState =
   | 'queued'
@@ -38,13 +38,23 @@ export const TERMINAL_STATES: readonly TaskState[] = [
 /**
  * 允许的转换（穷举表；G4 会拿它当"预期值"逐条对账）。
  * `running → running` = 心跳/进度更新，所以它也是合法的一条。
+ *
+ * **`timedOut → succeeded/failed`（2026-10-12 真机走查修的）**：对账器是**启发式**
+ * （心跳断了 / 超阈值），而动作的返回是**事实**。两者冲突时必须让事实落地，否则界面
+ * 会把一次真实结束的动作永远显示成"超时"—— 走查实测的现场就是：动作被判 `timedOut`，
+ * 随后正常返回，`succeed()` 撞上"非法转换"抛错，于是**"✓ 编译打包完成"与"超时/失败"
+ * 同时出现在输出里**，用户不知道该信哪一条。
+ *
+ * 只在"动作确实自己结束了"这一条路径上使用（`core/busy.ts` 的完成/失败分支），
+ * **不用于**把超时洗成成功：那条路径不会走到这里（被 abort 杀掉的动作是 reject，不是 resolve）。
+ * `cancelled` 仍然没有出口 —— 取消是**用户意图**，不能被动作的返回改写。
  */
 export const TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
   queued: ['running', 'cancelled'],
   running: ['running', 'succeeded', 'failed', 'timedOut', 'cancelled'],
   succeeded: ['stale'],
   failed: ['stale'],
-  timedOut: [],
+  timedOut: ['succeeded', 'failed'],
   cancelled: [],
   stale: [],
 };
@@ -390,9 +400,12 @@ export class TaskStore {
       const overdue = now - started > task.deadlineMs;
       const flat = now - (task.heartbeatAt ?? started) > HEARTBEAT_STALE_MS;
       if (overdue || flat) {
+        const elapsed = Math.round((now - started) / 1000);
+        // 理由里带上**已跑多久**：真机走查时这一条决定了"是误判还是真挂住"
+        // （实测现场：`已跑 102 秒`就判了超时 —— 一眼能看出阈值/心跳哪里出了问题）。
         const reason = overdue
-          ? `超过 ${Math.round(task.deadlineMs / 60000)} 分钟仍未结束`
-          : `心跳断了（超过 ${Math.round(HEARTBEAT_STALE_MS / 1000)} 秒没有进展）`;
+          ? `超过 ${deadlineLabel(task.deadlineMs)}仍未结束（已跑 ${elapsed} 秒）`
+          : `心跳断了（超过 ${Math.round(HEARTBEAT_STALE_MS / 1000)} 秒没有进展；已跑 ${elapsed} 秒）`;
         this.aborts.get(task.id)?.abort();
         changed.push(this.timeout(task.id, reason));
       }
