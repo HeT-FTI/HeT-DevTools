@@ -2,7 +2,7 @@
   "name": "het-devtools",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "het-fti",
   "license": "Apache-2.0",
   "repository": {
