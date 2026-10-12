@@ -1,6 +1,6 @@
 /**
  * V5-2B single environment sample — ONE source of truth for the chip hover
- * "开发环境" row, the HUD and the cockpit env view (no second, sniffed view).
+ * "开发环境" row, the chip hover and the cockpit env view (no second, sniffed view).
  *
  * Gathers the Provider decision + managed-env state + WSL/macOS lane snapshot
  * into one object with a short `summary` line and a `conan` readiness fact for

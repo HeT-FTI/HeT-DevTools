@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface DocToolStatus {
   name: string;
@@ -31,7 +31,7 @@ export interface DocsDeps {
   openArtifact: (rel: string) => Promise<void>;
 }
 
-export function showDocsPanel(context: vscode.ExtensionContext, deps: DocsDeps): vscode.WebviewPanel {
+export function showDocsPanel(context: vscode.ExtensionContext, deps: DocsDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'docs', title: 'HeT DevTools — 文档中心' }, (panel) => {
 

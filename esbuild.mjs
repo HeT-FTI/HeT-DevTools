@@ -3,7 +3,7 @@
 //  - --tests : bundles every src/test/**/*.test.ts -> out/test/** (kept relative)
 //  - --watch : rebuild on change
 import * as esbuild from 'esbuild';
-import { readdirSync, statSync, mkdirSync } from 'node:fs';
+import { readdirSync, statSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +22,11 @@ const c4 = args.includes('--c4');
 const c5 = args.includes('--c5');
 const c6 = args.includes('--c6');
 const c7 = args.includes('--c7');
+const c8 = args.includes('--c8');
+const c9 = args.includes('--c9');
+const c10 = args.includes('--c10');
 const real = args.includes('--real');
+const preview = args.includes('--preview');
 
 /** @type {import('esbuild').BuildOptions} */
 const common = {
@@ -50,7 +54,7 @@ function collectTsFiles(dir, acc = []) {
 
 function buildOptions() {
   const options = [];
-  const wantMain = !tests && !integration;
+  const wantMain = !tests && !integration && !preview;
 
   // 1) main extension bundle (skipped in tests/integration-only modes)
   if (wantMain) {
@@ -63,6 +67,10 @@ function buildOptions() {
 
   // 2) unit tests (when requested)
   if (tests) {
+    // 先清掉上一次的产物：**被删掉的测试源不许在 out/ 里以"幽灵用例"继续跑**。
+    // （E 块删 HUD 测试时踩过：源码没了，out/test/hud*.test.js 还在，于是 CI 里绿、
+    //   本地红/绿不一致，而且断言的是已经不存在的文件。）
+    rmSync(join(outDir, 'test'), { recursive: true, force: true });
     const testRoot = join(srcDir, 'test');
     if (exists(testRoot)) {
       for (const file of collectTsFiles(testRoot)) {
@@ -147,6 +155,42 @@ function buildOptions() {
       ...common,
       entryPoints: [join(srcDir, 'test', 'integration', 'c7.ts')],
       outfile: join(outDir, 'test-integration', 'c7.js'),
+    });
+  }
+
+  // 10b) C8 one-tab / slot check (§6-A: 页签恒为 1 + 页内 Slot 互斥，0 人工)
+  if (c8) {
+    options.push({
+      ...common,
+      entryPoints: [join(srcDir, 'test', 'integration', 'c8.ts')],
+      outfile: join(outDir, 'test-integration', 'c8.js'),
+    });
+  }
+
+  // 10c) C9 consistency session (§6-H: 三元组一致 + 四出口，0 人工)
+  if (c9) {
+    options.push({
+      ...common,
+      entryPoints: [join(srcDir, 'test', 'integration', 'c9.ts')],
+      outfile: join(outDir, 'test-integration', 'c9.js'),
+    });
+  }
+
+  // 10c2) C10 stage-band session (V3 L2e: 8 stations + accordion + legacy links)
+  if (c10) {
+    options.push({
+      ...common,
+      entryPoints: [join(srcDir, 'test', 'integration', 'c10.ts')],
+      outfile: join(outDir, 'test-integration', 'c10.js'),
+    });
+  }
+
+  // 10d) 静态预览生成器（开发辅助：远端服务器上看不到 UI，用它的产物截图）
+  if (preview) {
+    options.push({
+      ...common,
+      entryPoints: [join(srcDir, 'preview', 'cockpitPreview.ts')],
+      outfile: join(outDir, 'preview.js'),
     });
   }
 

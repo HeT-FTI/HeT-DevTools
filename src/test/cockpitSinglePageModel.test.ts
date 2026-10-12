@@ -2,7 +2,7 @@ import * as assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { initialCockpitState, reduceCockpit } from '../features/cockpit/state';
-import { SECTIONS, allCards } from '../features/cockpit/singlepage/sections';
+import { SECTIONS, allCards, railSections } from '../features/cockpit/singlepage/sections';
 import { DEFAULT_FOLDED } from '../features/cockpit/singlepage/model';
 import { EMPTY_FACTS, sectionsWithProblems, singlePageModelFrom } from '../features/cockpit/singlepage/modelFrom';
 import { COMMAND_FOR_ACTION, actionsUsingCommand, commandForAction } from '../features/cockpit/singlepage/actions';
@@ -17,58 +17,61 @@ import { cockpitSinglePageBody, cockpitSinglePageHtml } from '../features/cockpi
 describe('单页模型映射（A 批 · 块 2）', () => {
   const state = initialCockpitState();
 
-  it('没有任何事实时：25 张卡都在、全是 idle、L1 全 —（不编造数字）', () => {
+  it('没有任何事实时：22 张卡都在、全是 idle、8 站全 idle、没有下一步（不编造数字）', () => {
     const model = singlePageModelFrom(state, EMPTY_FACTS);
     assert.strictEqual(model.cards.length, allCards().length);
     assert.ok(model.cards.every((c) => c.state === 'idle'), '未知就保持 idle');
-    assert.deepStrictEqual(model.l1.map((i) => i.value), ['—', '—', '—', '—']);
-    assert.deepStrictEqual(model.folded, [...DEFAULT_FOLDED], '默认只展开段 1');
+    assert.deepStrictEqual(model.folded, [...DEFAULT_FOLDED], '默认只展开就绪站');
+    assert.strictEqual(model.spine?.length, 8, '阶段带 8 站');
+    assert.ok(model.spine?.every((s) => s.state === 'idle'), '没跑过就是 idle，不许冒充绿');
   });
 
-  it('事实摆到 L1 与卡片上（构建/测试/覆盖率/环境）', () => {
+  it('事实摆到卡片与**站**上（构建/测试/覆盖率/环境）', () => {
     const model = singlePageModelFrom(state, {
       build: { ok: true, ago: '2 分钟前', buildType: 'Release' },
       test: { passed: 3, failed: 1 },
       coverage: { pct: 76.9, at: '12 分钟前' },
       env: { provider: 'linux-managed', label: '车道 ready', ready: true, selfHeal: false },
     });
-    const l1 = Object.fromEntries(model.l1.map((i) => [i.id, i]));
-    assert.deepStrictEqual(
-      [l1.build.value, l1.build.state],
-      ['2 分钟前', 'ok'],
-    );
-    assert.deepStrictEqual([l1.test.value, l1.test.state], ['3/4', 'fail'], '有失败就是 fail');
-    assert.deepStrictEqual([l1.coverage.value, l1.coverage.state], ['76.9%', 'ok']);
-    assert.deepStrictEqual([l1.env.value, l1.env.state], ['车道 ready', 'ok']);
+    const station = (id: string): (NonNullable<typeof model.spine>[number]) => {
+      const s = model.spine?.find((x) => x.id === id);
+      assert.ok(s, `站 ${id} 必须存在`);
+      return s;
+    };
+    // V3 L2：原来 L1 那四个状态格已被站状态取代（同一份事实只准投影一次）。
+    assert.strictEqual(station('build').state, 'ok');
+    assert.strictEqual(station('test').state, 'fail', '有失败就是 fail');
+    assert.strictEqual(station('ready').state, 'ok');
 
     const card = (id: string): (typeof model.cards)[number] => {
       const c = model.cards.find((x) => x.id === id);
       assert.ok(c, `卡片 ${id} 必须存在`);
       return c;
     };
-    assert.strictEqual(card('build').fact, '2 分钟前 · Release');
-    assert.strictEqual(card('test').fact, '3/4 · 1 failed');
-    assert.strictEqual(card('coverage').fact, '76.9% · 行覆盖');
+    assert.strictEqual(card('buildTest').fact, '2 分钟前 · Release');
+    assert.strictEqual(card('testFull').fact, '3/4 · 1 failed');
     assert.strictEqual(card('coverageDetail').fact, '76.9% · 12 分钟前');
     assert.match(card('env').fact, /车道 ready · 自愈不可用/, '自愈能力必须如实显示（ADR-8）');
   });
 
   it('缺工具 → 卡片标 warn 且给出"需要你执行"（材料第 1 条）', () => {
     const model = singlePageModelFrom(state, { docs: { missingTool: 'doxygen', pages: null } });
-    const docs = model.cards.find((c) => c.id === 'docs');
+    const docs = model.cards.find((c) => c.id === 'docsBuild');
     assert.ok(docs);
     assert.strictEqual(docs.state, 'warn');
     assert.match(docs.fact, /缺 doxygen/);
     assert.match(docs.next ?? '', /需要你执行：安装 doxygen/, '必须说清"要不要人、怎么装"');
-    const build = model.cards.find((c) => c.id === 'docsBuild');
-    assert.strictEqual(build?.state, 'warn', '编译侧也要如实标黄');
+    assert.ok(
+      !model.cards.some((c) => c.id === 'docs'),
+      'E 块后文档不再有第二张只读摘要卡（一个事实一个地方）',
+    );
   });
 
   it('质量/提交/发布/CI/网络/上板的事实映射', () => {
     const model = singlePageModelFrom(state, {
       quality: { ready: 3, total: 6, failing: '静态检查' },
-      deps: { direct: 4, indirect: 12 },
-      commit: { dirty: 3 },
+      deps: { declared: [{ name: 'ZLIB', version: '1.3.1' }, { name: 'PCRE2', version: '10.44' }, { name: 'Eigen3', version: '3.4.0' }, { name: 'etl', version: '20.47.1' }] },
+      commit: { repo: true, branch: 'feat/x', detached: false, upstream: 'origin/main', ahead: 0, behind: 0, dirty: 3 },
       release: { notReady: 2 },
       ci: { lastRun: 'ok', branch: 'main' },
       network: { profile: 'cn' },
@@ -77,8 +80,8 @@ describe('单页模型映射（A 批 · 块 2）', () => {
     });
     const fact = (id: string): string => model.cards.find((c) => c.id === id)?.fact ?? '';
     assert.strictEqual(fact('quality'), '✗ 静态检查 · 工具 3/6 就绪');
-    assert.strictEqual(fact('deps'), '直接 4 · 间接 12');
-    assert.strictEqual(fact('commit'), '3 个文件未提交');
+    assert.strictEqual(fact('deps'), '直接 4', '依赖卡只说取得到的数（“间接”没有事实来源，不再显示）');
+    assert.strictEqual(fact('commit'), 'feat/x · 3 个文件未提交');
     assert.strictEqual(fact('release'), '2 项未就绪');
     assert.strictEqual(fact('ci'), '上次 绿 · main');
     assert.strictEqual(fact('network'), '国内源');
@@ -86,10 +89,43 @@ describe('单页模型映射（A 批 · 块 2）', () => {
     assert.strictEqual(model.templateBehind, 64, '模板落后要透传到 L1 上方提示');
   });
 
+  it('L4：⑥ 提交站的 Git 事实行（分支 / 领先 / 未提交）与 ⑦ 发布站的总编排', () => {
+    const fact = (id: string, facts: Parameters<typeof singlePageModelFrom>[1]): { fact: string; next?: string; state: string } => {
+      const card = singlePageModelFrom(state, facts).cards.find((c) => c.id === id);
+      assert.ok(card, `${id} 卡存在`);
+      return { fact: card.fact, ...(card.next ? { next: card.next } : {}), state: card.state };
+    };
+
+    // 脏 + 领先 → 一行里三件事都在（不用出门 `git status -sb`）
+    const ahead = fact('commit', {
+      commit: { repo: true, branch: 'feat/x', detached: false, upstream: 'origin/main', ahead: 2, behind: 0, dirty: 3 },
+    });
+    assert.strictEqual(ahead.fact, 'feat/x · 3 个文件未提交 · 领先 origin/main 2');
+    assert.strictEqual(ahead.state, 'warn');
+    assert.match(ahead.next ?? '', /智能提交/, '先提交（一次只给一个动作）');
+
+    // 干净 + 同步 → 绿且不啰嗦
+    const synced = fact('commit', {
+      commit: { repo: true, branch: 'main', detached: false, upstream: 'origin/main', ahead: 0, behind: 0, dirty: 0 },
+    });
+    assert.strictEqual(synced.fact, 'main · 工作区干净');
+    assert.strictEqual(synced.state, 'ok');
+    assert.strictEqual(synced.next, undefined);
+
+    // 总编排：事实来自入口 workflow 的解析结果
+    const orch = fact('orchestrator', { orchestrator: { fact: '9 个 job · push/pull_request', next: '第一个 job：Analyze Metadata（点开看完整顺序）' } });
+    assert.strictEqual(orch.fact, '9 个 job · push/pull_request');
+    assert.strictEqual(orch.state, 'idle', '编排是静态知识 —— 给绿色会被误读成"CI 已经过了"');
+    assert.match(orch.next ?? '', /Analyze Metadata/);
+    // 不给这个事实时，卡停在默认（不编造 job 数）
+    const none = singlePageModelFrom(state, EMPTY_FACTS).cards.find((c) => c.id === 'orchestrator');
+    assert.strictEqual(none?.fact, '—');
+  });
+
   it('折叠状态与"有问题的段"（rail 打点用）', () => {
-    const model = singlePageModelFrom(state, { quality: { failing: '静态检查' } }, ['code']);
-    assert.deepStrictEqual(model.folded, ['code']);
-    assert.deepStrictEqual(sectionsWithProblems(model), ['code']);
+    const model = singlePageModelFrom(state, { quality: { failing: '静态检查' } }, ['quality']);
+    assert.deepStrictEqual(model.folded, ['quality']);
+    assert.deepStrictEqual(sectionsWithProblems(model), ['quality']);
     const clean = singlePageModelFrom(state, EMPTY_FACTS);
     assert.deepStrictEqual(sectionsWithProblems(clean), []);
   });
@@ -163,34 +199,27 @@ describe('单页模型映射（A 批 · 块 2）', () => {
       .map(([id]) => id);
     assert.deepStrictEqual(crossSection, [], `这些动作被两个段各放了一个按钮：${crossSection.join('、')}`);
 
-    // 段 1 = 只读摘要：允许 jump 链接 + Copilot 解释入口 + **只属于摘要的自足动作**
-    // （体检 = 刷新摘要本身）；但凡执行段里也有的动作，段 1 一律不许再放按钮。
-    const nowCards = SECTIONS.find((x) => x.id === 'now')!.cards;
-    const buttonIds = (cards: typeof nowCards): string[] =>
-      cards
-        .flatMap((c) => [c.action, c.secondary, ...(c.extra ?? [])])
-        .filter((a) => a?.kind === 'action')
-        .map((a) => a!.id);
-    const executed = buttonIds(nowCards);
-    const elsewhere = new Set(
-      buttonIds(SECTIONS.filter((x) => x.id !== 'now').flatMap((x) => x.cards)),
-    );
-    const duplicated = executed.filter((id) => elsewhere.has(id));
+    // E 块删掉了"只读摘要段"：现在**同一个动作全页只有一个按钮**（不再区分"摘要段/执行段"）。
+    // 这条比旧的"段 1 只读"更强：任何两个段都不许对同一个动作各放一个按钮。
+    const executed: string[] = [];
+    for (const c of allCards()) {
+      for (const a of [c.action, c.secondary, ...(c.extra ?? [])]) {
+        if (a?.kind === 'action') {
+          executed.push(a.id);
+        }
+      }
+    }
+    const duplicated = executed.filter((id, i) => executed.indexOf(id) !== i);
     assert.deepStrictEqual(
       duplicated,
       [],
-      `段 1 只读：这些动作在执行段里已经有一个按钮了，摘要卡上别再放一份：${duplicated.join('、')}`,
+      `这些动作在页面上有不止一个按钮（同一件事两个入口就是"这两个到底有什么区别"的来源）：${duplicated.join('、')}`,
     );
-    assert.ok(executed.includes('health'), '体检属于"刷新摘要"的自足动作，留在段 1');
-    for (const c of nowCards) {
-      // 每张摘要卡都要给"去哪儿执行"（或它是体检/解释这类自足动作）
-      if (['health'].includes(c.id)) {
-        continue;
-      }
-      const jumps = (c.extra ?? []).filter((a) => a.kind === 'jump');
-      assert.ok(jumps.length >= 1, `${c.id} 摘要卡要有跳转链接（否则用户没路走）`);
-      assert.ok(jumps.every((a) => SECTIONS.some((s2) => s2.id === a.id)), `${c.id} 跳转目标要真实`);
-    }
+    assert.ok(executed.includes('health'), '体检是全页唯一的"重新体检"入口');
+    assert.ok(
+      !allCards().some((c) => (c.extra ?? []).some((a) => a.kind === 'jump')),
+      'jump（去别处做）只属于被删掉的只读摘要段 —— 现在没有任何卡片需要它',
+    );
   });
 
   it('动作映射与 package.json 里真实声明的命令一致（防拼错）', () => {
@@ -203,11 +232,11 @@ describe('单页模型映射（A 批 · 块 2）', () => {
     }
   });
 
-  it('次级按钮进页面（env 的「移除…」、构建卡的「构建并测试」）', () => {
+  it('次级按钮进页面（环境的「移除…」、构建的「全量测试」，与主按钮配对）', () => {
     const html = cockpitSinglePageHtml(singlePageModelFrom(state, EMPTY_FACTS));
     assert.ok(html.includes('class="secondary"'), '次级按钮要有弱化样式');
     assert.ok(html.includes('data-act="envRemove"'), '环境卡要有"移除…"');
-    assert.ok(html.includes('data-act="test"'), '构建卡要有"构建并测试"');
+    assert.ok(html.includes('data-act="test"'), '构建段要有"全量测试"');
     const body = cockpitSinglePageBody(singlePageModelFrom(state, EMPTY_FACTS));
     // F.31：卡片按钮现在同时带 `data-action="act"` 与 `data-act`（只带 data-act 会被处理端
     // 第一行的 `closest('[data-action]')` 挡掉）。这里数"主按钮"= 非 secondary 的动作/Copilot 按钮。
@@ -242,8 +271,9 @@ describe('单页模型映射（A 批 · 块 2）', () => {
     for (const forbidden of ['coveragePct:', 'ci: {']) {
       assert.ok(!ext.includes(forbidden), `不该编造事实：${forbidden}`);
     }
-    // 未提交数是真测量（git status --porcelain），允许
-    assert.ok(ext.includes('dirty: parsePorcelain(res.stdout).length'), '未提交数要真的数');
+    // 未提交数是真测量（`git status --porcelain=v2 --branch`，一条命令拿全分支/上游/领先落后）
+    assert.ok(ext.includes("'status', '--porcelain=v2', '--branch'"), '未提交数要真的数（v2 一条命令）');
+    assert.ok(ext.includes('parseStatusV2(res.stdout)'), '事实解析要走 core/gitFacts 的单一解析器');
   });
 
   it('§7 额外事实（覆盖率读数 + 未提交数）：拿不到就不传（不编造）', () => {
@@ -251,7 +281,7 @@ describe('单页模型映射（A 批 · 块 2）', () => {
     assert.ok(ext.includes('async function feedExtraSinglePageFacts'), '额外事实函数要在');
     assert.ok(!ext.includes('isSinglePageMode'), '旧 UI 已归档，不该再有旧模式判断（事实总是要的）');
     assert.ok(ext.includes('findCoverageReport(root)') && ext.includes('readCoveragePct('), '覆盖率读数用既有单一来源');
-    assert.ok(ext.includes('parsePorcelain(res.stdout)'), '未提交数用既有解析器');
+    assert.ok(ext.includes('parseStatusV2('), '未提交数走 core/gitFacts 的单一解析器（字段口径只有一处）');
     assert.ok(ext.includes('timeoutMs: 8000'), 'git 调用必须有超时（无人值守不能卡住）');
     assert.ok(/catch\s*\{[\s\S]{0,80}不传/.test(ext), '取不到就不传（不编造）');
   });
@@ -286,6 +316,7 @@ describe('单页模型映射（A 批 · 块 2）', () => {
     for (const forbidden of ['github.copilot.cli.newSession', 'workbench.action.chat.openNewSessionSidebar']) {
       assert.ok(!ctl.includes(forbidden), `禁止出现"新建会话"命令：${forbidden}`);
     }
-    assert.strictEqual(SECTIONS.length, 5);
+    assert.strictEqual(railSections().length, 8, 'rail 八项（动作序列 8 站）；齿轮（设置）不算在里面');
+    assert.strictEqual(SECTIONS.length, 9, '含齿轮段共 9 个组定义（8 站 + 设置）');
   });
 });

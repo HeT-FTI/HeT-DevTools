@@ -46,8 +46,14 @@ export const SINGLE_PAGE_LAYOUT_CSS = `
   .l1 { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 10px;
     align-items: center; padding: 6px 10px; border: 1px solid var(--het-border);
     border-radius: var(--het-radius); background: var(--het-card-bg); font-size: var(--het-font-sm); }
-  .l1-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-  .l1-item .k { color: var(--het-fg-dim); }
+  /* 常驻条：**放动作**（高频），不放状态（状态在阶段带每一站上）。 */
+  .bar-act { border: 1px solid var(--het-border); background: transparent; color: var(--het-fg);
+    border-radius: 6px; padding: 2px 10px; cursor: pointer; font-size: var(--het-font-sm); }
+  .bar-act:hover { background: var(--het-hover); }
+  /* 产物能力行：只在真有产物能力时出现（§5.2）；每条的能力->动作在 title 里。 */
+  .l1 .caps { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+    color: var(--het-fg-dim); font-size: var(--het-font-xs); }
+  .l1 .caps .cap { cursor: help; }
   .sp-body { display: flex; align-items: flex-start; gap: var(--het-gap); }
   .rail { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px;
     width: var(--het-rail-w); flex: 0 0 var(--het-rail-w); }
@@ -58,6 +64,8 @@ export const SINGLE_PAGE_LAYOUT_CSS = `
     border-radius: 6px; cursor: pointer; opacity: .7; font-size: var(--het-font-sm); }
   .rail-ic { flex: 0 0 auto; line-height: 1; }
   .rail-tx { flex: 1 1 auto; text-align: left; white-space: nowrap; }
+  /* 站状态点：状态信息的**唯一位置**（顶部不再单开一条状态格）。 */
+  .rail-dot { flex: 0 0 auto; width: 12px; text-align: center; }
   .rail-item:hover { background: var(--het-hover); opacity: 1; }
   .rail-item[aria-current="true"] { background: var(--het-active-bg); color: var(--het-active-fg); opacity: 1; }
   .page { flex: 1 1 auto; min-width: 0; max-width: var(--het-page-w); }
@@ -67,6 +75,15 @@ export const SINGLE_PAGE_LAYOUT_CSS = `
     background: transparent; color: var(--het-fg); cursor: pointer; text-align: left;
     padding: 8px 10px; font-size: var(--het-font-sm); font-weight: 600; }
   .sec-head:hover { background: var(--het-hover); }
+  /* 站状态（与卡片同一个词表，状态图标/说法只有一份）；"下一步"标记是个 chip，**不是按钮**
+     —— 动作只允许在卡片上有一份（否则同一个动作出现两个入口，P7）。 */
+  .sec-head .st { flex: 0 0 auto; width: 14px; text-align: center; }
+  .sec-head .hint { margin-left: auto; color: var(--het-fg-dim); font-weight: 400;
+    font-size: var(--het-font-xs); }
+  .sec-head .next-chip { flex: 0 0 auto; padding: 0 6px; border: 1px solid var(--het-accent);
+    color: var(--het-accent); border-radius: 999px; font-size: var(--het-font-xs); font-weight: 600; }
+  /* 那个卡就是"下一步"该点的地方（只染色，不加按钮） */
+  .card.is-next .nm { color: var(--het-accent); }
   /* 卡片副标题：静态语义（"这张卡跑的是哪条链"），比结果文字更弱。 */
   .card .sub { color: var(--het-fg-dim); font-size: var(--het-font-xs); opacity: .85; }
   /* jump 链接：导航，不是动作 —— 刻意长得不像按钮。 */
@@ -97,6 +114,12 @@ export const SINGLE_PAGE_LAYOUT_CSS = `
   .sec-body .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; }
   pre, code { overflow-wrap: anywhere; }
   .scrollbox { max-height: min(60vh, 420px); overflow: auto; }
+  /* A 块：页内 Slot（细节视图画在这里，页签恒为 1）。容器必须有界：max-height + overflow */
+  .slot { margin-top: var(--het-gap); border-top: 2px solid var(--het-border); }
+  .slot-head { display: flex; align-items: center; gap: 8px; padding: 8px 0 4px; }
+  .slot-title { font-weight: 600; }
+  .slot-spacer { flex: 1; }
+  .slot-body { max-height: min(70vh, 640px); overflow: auto; }
   @container (max-width: 460px) { .sec-body .kv { grid-template-columns: 1fr; } }
 `;
 
@@ -106,38 +129,5 @@ export function singlePageCss(): string {
 ${tokenBlock()}
   }
 ${SINGLE_PAGE_LAYOUT_CSS}
-</style>`;
-}
-
-/**
- * HUD（决策 6A）：它**不再是第二套皮** —— 令牌、L1 渲染器、卡片渲染器都和单页共用，
- * 这里只补几行它自己特有的排版（同样只用 token，且遵守 §5：不允许会随宽度重排的网格）。
- */
-export const HUD_CSS = `
-  .hud { width: 100%; max-width: min(780px, calc(100vw - 32px)); margin: 0 auto; padding: 16px; }
-  .hud-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-  .hud-head h1 { font-size: 1.25em; margin: 0; flex: 1; min-width: 0; }
-  .hud-lines { margin: 8px 0 4px; }
-  .hud-line { font-size: .78em; opacity: .8; overflow-wrap: anywhere; }
-  .hud-h2 { font-size: .72em; text-transform: uppercase; letter-spacing: .5px; opacity: .7; margin: 14px 0 6px; }
-  .hud-acts { display: flex; flex-wrap: wrap; gap: 6px; }
-  .hud-act { display: inline-flex; align-items: center; gap: 6px; background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground); border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: .85em; }
-  .hud-act:hover { opacity: .9; }
-  .hud-key { font-size: .72em; opacity: .6; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
-  .hud-prefs { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
-  .hud-link { background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; font-size: .8em; padding: 0; }
-  .hud-foot { margin-top: 10px; font-size: .72em; opacity: .65; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px; }
-  .hud-foot kbd { font-family: var(--vscode-font-family); border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
-  .hud .cards { display: flex; flex-direction: column; gap: 2px; }
-`;
-
-export function hudCss(): string {
-  return `<style>
-  :root {
-${tokenBlock()}
-  }
-${SINGLE_PAGE_LAYOUT_CSS}
-${HUD_CSS}
 </style>`;
 }

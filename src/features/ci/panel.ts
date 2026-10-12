@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { LocalWorkflow } from '../../core/ciStatus';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface CiRunInfo {
   name: string;
@@ -32,7 +32,7 @@ export interface CiDeps {
   openActions: () => Promise<void>;
 }
 
-export function showCiPanel(context: vscode.ExtensionContext, deps: CiDeps): vscode.WebviewPanel {
+export function showCiPanel(context: vscode.ExtensionContext, deps: CiDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'ci', title: 'HeT DevTools — CI 状态' }, (panel) => {
 

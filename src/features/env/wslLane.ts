@@ -250,7 +250,7 @@ export async function ensureWslLane(distro: string, opts: { mirror?: LaneMirror 
   cache = { at: Date.now(), home, note: baselineNote(facts.compiler), mirrorKey };
   // 自证行进日志（一行一事实）：否则"车道真的备好了什么"只能靠"没抛异常"反推。
   for (const line of laneReportLines(r.stdout)) {
-    log(`[lane] ${line}`);
+    log('lane', `${line}`);
   }
   return { home, note: cache.note, facts };
 }

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { pageShell } from '../ui';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 import {
   PREFLIGHT_STYLE,
   itemsHtml,
@@ -39,7 +39,7 @@ export interface PreflightDeps {
  *    （很常见）时，否则用户只能靠「界面有没有变」猜按钮是否工作。
  * 3. **错误不许吞**：取数失败要把原因写回页面，而不是只留在 console。
  */
-export function showPreflightPanel(context: vscode.ExtensionContext, deps: PreflightDeps): vscode.WebviewPanel {
+export function showPreflightPanel(context: vscode.ExtensionContext, deps: PreflightDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'preflight', title: 'HeT DevTools — 发布前检查' }, (panel) => {
     /** 只回"可变部分"（列表 + 结论 + 提示），页面脚本按锚点替换。 */

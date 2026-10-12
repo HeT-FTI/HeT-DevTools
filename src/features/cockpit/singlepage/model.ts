@@ -4,8 +4,18 @@
  * 设计来源：`workspace/develope/gui-single-page-rework-plan.md` §3（5 段工作流）与 §4（L1/L2/L3 三层密度）。
  * 这里只描述"页面上有什么"，不关心怎么取数（那由 host 侧的 controller/adapter 负责）。
  */
-/** 5 个工作流段（决策 2A）。顺序 = 页面顺序 = rail 顺序。 */
-export type SectionId = 'now' | 'build' | 'code' | 'deliver' | 'config';
+import type { CapabilityFact, CapabilityId } from '../../../core/capability';
+
+/**
+ * 5 个工作流段 + 齿轮（设置）（E 块定稿，计划 §5.1）。
+ *
+ * 名字就是 rail 上的定稿名：动作序列 8 站（就绪/构建/测试/文档/质量/提交/发布/交付）+ 设置。
+ * 顺序 = 页面顺序 = rail 顺序。
+ *
+ * V3 · L2：`SectionId` 从"按领域的 6 段"换成"按动作序列的 8 站 + 设置"。
+ * 分组知识全部在 `spine.ts`（`SPINE_STATIONS`），这里只留类型。
+ */
+export type SectionId = SpineStationId | 'settings';
 
 /**
  * 历史 tab id（旧 UI 的 11 个 tab）。
@@ -47,8 +57,7 @@ export type CardState = 'ok' | 'warn' | 'fail' | 'na' | 'idle' | 'running';
 /** 卡片详情去处（§3.1 的"详情去处"列）。 */
 export type CardStage = 'inline' | 'panel' | 'external' | 'output' | 'chat';
 
-/** 卡片的主按钮（最多一个；§3.1 规则）。 */
-export interface CardAction {
+/** 卡片的主按钮（最多一个；§3.1 规则）。 */export interface CardAction {
   /**
    * 走 `{type:'action'}` 协议的 id、`{type:'copilot'}` 的命令名，
    * 或 `kind: 'jump'` 时的**目标段 id**。
@@ -69,6 +78,17 @@ export interface CardRow {
   /** 这张卡承载的**旧 tab**（历史记录；用于"信息不丢"校验：11 个旧 tab 必须各有归属）。 */
   tab: LegacyTabId;
   label: string;
+  /**
+   * 显示条件（G11 门禁：**必须**声明）。
+   *
+   * - `'always'`：常驻（谁都要做的那一步）；
+   * - 能力事实 id 列表：只有产物**真有**该能力时才显示（§5.2）。
+   *   能力**未知**（metadata 读不到）时一律显示 —— 见 `spine.ts` 的 `visibleCards`。
+   *
+   * 类型上可选是为了不强迫单测里造卡时都写它；**门禁**（`infoBudget.test.ts`）
+   * 对真实的 `SECTIONS` 是强制的。
+   */
+  show?: 'always' | CapabilityId[];
   /**
    * 静态副标题（≤ 30 字）：说清"这张卡到底跑的是哪条链"。
    *
@@ -95,60 +115,131 @@ export interface CardRow {
   lazy: boolean;
 }
 
-/** L1 吸顶条的一项（构建 · 测试 · 覆盖率 · 环境 + 忙点）。 */
-export interface L1Item {
-  id: string;
+/** 阶段带的站点 id（顺序 = 动作顺序，见 `spine.ts` 的 `SPINE_STATIONS`）。 */
+export type SpineStationId =
+  | 'ready'
+  | 'build'
+  | 'test'
+  | 'docs'
+  | 'quality'
+  | 'commit'
+  | 'release'
+  | 'deliver';
+
+/** 一个站点的视图（状态是站内卡片状态的聚合；站**不自己读事实**）。 */
+export interface SpineStationView {
+  id: SpineStationId;
+  order: number;
   label: string;
-  value: string;
+  hint: string;
+  /** 该站实际存在的卡片 id（能力显隐后可能变少）。 */
+  cards: string[];
   state: CardState;
 }
 
+/** "下一步"：第一个未完成站里第一张有主动作的卡（唯一来源，不许再手写）。 */
+export interface SpineNextStep {
+  station: SpineStationId;
+  cardId: string;
+  action: CardAction;
+}
+
 export interface SinglePageModel {
-  l1: L1Item[];
   cards: CardRow[];
-  /** 正在跑的动作名（§7）：非空时 L1 显示忙点。 */
+  /** 正在跑的动作名（§7）：非空时顶部常驻条显示忙点。 */
   busy: string | null;
-  /** 折叠的段（§6：默认 `['build','code','deliver','config']`）。 */
+  /** 手风琴：已折叠的组（同一时刻最多一组是展开的，见 `normalizeFolded`）。 */
   folded: SectionId[];
   /** 模板落后多少提交（0 = 不提示）。 */
   templateBehind: number;
+  /**
+   * 产物能力事实（§5.2）。`undefined` = **未知**（metadata 读不到）→ 一律不隐藏。
+   */
+  caps?: CapabilityFact[];
+  /** 阶段带视图（8 站，含各站状态）。 */
+  spine?: SpineStationView[];
 }
 
-/** L1 的项顺序（决策：构建 · 测试 · 覆盖率 · 环境）。 */
-export const L1_IDS = ['build', 'test', 'coverage', 'env'] as const;
+/** 全部合法组 id（顺序同 rail）：8 站 + 设置。 */
+export const SECTION_IDS: readonly SectionId[] = [
+  'ready',
+  'build',
+  'test',
+  'docs',
+  'quality',
+  'commit',
+  'release',
+  'deliver',
+  'settings',
+];
 
-export const DEFAULT_FOLDED: SectionId[] = ['build', 'code', 'deliver', 'config'];
+/** 手风琴默认展开哪一站（与 `sections.ts` 的 `DEFAULT_OPEN_ID` 保持一致，单测对账）。 */
+export const DEFAULT_OPEN: SectionId = 'ready';
 
-export function defaultL1(): L1Item[] {
-  return [
-    { id: 'build', label: '构建', value: '—', state: 'idle' },
-    { id: 'test', label: '测试', value: '—', state: 'idle' },
-    { id: 'coverage', label: '覆盖率', value: '—', state: 'idle' },
-    { id: 'env', label: '环境', value: '—', state: 'idle' },
-  ];
-}
+/**
+ * 默认折叠的组 = 除默认开站以外的全部。
+ *
+ * 为什么默认开"就绪"：装环境期它的信息量最大（缺什么、谁装、要不要人介入）；
+ * 装好之后它就安静了（全绿时只有一行摘要）。
+ */
+export const DEFAULT_FOLDED: SectionId[] = SECTION_IDS.filter((id) => id !== DEFAULT_OPEN);
 
 export function defaultModel(): SinglePageModel {
   return {
-    l1: defaultL1(),
     cards: [],
     busy: null,
     folded: [...DEFAULT_FOLDED],
     templateBehind: 0,
+    spine: [],
   };
 }
 
-/** 归一化折叠状态：去重 + 只保留合法段 id（持久化数据可能来自旧版本）。 */
+/**
+ * 旧版本的"按领域分段"名字 → 现在的站名（只用于**迁移持久化的折叠状态**）。
+ *
+ * `module` 的卡现在分布在构建/测试/文档三个站里，这里取名字最接近的 `docs`
+ * （那一段当时就叫"模块文档"）；`deliver`（交付发布）→ `release`。
+ */
+const LEGACY_SECTION_ALIAS: Readonly<Record<string, SectionId>> = {
+  env: 'ready',
+  build: 'build',
+  module: 'docs',
+  quality: 'quality',
+  deliver: 'release',
+  settings: 'settings',
+};
+
+/**
+ * 归一化折叠状态（手风琴）：
+ * 1. 认不出的（含改过名字的老版本如 `now`/`code`/`config`）丢掉；
+ * 2. 旧段名按 `LEGACY_SECTION_ALIAS` 迁移；
+ * 3. 去重；
+ * 4. **最多只允许一组展开**（持久化数据可能来自"多段同开"的旧版本或旧 bug）——
+ *    保留页面顺序最靠前的那一组，其余补回折叠。
+ */
 export function normalizeFolded(raw: unknown): SectionId[] {
-  const valid: SectionId[] = ['now', 'build', 'code', 'deliver', 'config'];
   if (!Array.isArray(raw)) {
     return [...DEFAULT_FOLDED];
   }
-  const out = raw.filter((x): x is SectionId => typeof x === 'string' && valid.includes(x as SectionId));
-  return [...new Set(out)];
+  const mapped: SectionId[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string') {
+      continue;
+    }
+    const id = (SECTION_IDS as readonly string[]).includes(x) ? (x as SectionId) : LEGACY_SECTION_ALIAS[x];
+    if (id && !mapped.includes(id)) {
+      mapped.push(id);
+    }
+  }
+  const folded = new Set(mapped);
+  const open = SECTION_IDS.filter((id) => !folded.has(id));
+  for (const extra of open.slice(1)) {
+    folded.add(extra);
+  }
+  return SECTION_IDS.filter((id) => folded.has(id));
 }
 
-/** 状态 → 图标（与 §3.1 的三态/五态一致；供 L1/L2 共用，避免两处判断）。 */
+/** 状态 → 图标（与 §3.1 的三态/五态一致；供 rail/卡片共用，避免两处判断）。 */
 export function stateIcon(state: CardState): string {
   switch (state) {
     case 'ok': return '✓';
@@ -157,5 +248,17 @@ export function stateIcon(state: CardState): string {
     case 'na': return '–';
     case 'running': return '⟳';
     default: return '·';
+  }
+}
+
+/** 状态 → 人话（title/aria 用；**同一个状态在页面上只允许一种说法**）。 */
+export function cardStateText(state: CardState): string {
+  switch (state) {
+    case 'ok': return '通过';
+    case 'warn': return '需要注意';
+    case 'fail': return '失败';
+    case 'running': return '正在跑';
+    case 'na': return '不适用';
+    default: return '还没跑过';
   }
 }

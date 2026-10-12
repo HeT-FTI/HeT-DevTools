@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
 import { ChangeEntry, TriggerEmoji, TRIGGER_EMOJIS } from '../../core/commitAssistant';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface CommitState {
   projectName: string;
@@ -30,7 +30,7 @@ export interface CommitDeps {
   commit: (request: CommitRequest) => Promise<{ ok: boolean; message: string }>;
 }
 
-export function showCommitPanel(context: vscode.ExtensionContext, deps: CommitDeps): vscode.WebviewPanel {
+export function showCommitPanel(context: vscode.ExtensionContext, deps: CommitDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'commit', title: 'HeT DevTools — 提交助手' }, (panel) => {
 

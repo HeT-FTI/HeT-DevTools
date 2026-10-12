@@ -7,11 +7,18 @@
  */
 import { SECTIONS } from './sections';
 import { copilotEntryForCard } from './copilotEntry';
+import { spineFrom, visibleCards } from './spine';
+import { deriveCapabilities } from '../../../core/capability';
+import { gitFactOf, type GitFacts } from '../../../core/gitFacts';
+import { depEvolution, type DeclaredDep } from '../../../core/depEvolution';
+import { perfFact, type BenchRun } from '../../../core/perfBaseline';
+import { abiFact, type AbiSnapshot } from '../../../core/abiSymbols';
+import { headerCostFact, type HeaderCostRun } from '../../../core/headerCost';
+import type { FcppMetadata } from '../../../types';
 import {
   DEFAULT_FOLDED,
   type CardRow,
   type CardState,
-  type L1Item,
   type SectionId,
   type SinglePageModel,
 } from './model';
@@ -23,7 +30,7 @@ import type { CiLastRun } from '../../../core/ciFacts';
 export interface SinglePageFacts {
   health?: { score: number | null; issues?: number };
   /**
-   * **仓库级忙状态**（`core/status.ts`）：吸顶右侧 / chip / HUD 都读它。
+   * **仓库级忙状态**（`core/status.ts`）：吸顶右侧 / chip 都读它。
    * 与 `state.top.running`（log 抽屉的"正在跑"）刻意分开：文档构建会同时有两者，
    * 谁先结束都不该把另一个清掉 —— 模型里取"有值的那一个"。
    */
@@ -44,8 +51,59 @@ export interface SinglePageFacts {
   docs?: { pages?: number | null; missingTool?: string; at?: string };
   /** 质量门禁：就绪工具数 / 总数 / 失败项名。 */
   quality?: { ready?: number; total?: number; failing?: string };
-  deps?: { direct?: number; indirect?: number };
-  commit?: { dirty?: number };
+  /**
+   * 依赖事实（V3 · L5b / G6）。
+   *
+   * **以前这里没人喂** —— 卡片上的"直接/间接"是 L1 时写死的两个数字，界面上从没出现过
+   * 真值。现在只喂**取得到的**：`declared` 来自依赖管理器的 `listDependencies()`，
+   * 缺口/新版由 `core/depEvolution.ts` 从真实文件与缓存算。
+   *
+   * "间接依赖数"**没有事实来源**，所以不再显示（P7：没有来源的数字不进界面）。
+   */
+  deps?: {
+    declared?: readonly DeclaredDep[];
+    conandataText?: string;
+    ciWorkflowText?: string;
+    srcFiles?: Readonly<Record<string, string>>;
+    latest?: Readonly<Record<string, string>>;
+    latestAt?: string;
+  };
+  commit?: Partial<GitFacts>;
+  /**
+   * ⑧ 交付站的「新库自检」（V3 · L5 / G4）：模板生成契约的逐条判定结果（`✓/✗/–` 三态）。
+   * 不给 = 还没跑过（卡停在默认 `—`，不编造）。
+   */
+  newLibAudit?: { state: 'ok' | 'warn' | 'fail' | 'idle'; fact: string; next?: string };
+  /**
+   * ⑧ 交付站的「Python 绑定」（V3 · L6c / G9）：公开 API（`include/` 里带 `@exporter`）
+   * 与 `api/python_bindings.cpp` 的对账结果。不给 = 还没读到那些文件（卡停在 `—`）。
+   */
+  pythonBindings?: { state: 'ok' | 'warn' | 'fail' | 'idle'; fact: string; next?: string };
+  /**
+   * ⑧ 交付站的「交叉编译」（V3 · L6d）：**多目标全绿了吗** —— 目标来自
+   * `.hetai/build-matrix.yml`，结果来自本地账本。不给 = 没有矩阵文件（单目标库，卡停在 `—`）。
+   */
+  matrix?: { state: 'ok' | 'warn' | 'fail' | 'idle'; fact: string; next?: string };
+  /**
+   * ⑤ 质量站的「编译期成本」（V3 · L6e，仅头文件库）：基线 + 最近一次实测。
+   * 不给 = 还没实测过/没基线 → 卡片如实说"还没实测过（不等于成本为零）"。
+   */
+  headerCost?: { baseline?: HeaderCostRun; now?: HeaderCostRun; costPct: number };
+  /**
+   * ⑤ 质量站的「导出符号」（V3 · L6b / G8）：符号基线 + 最近一次扫描。
+   * 不给 = 还没扫过/没钉基线 → 卡片如实说"符号基线未设"。
+   */
+  abi?: { baseline?: AbiSnapshot; now?: AbiSnapshot };
+  /**
+   * ③ 测试站的「性能基线」（V3 · L6a / G7）：基线 + 最近一次跑的结果（都是原始值）。
+   * 不给 = 还没跑过/没钉基线 → 卡片如实说"基线未设"（**不给空表**）。
+   */
+  perf?: { baseline?: BenchRun; run?: BenchRun; regressPct: number };
+  /**
+   * ⑦ 发布站的「CI 总编排」（V3 · L4 / G10）：入口 workflow 的真实解析结果。
+   * 不给 = 没读到那个文件 → 卡上一行如实说"非模板项目或还没同步"。
+   */
+  orchestrator?: { fact: string; next?: string };
   /** 发布/Preflight：三态摘要（§19.2）—— ✗/– 都要能看出"要不要人介入"。 */
   release?: { notReady?: number; summary?: PreflightSummary };
   ci?: { lastRun?: CiLastRun; branch?: string; fact?: string; next?: string };
@@ -59,6 +117,19 @@ export interface SinglePageFacts {
   copilot?: { card?: string; ok?: boolean; at?: string; command?: string };
   /** 模板落后上游多少提交（§11 联动；0/未给 = 不提示）。 */
   template?: { behind?: number };
+  /**
+   * 工具链事实（V3 · L2d）：由 `discoverTools()` 的一次探测结果算出。
+   * 不给 = 还没探测（卡上就没有事实，**不编造**）。
+   */
+  tools?: { total: number; ready: number; missing: string[]; summary: string };
+  /**
+   * 产物事实来源（V3 §5.2）：**只用来推导能力，不直接上界面**。
+   *
+   * 不给 = 未知 → 与能力相关的卡**一张都不隐藏**（读不到 metadata 不是"没有能力"）。
+   */
+  metadata?: FcppMetadata;
+  /** 其它**产物**事实（文件系统读取的结果；读不到就不给）。 */
+  artifacts?: { cHeader?: boolean; benchmark?: boolean; buildMatrix?: boolean };
 }
 
 /** 空事实（首屏/未取到数时用）。 */
@@ -66,30 +137,6 @@ export const EMPTY_FACTS: SinglePageFacts = {};
 
 function pct(v: number | null | undefined): string {
   return typeof v === 'number' ? `${v.toFixed(1)}%` : '—';
-}
-
-function l1From(f: SinglePageFacts): L1Item[] {
-  const build = f.build;
-  const buildState: CardState =
-    build?.ok === true ? 'ok' : build?.ok === false ? 'fail' : 'idle';
-  const test = f.test;
-  const testState: CardState =
-    test?.failed && test.failed > 0 ? 'fail' : typeof test?.passed === 'number' ? 'ok' : 'idle';
-  const covState: CardState = f.coverage?.pct == null ? 'idle' : f.coverage.pct > 0 ? 'ok' : 'warn';
-  const envState: CardState =
-    f.env?.ready === true ? 'ok' : f.env && f.env.ready === false ? 'warn' : 'idle';
-  return [
-    { id: 'build', label: '构建', value: build?.ago ?? (build?.ok === true ? '通过' : '—'), state: buildState },
-    {
-      id: 'test',
-      label: '测试',
-      value:
-        typeof test?.passed === 'number' ? `${test.passed}/${test.passed + (test.failed ?? 0)}` : '—',
-      state: testState,
-    },
-    { id: 'coverage', label: '覆盖率', value: pct(f.coverage?.pct), state: covState },
-    { id: 'env', label: '环境', value: f.env?.label ?? f.env?.provider ?? '—', state: envState },
-  ];
 }
 
 /** 事实 → 每张卡的補丁（只覆盖有值的字段）。 */
@@ -113,32 +160,29 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
     });
   }
   if (f.build) {
-    // 段 1 是**只读摘要**、段 2 才是执行区（§F.38）——结果要同时喂给两张卡，
-    // 否则执行卡永远显示 `—`，用户就会以为"构建没生效"。
-    const patch: Partial<CardRow> = {
+    // E 块删掉了"只读摘要段"里那张同名卡：结果现在**只喂给执行卡**（一个事实一个地方），
+    // 否则用户会看到两张卡一个说"通过"一个还停在 `—`。
+    put('buildTest', {
       state: f.build.ok === true ? 'ok' : f.build.ok === false ? 'fail' : 'idle',
-      fact: f.build.ok === true ? `${f.build.ago ?? '最近'} · ${f.build.buildType ?? 'Release'}` : f.build.ok === false ? '上次失败' : '—',
-    };
-    put('build', patch);
-    put('buildTest', patch);
+      fact:
+        f.build.ok === true
+          ? `${f.build.ago ?? '最近'} · ${f.build.buildType ?? 'Release'}`
+          : f.build.ok === false
+            ? '上次失败'
+            : '—',
+    });
   }
   if (f.test) {
     const failed = f.test.failed ?? 0;
-    const patch: Partial<CardRow> = {
+    put('testFull', {
       state: failed > 0 ? 'fail' : typeof f.test.passed === 'number' ? 'ok' : 'idle',
       fact:
         typeof f.test.passed === 'number'
           ? `${f.test.passed}/${f.test.passed + failed} · ${failed} failed`
           : '—',
-    };
-    put('test', patch);
-    put('testFull', patch);
+    });
   }
   if (f.coverage) {
-    put('coverage', {
-      state: f.coverage.pct == null ? 'idle' : 'ok',
-      fact: f.coverage.pct == null ? '—' : `${pct(f.coverage.pct)} · 行覆盖`,
-    });
     put('coverageDetail', {
       state: f.coverage.pct == null ? 'idle' : 'ok',
       fact: f.coverage.pct == null ? '—' : `${pct(f.coverage.pct)} · ${f.coverage.at ?? '上次构建'}`,
@@ -146,14 +190,10 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
   }
   if (f.docs) {
     const missing = f.docs.missingTool;
-    put('docs', {
+    put('docsBuild', {
       state: missing ? 'warn' : f.docs.pages == null ? 'idle' : 'ok',
       fact: missing ? `缺 ${missing}` : f.docs.pages == null ? '—' : `${f.docs.pages} 页 · ${f.docs.at ?? '已生成'}`,
       ...(missing ? { next: `需要你执行：安装 ${missing}（或在托管车道里一键准备）` } : {}),
-    });
-    put('docsBuild', {
-      state: missing ? 'warn' : f.docs.pages == null ? 'idle' : 'ok',
-      fact: missing ? `缺 ${missing}` : f.docs.pages == null ? '—' : `${f.docs.pages} 页`,
     });
   }
   if (f.quality) {
@@ -165,15 +205,23 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
     });
   }
   if (f.deps) {
+    // 组成一行只在这里（`core/depEvolution.ts` 是纯函数）—— 卡片与依赖面板、
+    // 工程审计读的是同一批事实，不各算一套。
+    const ev = depEvolution(f.deps);
     put('deps', {
-      state: 'ok',
-      fact: `直接 ${f.deps.direct ?? 0} · 间接 ${f.deps.indirect ?? 0}`,
+      state: ev.state,
+      fact: ev.fact,
+      ...(ev.next ? { next: ev.next } : {}),
     });
   }
   if (f.commit) {
+    // V3 · L4 / G3：以前只写"N 个文件未提交"，"推没推、离远端差几个"要出门看。
+    // 现在一行由 `gitFactOf` 统一产出（发布前检查用的是**同一条规则**，不各说一套）。
+    const view = gitFactOf(f.commit);
     put('commit', {
-      state: (f.commit.dirty ?? 0) > 0 ? 'warn' : 'ok',
-      fact: (f.commit.dirty ?? 0) > 0 ? `${f.commit.dirty} 个文件未提交` : '工作区干净',
+      state: view.state,
+      fact: view.fact,
+      ...(view.next ? { next: view.next } : {}),
     });
   }
   if (f.release) {
@@ -213,13 +261,73 @@ function cardPatch(f: SinglePageFacts): Record<string, Partial<CardRow>> {
     fact: f.env?.provider ?? '—',
     ...(f.env?.next ? { next: f.env.next } : {}),
   });
-  put('buildTest', {
-    state: f.build?.ok === true ? 'ok' : f.build?.ok === false ? 'fail' : 'idle',
-    fact: f.build?.ok === true ? `最近：通过 · ${f.build.ago ?? ''}`.trim() : f.build?.ok === false ? '最近：失败' : '—',
-  });
+  if (f.tools) {
+    // 事实就是那一行摘要（含"缺谁"）—— 全绿时不啰嗦。
+    const missing = f.tools.missing.length;
+    put('tools', {
+      state: f.tools.total === 0 ? 'idle' : missing > 0 ? 'warn' : 'ok',
+      ...(f.tools.summary ? { fact: f.tools.summary } : {}),
+      ...(missing > 0 ? { next: `需要你处理：${f.tools.missing.join(' ')}（点开看路径与来源）` } : {}),
+    });
+  }
+  if (f.newLibAudit) {
+    put('newLibAudit', {
+      state: f.newLibAudit.state,
+      fact: f.newLibAudit.fact,
+      ...(f.newLibAudit.next ? { next: f.newLibAudit.next } : {}),
+    });
+  }
+  if (f.pythonBindings) {
+    put('pythonBindings', {
+      state: f.pythonBindings.state,
+      fact: f.pythonBindings.fact,
+      ...(f.pythonBindings.next ? { next: f.pythonBindings.next } : {}),
+    });
+  }
+  if (f.matrix) {
+    // 「交叉编译」卡的事实从 `—` 换成矩阵汇总（多目标工程的"全绿了吗"就在这里）
+    put('crossBuild', {
+      state: f.matrix.state,
+      fact: f.matrix.fact,
+      ...(f.matrix.next ? { next: f.matrix.next } : {}),
+    });
+  }
+  if (f.headerCost) {
+    const view = headerCostFact(f.headerCost);
+    put('headerCost', {
+      state: view.state,
+      fact: view.fact,
+      ...(view.next ? { next: view.next } : {}),
+    });
+  }
+  if (f.abi) {
+    const view = abiFact(f.abi);
+    put('abiSymbols', {
+      state: view.state,
+      fact: view.fact,
+      ...(view.next ? { next: view.next } : {}),
+    });
+  }
+  if (f.perf) {
+    const view = perfFact(f.perf);
+    put('perfBaseline', {
+      state: view.state,
+      fact: view.fact,
+      ...(view.next ? { next: view.next } : {}),
+    });
+  }
+  if (f.orchestrator) {
+    put('orchestrator', {
+      state: 'idle',
+      fact: f.orchestrator.fact,
+      ...(f.orchestrator.next ? { next: f.orchestrator.next } : {}),
+    });
+  }
   put('settings', {
+    // 不写静态 fact：它只会把副标题再说一遍（"metadata.json 表单" vs
+    // "metadata.json / conandata.yml 字段级编辑"）。这张卡没有动态状态，
+    // 事实格就应该是空的（§6.0 第 6 条：零信息的格子不渲染）。
     state: 'idle',
-    fact: 'metadata.json 表单',
   });
   put('commitManual', {
     state: 'idle',
@@ -264,13 +372,43 @@ export function singlePageModelFrom(
   folded: SectionId[] = DEFAULT_FOLDED,
 ): SinglePageModel {
   const patch = cardPatch(facts);
-  const cards: CardRow[] = SECTIONS.flatMap((s) => s.cards).map((def) => ({ ...def, ...(patch[def.id] ?? {}) }));
+  const all: CardRow[] = SECTIONS.flatMap((s) => s.cards).map((def) => ({ ...def, ...(patch[def.id] ?? {}) }));
+  // 能力事实（§5.2）：未给 metadata = undefined（未知）→ `visibleCards` 不隐藏任何卡。
+  const caps = deriveCapabilities({
+    metadata: facts.metadata,
+    hasCHeader: facts.artifacts?.cHeader,
+    hasBenchmark: facts.artifacts?.benchmark,
+    hasBuildMatrix: facts.artifacts?.buildMatrix,
+  });
+  const cards = visibleCards(all, caps);
+  // V3 · L5b / G5：「模板同步」卡的事实来自这个数（它不属于"产物能力"，也不该由 host 再写一遍）。
+  // 落后 → warn ⇒ ① 就绪站的站状态（聚合卡的）跟着变黄 —— 这就是"落后时必须看得出来"。
+  // **没查过就不是"一致"**：`undefined` 时如实留 idle + 一行"还没查过"（不编造）。
+  const behindKnown = facts.template?.behind ?? state.top.templateBehind;
+  const templateBehind = behindKnown ?? 0;
+  const syncCard = cards.find((c) => c.id === 'templateSync');
+  if (syncCard) {
+    if (behindKnown === undefined) {
+      syncCard.state = 'idle';
+      syncCard.fact = '—';
+      syncCard.next = '需要你执行：点「检查模板更新」读一次（本会话还没查过）';
+    } else if (behindKnown > 0) {
+      syncCard.state = 'warn';
+      syncCard.fact = `落后上游 ${behindKnown} 个提交`;
+      syncCard.next = '需要你执行：点「检查模板更新」生成同步计划（只读对比，绝不自动合入）';
+    } else {
+      syncCard.state = 'ok';
+      syncCard.fact = '与模板一致';
+      syncCard.next = undefined;
+    }
+  }
   return {
-    l1: l1From(facts),
     cards,
     busy: facts.status?.text ?? state.top.running,
     folded,
-    templateBehind: facts.template?.behind ?? state.top.templateBehind ?? 0,
+    templateBehind,
+    caps,
+    spine: spineFrom(cards),
   };
 }
 

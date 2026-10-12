@@ -6,6 +6,7 @@
  * 候选 / 域归属"做成可单测的纯函数之后，面板只负责渲染与回显。
  */
 import { CURATED_PACKAGES, type CuratedEntry } from '../../data/conanIndex';
+import { itemMatches } from '../picker';
 import type { DepBucket, DependencyView } from '../../core/dependencyService';
 
 export const DEP_BUCKETS: readonly DepBucket[] = ['common', 'c', 'cpp', 'infra'];
@@ -47,13 +48,8 @@ export function versionsFor(
 
 /** 索引检索：空串给全部；按包名/说明做大小写不敏感子串匹配。 */
 export function searchCatalog(query: string, curated: readonly CuratedEntry[] = CURATED_PACKAGES): CuratedEntry[] {
-  const q = query.trim().toLowerCase();
-  if (!q) {
-    return [...curated];
-  }
-  return curated.filter(
-    (c) => c.conan.toLowerCase().includes(q) || c.note.toLowerCase().includes(q),
-  );
+  // **单一来源**：谓词来自 picker.ts（浏览器端与之同义，两端一致性由 picker.test.ts 断言）
+  return curated.filter((c) => itemMatches({ label: c.conan, note: c.note }, query));
 }
 
 export interface AddInputDraft {

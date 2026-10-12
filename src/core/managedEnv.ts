@@ -70,7 +70,7 @@ export function writeMarker(layout: ManagedLayout, marker: ManagedMarker): void 
   writeFileSync(layout.markerPath, JSON.stringify(marker, null, 2), 'utf8');
 }
 
-/** State without touching the toolchain (marker only, fast for the chip/HUD). */
+/** State without touching the toolchain (marker only, fast for the chip hover). */
 export function markerState(marker: ManagedMarker | null): ManagedState {
   return marker?.state ?? 'absent';
 }

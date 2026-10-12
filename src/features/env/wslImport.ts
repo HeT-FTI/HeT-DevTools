@@ -13,6 +13,7 @@
  */
 
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import type { LogFn } from '../../core/outputChannels';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../../utils/exec';
@@ -46,7 +47,7 @@ export interface DistroPlanOptions {
 export interface ImportOptions extends DistroPlanOptions {
   extensionVersion: string;
   onProgress?: (p: RootfsProgress) => void;
-  onLog?: (line: string) => void;
+  onLog?: LogFn;
   /** 只做决定 + 下载校验，不执行 `wsl --import`（CI/预演用）。 */
   dryRun?: boolean;
   /**
@@ -180,7 +181,7 @@ async function acquireRootfs(opts: {
   cacheDir: string;
   bytes?: number;
   onProgress?: (p: RootfsProgress) => void;
-  log: (line: string) => void;
+  log: LogFn;
 }): Promise<Awaited<ReturnType<typeof ensureRootfs>>> {
   const seen = new Set<string>();
   const chain = [opts.primary, ...opts.fallback].filter((c) => {
@@ -193,7 +194,7 @@ async function acquireRootfs(opts: {
   let last: Awaited<ReturnType<typeof ensureRootfs>> | undefined;
   for (const [i, c] of chain.entries()) {
     if (i > 0) {
-      opts.log(`主源不可用（${last?.reason ?? '未知原因'}）→ 改用候选 ${i + 1}/${chain.length}：${c.url}`);
+      opts.log?.('env', `主源不可用（${last?.reason ?? '未知原因'}）→ 改用候选 ${i + 1}/${chain.length}：${c.url}`);
     }
     last = await ensureRootfs({
       url: c.url,
@@ -227,7 +228,7 @@ export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutco
 
   const name = plan.distroName;
   const cacheDir = `${opts.localAppData}\\het-fti\\wsl\\cache`;
-  log(`rootfs: ${plan.url}`);
+  log('env', `rootfs: ${plan.url}`);
   const rootfs = await acquireRootfs({
     primary: { url: plan.url, sha256: plan.sha256 },
     fallback: opts.rootfsFallback ?? [],
@@ -321,7 +322,7 @@ export async function importLaneDistro(opts: ImportOptions): Promise<ImportOutco
 export async function teardownLaneDistro(opts: {
   localAppData: string;
   keepCache?: boolean;
-  onLog?: (line: string) => void;
+  onLog?: LogFn;
 }): Promise<{ ok: boolean; removed?: string[]; reason?: string }> {
   const log = opts.onLog ?? ((): void => undefined);
   const names = await listDistros();
@@ -338,7 +339,7 @@ export async function teardownLaneDistro(opts: {
     }
     rmSync(laneWslInstallDir(opts.localAppData, name), { recursive: true, force: true });
     removed.push(name);
-    log(`removed:${name}`);
+    log('env', `removed:${name}`);
   }
   if (!opts.keepCache) {
     rmSync(`${opts.localAppData}\\het-fti\\wsl\\cache`, { recursive: true, force: true });

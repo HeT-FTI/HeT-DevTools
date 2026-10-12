@@ -74,7 +74,7 @@ describe('T17b wslRootfs (rootfs 获取：下载 → 校验 → 缓存)', () => 
         return fetchServing(GZIP_STUB)(...args);
       }) as unknown as typeof fetch;
 
-      const first = await ensureRootfs({ url: 'https://x/a.tar.gz', sha256: sha, cacheDir: dir, fetchImpl, onLog: (l) => logs.push(l) });
+      const first = await ensureRootfs({ url: 'https://x/a.tar.gz', sha256: sha, cacheDir: dir, fetchImpl, onLog: (domain, l) => logs.push(`[${domain}] ${l}`) });
       assert.strictEqual(first.ok, true);
       assert.strictEqual(first.cached, false);
       assert.strictEqual(first.bytes, GZIP_STUB.length);
@@ -135,7 +135,7 @@ describe('T17b wslRootfs (rootfs 获取：下载 → 校验 → 缓存)', () => 
       const sha = shaOf(GZIP_STUB);
       writeFileSync(join(dir, `${sha}.tar.gz`), Buffer.from('corrupted'));
       const logs: string[] = [];
-      const res = await ensureRootfs({ url: 'https://x/a.tar.gz', sha256: sha, cacheDir: dir, fetchImpl: fetchServing(GZIP_STUB), onLog: (l) => logs.push(l) });
+      const res = await ensureRootfs({ url: 'https://x/a.tar.gz', sha256: sha, cacheDir: dir, fetchImpl: fetchServing(GZIP_STUB), onLog: (domain, l) => logs.push(`[${domain}] ${l}`) });
       assert.strictEqual(res.ok, true);
       assert.strictEqual(res.cached, false);
       assert.match(logs.join('\n'), /rootfs_cache:stale/u);

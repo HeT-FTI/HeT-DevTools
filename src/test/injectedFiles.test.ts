@@ -104,13 +104,14 @@ describe('模板注入文件防呆（§F.39 构建/测试前清理）', () => {
 
   it('接线门禁：构建与测试两条入口都在跑之前清一次（防呆不能只写在注释里）', () => {
     const ext = readFileSync(join('src', 'extension.ts'), 'utf8');
-    const build = /async function buildProjectInner\(\)[\s\S]*?cleanupInjectedBeforeRun\(project\.root\)/u.test(ext);
-    const test = /async function runTestsInner\(\)[\s\S]*?cleanupInjectedBeforeRun\(project\.root\)/u.test(ext);
+    const build = /async function buildProjectInner\([^)]*\)[\s\S]*?cleanupInjectedBeforeRun\(project\.root\)/u.test(ext);
+    const test = /async function runTestsInner\([^)]*\)[\s\S]*?cleanupInjectedBeforeRun\(project\.root\)/u.test(ext);
     assert.ok(build, '构建入口要先清理注入残留');
     assert.ok(test, '测试入口要先清理注入残留');
     // 清理必须在真正执行之前（顺序错了就等于没做）
-    const runIdx = ext.indexOf('const result = await executeTestRun();');
-    const cleanIdx = ext.lastIndexOf('cleanupInjectedBeforeRun(project.root)');
+    const runIdx = /const result = await executeTestRun\([^)]*\);/u.exec(ext)?.index ?? -1;
+    const cleanIdx = ext.indexOf('cleanupInjectedBeforeRun(project.root)');
+    assert.ok(runIdx > -1, '找不到测试入口的调用点（门禁自身失效）');
     assert.ok(cleanIdx > -1 && cleanIdx < runIdx, '清理要排在 executeTestRun 之前');
   });
 

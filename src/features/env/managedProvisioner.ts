@@ -12,7 +12,8 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { run } from '../../utils/exec';
+import { run, type ExecResult } from '../../utils/exec';
+import { withDeadline } from '../../core/deadlines';
 import {
   ManagedLayout,
   ManagedMarker,
@@ -125,10 +126,23 @@ export async function managedPrepare(opts: PrepareOptions): Promise<PrepareResul
       }
     }
     progress(opts, '安装 conan / cmake / ninja（首次较慢）…');
-    const install = await run(vpy, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', 'conan', 'cmake', 'ninja'], {
-      timeoutMs: 0,
-      env: { ...process.env, ...envWithManaged(layout, opts.isWin, opts.basePath) },
-    });
+    // §3.5 / G2：首次装工具链是最容易“挂了不回来”的一步（曾经 timeoutMs: 0）→ 走 45min 有界阈值
+    let install: ExecResult;
+    try {
+      install = await withDeadline(
+        '安装 conan / cmake / ninja',
+        'envPrepare',
+        (timeoutMs) =>
+          run(vpy, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', 'conan', 'cmake', 'ninja'], {
+            timeoutMs,
+            env: { ...process.env, ...envWithManaged(layout, opts.isWin, opts.basePath) },
+          }),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      writeMarker(layout, { version: 1, state: 'error', provider: 'managed', createdAt: Date.now(), updatedAt: Date.now(), tools: {}, note: message });
+      return { ok: false, state: 'error', message: `工具安装未完成：${message}` };
+    }
     if (install.code !== 0) {
       writeMarker(layout, { version: 1, state: 'error', provider: 'managed', createdAt: Date.now(), updatedAt: Date.now(), tools: {}, note: 'pip 安装失败（可能离线）' });
       return { ok: false, state: 'error', message: `工具安装失败：${(install.stderr || install.stdout).slice(-300)}` };

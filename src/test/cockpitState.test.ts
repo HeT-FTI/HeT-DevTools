@@ -18,7 +18,8 @@ describe('cockpit.state（单页时代）', () => {
     assert.strictEqual(s0.top.projectName, '');
     assert.strictEqual(s0.top.health, null, '健康分没测出来就该是 null → 界面显示 —');
     assert.strictEqual(s0.top.running, null, '没在忙就别显示忙点');
-    assert.strictEqual(s0.top.templateBehind, 0);
+    // V3 · L5b：`undefined` = 本会话还没查过（与 0（真查过、与模板一致）是两件事）
+    assert.strictEqual(s0.top.templateBehind, undefined, '还没查过就是 undefined —— 卡片才敢不说"与模板一致"');
     assert.strictEqual(s0.lastBuildOk, null, '还没构建过 ≠ 构建失败');
     assert.strictEqual(s0.issueCount, 0);
     assert.deepStrictEqual(s0.drawer, { kind: 'none', expanded: false, title: '', lines: [] });
@@ -36,10 +37,14 @@ describe('cockpit.state（单页时代）', () => {
     assert.strictEqual(s.drawer.expanded, s0.drawer.expanded);
   });
 
-  it('template:update 只改"落后多少"（0 = 不落后）', () => {
+  it('template:update 只改"落后多少"（0 = 真比过且一致；省略 = 这次没比成）', () => {
     assert.strictEqual(reduceCockpit(s0, { type: 'template:update', behind: 3 }).top.templateBehind, 3);
     const behind = reduceCockpit(s0, { type: 'template:update', behind: 3 });
     assert.strictEqual(reduceCockpit(behind, { type: 'template:update', behind: 0 }).top.templateBehind, 0);
+    // 真机截图里抓到的编造：非模板工程（没有标记文件）以前也会显示"与模板一致"。
+    // 现在"没比成"什么都不发 → 保持 undefined（卡片说"本会话还没查过"）。
+    assert.strictEqual(reduceCockpit(s0, { type: 'template:update' }).top.templateBehind, undefined);
+    assert.strictEqual(reduceCockpit(behind, { type: 'template:update' }).top.templateBehind, undefined);
   });
 
   it('drawer:toggle 只动 expanded，不丢抽屉里已有的内容', () => {

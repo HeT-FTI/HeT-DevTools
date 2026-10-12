@@ -17,6 +17,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import type { LogFn } from '../core/outputChannels';
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -47,7 +48,7 @@ export interface EnsureRootfsOptions {
   /** 期望字节数（仅用于进度与日志）。 */
   bytes?: number;
   onProgress?: (p: RootfsProgress) => void;
-  onLog?: (line: string) => void;
+  onLog?: LogFn;
   /** 测试注入用；默认全局 fetch。 */
   fetchImpl?: typeof fetch;
 }
@@ -91,10 +92,10 @@ export async function ensureRootfs(opts: EnsureRootfsOptions): Promise<EnsureRoo
   if (existsSync(final)) {
     const got = await sha256File(final);
     if (got === expected) {
-      log(`rootfs_cache:hit(${expected.slice(0, 12)}…)`);
+      log('env', `rootfs_cache:hit(${expected.slice(0, 12)}…)`);
       return { ok: true, path: final, cached: true, bytes: (await stat(final)).size };
     }
-    log(`rootfs_cache:stale(实际 ${got.slice(0, 12)}… ≠ 期望 ${expected.slice(0, 12)}…) → 丢弃重下`);
+    log('env', `rootfs_cache:stale(实际 ${got.slice(0, 12)}… ≠ 期望 ${expected.slice(0, 12)}…) → 丢弃重下`);
     await rm(final, { force: true });
   }
 
@@ -139,7 +140,7 @@ export async function ensureRootfs(opts: EnsureRootfsOptions): Promise<EnsureRoo
       return { ok: false, reason: 'rootfs 不是 gzip/tar.gz（可能是错误页或半截文件）' };
     }
     await rename(part, final);
-    log(`rootfs_cache:stored(${bytes} B, ${expected.slice(0, 12)}…)`);
+    log('env', `rootfs_cache:stored(${bytes} B, ${expected.slice(0, 12)}…)`);
     return { ok: true, path: final, cached: false, bytes };
   } catch (err) {
     await rm(part, { force: true });

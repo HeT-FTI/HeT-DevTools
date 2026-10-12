@@ -5,11 +5,15 @@
  *
  * 1. **一个控件都不能"点了没反应"**：不再用 `onclick=`，一律 `data-action` + 事件委托；
  *    提交前的校验由 `model.ts` 的 `validateAddInput` 给一句人话，并在 `#note` 里回显。
- * 2. **搜索式下拉 + 版本联动**：包名用 `<input list=…>`（原生可搜索），版本来自索引快照，
- *    换包就重填版本候选；索引里没有的包自动切到"自定义…"。
+ * 2. **有界选择器 + 版本联动**：包名走 `picker.ts`（自绘：可滚动、有命中计数、纯键盘可用），
+ *    版本来自索引快照，换包就重填版本候选；索引里没有的包照旧可手输（自动切"自定义…"）。
+ *    —— 原生 `<datalist>` 在 ConanCenter 量级（1,900+ 项）下没滚动条/没计数/键盘不可用，
+ *    已被 `listBoundary.test.ts` 全局禁用。
  * 3. **局部刷新**：只有首帧整页渲染，之后 `#list` / `#note` 由消息替换（F.29 家族教训）。
  */
 import { esc, pageShell } from '../ui';
+import { PICKER_CSS, pickerHtml, pickerScript, type PickerItem } from '../picker';
+import { CURATED_PACKAGES, type CuratedEntry } from '../../data/conanIndex';
 import type { DependencyView } from '../../core/dependencyService';
 import {
   CUSTOM_VERSION,
@@ -50,18 +54,30 @@ export function depsListHtml(state: DepPanelState): string {
   return `${issues}${groups}`;
 }
 
-/** 添加入口：搜索框（可搜索下拉）× 版本（联动）× 归属桶（按索引预选）。 */
-export function depsFormHtml(): string {
-  const options = catalogSnapshot();
-  const datalist = options
-    .map((o) => `<option value="${esc(o.conan)}">${esc(o.note)}</option>`)
-    .join('');
+/** 添加入口：有界选择器（可搜索）× 版本（联动）× 归属桶（按索引预选）。
+ *
+ * `curated` 可注入（默认内置索引）：规模门禁要靠它把索引灌到 1,900/2,000 项，
+ * 验证"控件不随规模膨胀"。
+ */
+export function depsFormHtml(curated: readonly CuratedEntry[] = CURATED_PACKAGES): string {
+  const options = catalogSnapshot(curated);
+  const items: PickerItem[] = options.map((o) => ({
+    value: o.conan,
+    label: o.conan,
+    note: o.note,
+  }));
   const json = JSON.stringify(options).replace(/</gu, '\\u003c');
   return `<h2>添加依赖</h2>
     <div class="card">
       <div class="row">
-        <input id="q" list="dep-list" placeholder="搜索包名或用途（如 fmt / 日志）" style="flex:2" autocomplete="off"/>
-        <datalist id="dep-list">${datalist}</datalist>
+        ${pickerHtml({
+          id: 'dep',
+          inputId: 'q',
+          label: '包名或用途',
+          placeholder: '搜索包名或用途（如 fmt / 日志）',
+          items,
+          noun: '个包',
+        })}
         <select id="ver" style="flex:1" title="版本（随包名联动）"><option value="${CUSTOM_VERSION}">自定义…</option></select>
       </div>
       <div class="row">
@@ -88,7 +104,11 @@ export function depsFormHtml(): string {
 }
 
 /** 首帧完整页面（之后 `#list` / `#note` 由宿主消息局部替换）。 */
-export function depsPageHtml(state: DepPanelState, note = ''): string {
+export function depsPageHtml(
+  state: DepPanelState,
+  note = '',
+  curated: readonly CuratedEntry[] = CURATED_PACKAGES,
+): string {
   return pageShell(
     'HeT DevTools — 依赖管理器',
     `
@@ -99,12 +119,13 @@ export function depsPageHtml(state: DepPanelState, note = ''): string {
       .note { border-left: 3px solid var(--vscode-focusBorder,#3a7cff); padding: 4px 8px;
         margin: 6px 0; font-size: 12px; background: rgba(58,124,255,.08); }
     </style>
+    ${PICKER_CSS}
     <h1>依赖管理器</h1>
     <div class="sub">添加/移除都会**同时**写入 <code>conandata.yml</code> 与 <code>metadata.json</code>（确认后生效），
       并回显到本页与驾驶舱卡片。</div>
     <div id="note">${depsNoteHtml(note)}</div>
     <div id="list">${depsListHtml(state)}</div>
-    ${depsFormHtml()}
+    ${depsFormHtml(curated)}
     <script>
       var CATALOG = (function () {
         try { return JSON.parse(document.getElementById('dep-catalog').textContent || '[]'); }
@@ -153,12 +174,14 @@ export function depsPageHtml(state: DepPanelState, note = ''): string {
           targets: document.getElementById('targets').value.trim(),
         } });
       }
+      // 包名控件交给 picker（筛选/分页/键盘都在它那边）：选中一项后回调这里做版本与桶的联动
+      window.onPickerSelect = function (id) { if (id === 'dep') { syncPackage(); } };
       document.addEventListener('input', function (ev) {
         var el = ev.target instanceof Element ? ev.target : null;
         if (!el) { return; }
-        if (el.id === 'q') { syncPackage(); }
         if (el.id === 'ver') { syncCustomVersion(); }
       });
+      ${pickerScript()}
       document.addEventListener('click', function (ev) {
         var el = ev.target instanceof Element ? ev.target : null;
         var btn = el && el.closest('[data-action]');

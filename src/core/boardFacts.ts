@@ -14,8 +14,13 @@ export interface BoardLast {
   /** 解析到的用例数。 */
   cases?: number;
   /** 是否收到 BENCHMARK_END（协议完整）。 */
-  complete?: boolean;
-}
+  complete?: boolean;  /**
+   * 逐用例原始值（L6a 起记录）。
+   *
+   * 为什么要存全量：性能对比要**同名用例对同名用例**，只存个数是没法比的
+   * （而"存个数"正是以前的样子）。
+   */
+  values?: { name: string; value: number }[];}
 
 export function platformText(p: BenchPlatform): string {
   switch (p) {
@@ -50,13 +55,19 @@ export interface BoardFactInput {
   /** 明确要上板刷写时为 true（默认 undefined = 只构建）。 */
   flashing?: boolean;
   last?: BoardLast;
+  /** `metadata.workflow_triggers.cross_compile`（K 块：卡上要看得见 CI 到底跑不跑）。 */
+  crossTrigger?: boolean;
 }
 
 export function boardFact(input: BoardFactInput): { fact: string; next?: string } {
   const fact = `${platformText(input.platform)} · ${boardModeText(input.flashing)}`;
   const last = boardLastText(input.last);
+  // 触发开关只说"开/关"，不编造 CI 的实际结果（那是 CI 状态面板的事）
+  const trigger =
+    input.crossTrigger === undefined ? null : `🛠️ 提交触发交叉编译：${input.crossTrigger ? '开' : '关'}`;
+  const tail = [last, ...(trigger ? [trigger] : [])].join(' · ');
   if (input.flashing === true) {
-    return { fact, next: `${last} —— 上板前请确认目标板与供电（--flash 会真的刷写芯片）` };
+    return { fact, next: `${tail} —— 上板前请确认目标板与供电（--flash 会真的刷写芯片）` };
   }
-  return { fact, next: last };
+  return { fact, next: tail };
 }

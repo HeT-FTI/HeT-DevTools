@@ -20,7 +20,13 @@ export interface CockpitTop {
   projectName: string;
   health: number | null;
   running: string | null;
-  templateBehind: number;
+  /**
+   * 模板落后多少提交。
+   *
+   * **`undefined` = 本会话还没查过**（与 `0`（真查过、与模板一致）是两件事）——
+   * 「模板同步」卡据此决定说什么：`0` 才敢说"与模板一致"。
+   */
+  templateBehind?: number;
 }
 
 export interface CockpitState {
@@ -36,7 +42,17 @@ export type CockpitEvent =
   | { type: 'log:append'; line: string }
   | { type: 'log:done'; ok: boolean }
   | { type: 'issue:summary'; count: number }
-  | { type: 'template:update'; behind: number }
+  | {
+      /**
+       * 模板落后多少提交。
+       *
+       * **`behind` 省略 = 这次没比成**（没有标记文件 / 拿不到模板副本）—— 与 `0`
+       * （真比过、一致）是两件事：早期版本把"没比成"也发 0，于是界面上会说"与模板一致"，
+       * 那是编造（真机截图里被看见过）。
+       */
+      type: 'template:update';
+      behind?: number;
+    }
   | { type: 'health'; score: number }
   | { type: 'project'; name: string };
 
@@ -44,7 +60,7 @@ const LOG_CAP = 200;
 
 export function initialCockpitState(): CockpitState {
   return {
-    top: { projectName: '', health: null, running: null, templateBehind: 0 },
+    top: { projectName: '', health: null, running: null },
     drawer: { kind: 'none', expanded: false, title: '', lines: [] },
     lastBuildOk: null,
     issueCount: 0,

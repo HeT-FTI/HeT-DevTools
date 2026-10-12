@@ -14,6 +14,23 @@ import { initialCockpitState } from '../features/cockpit/state';
 describe('三项卡片的呈现（G23）', () => {
   const read = (p: string): string => readFileSync(join('src', p), 'utf8');
 
+  it('V3 · L4 / G3：交付前的两条硬门禁真的接在发布前检查上（不是只写在卡上）', () => {
+    const ext = read('extension.ts');
+    assert.ok(ext.includes('gitGateItem(gitFacts)'), '预检必须包含"已推送（无未推提交）"这一条');
+    assert.ok(ext.includes('receiptItem({'), '预检必须包含 PR / CI 回执');
+    // 浅探测（给卡片喂数的那次）**不许打网络**：gh 只被 deep 关住
+    assert.ok(
+      /if \(deep && gh && hasRemote && head\)/u.test(ext),
+      'gh 的 PR 探测必须只在深跑里发生（浅探测打网络 = 卡片加载变慢且离线报错）',
+    );
+    // 事实只有一个来源：卡片与预检读的是同一份 `lastGitFacts`
+    assert.strictEqual(
+      (ext.match(/parseStatusV2\(/gu) ?? []).length >= 2,
+      true,
+      '卡片与预检都要用 core/gitFacts 的解析器（不许各写一套）',
+    );
+  });
+
   it('§19.2 三态摘要：✓/✗/– 都要出现，全绿才说"预检就绪"', () => {
     const allOk: PreflightLikeItem[] = [
       { label: '构建成功', ok: true, detail: '最近一次构建成功', required: true },
@@ -132,7 +149,20 @@ describe('三项卡片的呈现（G23）', () => {
     assert.ok(ext.includes('未深度判定'), '跳过的项要如实说明，不能假装绿');
     assert.ok(ext.includes('preflightState({ deep: true })'), '面板入口跑深探测');
     assert.ok(ext.includes('setSinglePageFacts({ release: { summary: summarizePreflight(st.items) } })'), '面板跑完要把真实三态回喂卡片');
-    assert.ok(ext.includes("runWithBusy(\n      busyHost(),\n      'board'"), '上板构建要走 runWithBusy（§7/§19.3）');
+    // K 块：面板的两个按钮与命令走**同一条** runBoardBuild（不再各自拼命令 ——
+    // 否则"面板点的那条"与"命令跑的那条"会慢慢变成两条流水线）
+    assert.ok(
+      /runWithBusy\(\s*busyHost\(\),\s*'board'/u.test(ext),
+      '上板构建要走 runWithBusy（§7/§19.3）',
+    );
+    assert.ok(
+      ext.includes("runBoardBuild('cross')") && ext.includes("runBoardBuild('on-board')"),
+      '面板的"只构建"与"构建并上板"必须走同一个执行器',
+    );
+    assert.ok(
+      ext.includes("vscode.commands.registerCommand('het.boardBuild'"),
+      '命令入口也要走同一个执行器（不然无头环境跑不了）',
+    );
     assert.ok(ext.includes("'het.bench.last'"), '「上次采集」要有出处');
     assert.ok(ext.includes('void feedExtraSinglePageFacts();'), '解析成功后要刷新卡片');
     const ctl = read(join('features', 'cockpit', 'controller.ts'));

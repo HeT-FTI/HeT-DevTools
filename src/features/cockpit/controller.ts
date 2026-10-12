@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { initialCockpitState, reduceCockpit, CockpitEvent, CockpitState } from './state';
 import { cockpitSinglePageHtml, cockpitSinglePageBody, cardsBySection } from './singlepage/shell';
 import { EMPTY_FACTS, singlePageModelFrom, type SinglePageFacts } from './singlepage/modelFrom';
-import { normalizeFolded, type SectionId, type SinglePageModel } from './singlepage/model';
+import { normalizeFolded, DEFAULT_OPEN, SECTION_IDS, type SectionId, type SinglePageModel } from './singlepage/model';
 import { commandForAction } from './singlepage/actions';
 import { SECTIONS, sectionForTab } from './singlepage/sections';
 import { channelDef, nextStepHint } from '../../core/outputChannels';
@@ -42,6 +42,14 @@ let singlePageFacts: SinglePageFacts = EMPTY_FACTS;
 let foldedSections: SectionId[] | undefined;
 /** 懒加载：已经请求过正文的段（§6 `section:open`）。 */
 const openedSections = new Set<SectionId>();
+/**
+ * 最近一次深链解析出来的段（旧 tab id → 段）。
+ *
+ * 为什么存起来：新 UI 没有“当前页”这个概念（旧 `state.page` 已归档），
+ * 但深链（`het.dashboard ['deps']`、“打开依赖管理器”等旧链接）必须继续能用 ——
+ * 于是“它到底定位到哪一段、那一段可不可见”就成了**可验收**的事实。
+ */
+let lastFocus: SectionId | null = null;
 /** 忙语义宿主（§7）：Output 通道 + 通知 + 忙点，全部走 `core/busy` 那一套。 */
 let busyHost: BusyHost | undefined;
 /** §8.1 铁律 2 的闸门（同一入口 1.5s 内只当一次）。 */
@@ -113,13 +121,23 @@ export function getCockpitState(): CockpitState {
 }
 
 /**
+ * 单页**视图状态**（可观测）：深链定位到哪一段、哪些段已加载/已折叠。
+ *
+ * 给集成测试与现场排查用 —— 它回答的是“用户点完那条链接后，真能看到那一段吗”：
+ * 旧链接（tab id）不能静默失效（那会变成“点了没反应”）。
+ */
+export function getCockpitView(): { focus: SectionId | null; folded: SectionId[]; opened: SectionId[] } {
+  return { focus: lastFocus, folded: [...(foldedSections ?? readFolded())], opened: [...openedSections] };
+}
+
+/**
  * 点亮/熄灭单页 L1 的忙点（§7 第 3 条）。
  *
  * 给 host 侧所有长动作用（不只是本文件的 Copilot 入口）—— 这样"忙"的呈现只有一处实现。
  */
 export function notifySinglePageBusy(action: string, _on: boolean): void {
   // §F.35：忙语义的**唯一来源**是 `core/busy.ts` 的注册表 —— 这里顺手把它同步成
-  // "仓库级状态"，吸顶右侧 / chip / HUD / 悬停卡都读这同一份（以前 chip 读的是
+  // "仓库级状态"，吸顶右侧 / chip / 悬停卡都读这同一份（以前 chip 读的是
   // 上一次构建结果，于是"正在跑"被显示成"已失败"）。
   const st = currentStatus();
   const had = singlePageFacts.status ?? null;
@@ -130,7 +148,7 @@ export function notifySinglePageBusy(action: string, _on: boolean): void {
     postSinglePage();
   }
   // §F.36：**动作跑完 = 仓库事实变了**，不管用户是从哪个入口点的（单页按钮 / 悬停链接 /
-  // 命令面板 / HUD），都在这里统一补一次取数 —— 否则卡片上的数字要等下一次交互才动，
+  // 命令面板），都在这里统一补一次取数 —— 否则卡片上的数字要等下一次交互才动，
   // 实测反馈里就是"构建/测试/覆盖率不刷新，只有体检刷新"（体检本来就走面板入口）。
   if (had && !st) {
     requestFacts();
@@ -141,13 +159,22 @@ function singlePageModel(): SinglePageModel {
   return singlePageModelFrom(cockpitState, singlePageFacts, foldedSections ?? readFolded());
 }
 
-/** 局部刷新：L1 + 已展开过的段的正文（§6/§13：页面只生成一次）。 */
+/**
+ * 局部刷新：折叠状态 + L1 + 已展开过的段的正文（§6/§13：页面只生成一次）。
+ *
+ * **折叠状态必须单独推**（V3 · L2e 在真宿主里抓到的 bug）：
+ * 深链 / 手风琴只改了宿主的 `foldedSections`，而页面上的 `data-collapsed` 是**首帧**
+ * 写死的 —— 于是"宿主认为测试站开着、用户看到的却是就绪站开着"（与最初那条
+ * "点一下却展开两项"同源：状态改了、视图没跟上）。现在每次刷新都把折叠状态推下去，
+ * 页内据此重写 8 站的展开/收起与 rail 高亮。
+ */
 function postSinglePage(): void {
   if (!cockpitPanel) {
     return;
   }
   const model = singlePageModel();
   const grouped = cardsBySection(model);
+  void cockpitPanel.webview.postMessage({ type: 'folded', folded: model.folded });
   void cockpitPanel.webview.postMessage({ type: 'l1', html: l1HtmlOf(model) });
   for (const def of SECTIONS) {
     if (!openedSections.has(def.id)) {
@@ -279,7 +306,6 @@ async function runCopilotEntry(command: string): Promise<void> {
   const res = await runWithBusy(
     host(),
     def.action,
-    channelDef(def.action)?.label ?? command,
     () => openCopilotChat(query),
     `预填 ${command}（复用当前会话，不新建）`,
   );
@@ -324,14 +350,14 @@ function resolveFocus(focus?: string): SectionId | undefined {
   return sectionForTab(focus);
 }
 
-/** 把某段标成"展开"（深链用；不动用户其它的折叠选择）。 */
+/**
+ * 把某站标成"展开"（深链用）。
+ *
+ * V3 · L2：与手风琴同规则 —— **只展开目标站**（其余收起）。以前只删自己一个 id，
+ * 于是"弹窗深链"会变成第二个展开的站，正是用户 2026-09-30 实测到的"同时展开两项"。
+ */
 function unfold(section: SectionId): void {
-  const cur = new Set(foldedSections ?? readFolded());
-  if (!cur.has(section)) {
-    return;
-  }
-  cur.delete(section);
-  foldedSections = [...cur];
+  foldedSections = SECTION_IDS.filter((id) => id !== section);
   void cockpitContext?.globalState.update('het.cockpit.folded', foldedSections);
 }
 
@@ -355,8 +381,14 @@ export function emitCockpitEvent(event: CockpitEvent): void {
   }
 }
 
+import { isSlotMessage, slotFieldOf } from '../slots/protocol';
+import { requestSlotClose, routeSlotMessage } from '../slots/registry';
+
 export function openCockpitPanel(context: vscode.ExtensionContext, focus?: string): vscode.WebviewPanel {
   const target = resolveFocus(focus);
+  if (target) {
+    lastFocus = target;
+  }
   if (cockpitPanel) {
     cockpitPanel.reveal(vscode.ViewColumn.One);
     if (target) {
@@ -379,8 +411,8 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
   openedSections.clear();
   cockpitPanel.webview.html = cockpitSinglePageHtml(singlePageModel());
 
-  // 段 1 默认展开（其余段等用户展开，§13 懒加载）；深链目标也直接展开。
-  openedSections.add('now');
+  // 默认展开站（V3：动作序列的 ① 就绪；其余站等用户展开，§13 懒加载）；深链目标也直接展开。
+  openedSections.add(DEFAULT_OPEN);
   if (target) {
     unfold(target);
     openedSections.add(target);
@@ -391,6 +423,14 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
 
   cockpitPanel.webview.onDidReceiveMessage(
     (message: { type: string; section?: string; id?: string; expand?: boolean; command?: string; action?: string; copilot?: string }) => {
+      // A 块：页内 Slot 的消息先按 `__slot` 路由回对应视图（驾驶舱不拆开看内容）
+      if (isSlotMessage(message)) {
+        const slotId = slotFieldOf(message);
+        if (slotId) {
+          routeSlotMessage(slotId, message as Record<string, unknown>);
+        }
+        return;
+      }
       if (message.type === 'action' && message.action) {
         const cmd = commandForAction(message.action);
         if (cmd) {
@@ -400,21 +440,40 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
             () => requestFacts(),
           );
         }
+      } else if (message.type === 'nav' && message.id) {
+        // J 块：导航动作（如 L1 忙点 → 任务中心）。与 action 的区别只有一条：
+        // 导航**不会**产生"在跑"的语义，所以页面不改按钮文字、这里也不刷事实。
+        const cmd = commandForAction(message.id);
+        if (cmd) {
+          void vscode.commands.executeCommand(cmd);
+        }
       } else if (message.type === 'copilot' && message.command) {
         void runCopilotEntry(message.command);
       } else if (message.type === 'section:open' && message.id) {
         openedSections.add(message.id as SectionId);
         postSinglePage();
         requestFacts();
+      } else if (message.type === 'slot:close') {
+        // 页内 Slot 的“关闭”按钮：请宿主真正撤销接线（否则旧处理器会继续收消息）。
+        // 这里用字面量而不是常量：跨层协议门禁靠“字面量 ↔ 字面量”对账（F.46）。
+        requestSlotClose();
       } else if (message.type === 'folded' && message.id) {
         const id = message.id as SectionId;
         const cur = new Set(foldedSections ?? readFolded());
         if (message.expand === true) {
           cur.delete(id);
+          // 手风琴（V3 §4.3）：页内除了刚展开的这一站，其余全收起。
+          // 页内脚本已经做过一次（点了立即生效），这里是**持久化**那一份；
+          // 两处必须同规则，否则下次打开面板就会回到"两项同时展开"。
+          for (const other of SECTION_IDS) {
+            if (other !== id) {
+              cur.add(other);
+            }
+          }
         } else {
           cur.add(id);
         }
-        foldedSections = [...cur];
+        foldedSections = SECTION_IDS.filter((x) => cur.has(x));
         void cockpitContext?.globalState.update('het.cockpit.folded', foldedSections);
       }
     },
@@ -425,4 +484,14 @@ export function openCockpitPanel(context: vscode.ExtensionContext, focus?: strin
   });
 
   return cockpitPanel;
+}
+
+/** 往驾驶舱发一条消息（Slot 宿主用；驾驶舱没开时返 false，不抛）。 */
+export function postToCockpit(message: unknown): Thenable<boolean> {
+  return cockpitPanel ? cockpitPanel.webview.postMessage(message) : Promise.resolve(false);
+}
+
+/** 驾驶舱的 webview 句柄（Slot 宿主需要 `asWebviewUri` 等能力时用）。 */
+export function cockpitWebview(): vscode.Webview | undefined {
+  return cockpitPanel?.webview;
 }

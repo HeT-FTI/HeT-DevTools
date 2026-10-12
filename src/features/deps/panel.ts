@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 import { depsListHtml, depsPageHtml, type DepPanelState } from './html';
 import { validateAddInput, type AddInputDraft } from './model';
 
@@ -31,7 +31,7 @@ function stamp(at: Date = new Date()): string {
  * 2. **入口错**（`het.openDeps` 以前深链到驾驶舱）：现在它直接打开本详情页；
  * 3. **看不出有没有生效**：每次操作都在 `#note` 回显结论 + 时间戳，并**局部刷新**清单。
  */
-export function showDepsPanel(context: vscode.ExtensionContext, deps: DepPanelDeps): vscode.WebviewPanel {
+export function showDepsPanel(context: vscode.ExtensionContext, deps: DepPanelDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'deps', title: 'HeT DevTools — 依赖管理器' }, (panel) => {
     const push = async (note: string): Promise<void> => {

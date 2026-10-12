@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { esc, pageShell } from '../ui';
-import { showDetailPanel } from '../detail/host';
+import { showDetailPanel, type SlotPanel } from '../slots/host';
 
 export interface ReleaseState {
   projectName: string;
@@ -25,7 +25,7 @@ export interface ReleaseDeps {
   openChangelog: () => Promise<void>;
 }
 
-export function showReleasePanel(context: vscode.ExtensionContext, deps: ReleaseDeps): vscode.WebviewPanel {
+export function showReleasePanel(context: vscode.ExtensionContext, deps: ReleaseDeps): SlotPanel {
   // §D：细节面板共用一个页签（切视图换内容）——实现原样搬进来，只把"谁来持有面板"交给 host。
   return showDetailPanel(context, { id: 'release', title: 'HeT DevTools — 发布中心' }, (panel) => {
 
